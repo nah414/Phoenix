@@ -10,7 +10,7 @@ PHOENIX_ARCHITECTURE_v1.md Section 10.3 (utilities file layout), Section 10.3.1 
 | File | Role |
 |---|---|
 | `__init__.py` | Empty Phase 0 stub. |
-| `version.py` | (Phase 0 — landed) `__version__ = "1.0.0-phase0"` and `read_vendor_version()`. |
+| `version.py` | (Phase 0 — landed) `__version__ = "1.0.0.dev0"` and `read_vendor_version()`. |
 | `logging.py` | (Phase 6) Phoenix's structured logger — typed dataclass events, JSON-serializable. |
 | `config.py` | (Phase 6) `~/.phoenix/config.yaml` parser plus env-var override layer. |
 | `errors.py` | (Phase 5) Root exception hierarchy. All typed exceptions from Sections 3.7, 4.x, 6.8, 7.8, 8.7 derive from a common base. |

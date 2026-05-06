@@ -15,7 +15,7 @@ This is the **first build guide** for Phoenix v1, executed against the locked ar
 
 **Phase 0's definition of done:**
 - `python -c "import phoenix"` succeeds without error.
-- `python -m phoenix.api --port 8003` boots and serves `GET /v1/health` returning `{"status": "ok", "phoenix_version": "1.0.0-phase0", ...}`.
+- `python -m phoenix.api --port 8003` boots and serves `GET /v1/health` returning `{"status": "ok", "phoenix_version": "1.0.0.dev0", ...}`.
 - Double-clicking the desktop shortcut on Windows opens `http://localhost:8003/docs` after the daemon boots.
 - Every directory under `phoenix/` and `vendor/` has a non-empty `README.md` following the Section 10.6 template.
 - One smoke test passes: `pytest tests/unit/test_smoke.py`.
@@ -67,14 +67,14 @@ Each step's checkpoint includes:
 ### 3.1 — Step 1: Top-level scaffolding
 
 **What lands:**
-- `C:\Phoenix\pyproject.toml` — package metadata, dependencies (with upper bounds), Python version pinned `>=3.11,<3.13`, build-system config.
+- `C:\Phoenix\pyproject.toml` — package metadata, dependencies (with upper bounds), Python version pinned `>=3.11,<3.14`, build-system config.
 - `C:\Phoenix\requirements.lock` — empty placeholder with a comment explaining its role per architecture §1 Decision 21. Will be populated by `uv pip compile pyproject.toml --output-file requirements.lock` in Phase 1.
 - `C:\Phoenix\.gitignore` — standard Python plus Phoenix's audit-output exclusion (`.audit/`, `.runtime/`).
 - `C:\Phoenix\.gitattributes` — pin LF line endings for `*.py`, `*.md`, `*.yaml`, `*.json`; default for the rest.
 - `C:\Phoenix\.pre-commit-config.yaml` — git pre-commit hooks running ruff (lint+format), mypy, and the smoke test before each commit. Audit-friendly: every commit that lands has passed lint/type/test.
 - `C:\Phoenix\LICENSE` — Apache License, Version 2.0 (full text, per §1 Decision 34).
 - `C:\Phoenix\README.md` — top-level README pointing readers at `PHOENIX_ARCHITECTURE_v1.md`, `BUILDGUIDE_phoenix_v1_phase0_skeleton.md`, and `docs/getting-started/` (the latter created in later phases).
-- `C:\Phoenix\CHANGELOG.md` — skeleton with one entry: `1.0.0-phase0` reflecting Phase 0's skeleton landing.
+- `C:\Phoenix\CHANGELOG.md` — skeleton with one entry: `1.0.0.dev0` reflecting Phase 0's skeleton landing.
 
 **`pyproject.toml` contents (Phase 0 minimum, with upper bounds per the 2026-05-06 tightening):**
 
@@ -85,12 +85,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0-phase0"
+version = "1.0.0.dev0"
 description = "Production-grade quantum-accuracy middleware (Phase 0 skeleton)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115,<0.120",
     "uvicorn[standard]>=0.27,<0.35",
@@ -340,7 +340,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__version__ = "1.0.0-phase0"
+__version__ = "1.0.0.dev0"
 
 VENDOR_VERSION_FILE = Path(__file__).parent.parent.parent / "vendor" / "VENDOR_VERSION.txt"
 
@@ -371,7 +371,7 @@ def read_vendor_version() -> dict[str, str] | None:
 ```powershell
 Set-Location C:\Phoenix
 python -c "import phoenix; print(phoenix.__version__)"
-# → 1.0.0-phase0
+# → 1.0.0.dev0
 python -c "from phoenix._internal.version import read_vendor_version; print(read_vendor_version())"
 # → None (vendor/VENDOR_VERSION.txt does not yet exist; that is Step 3)
 ```
@@ -399,7 +399,7 @@ python -c "from phoenix._internal.version import read_vendor_version; print(read
 # all-empty hashes, which the audit and replay paths recognize as "vendoring
 # not yet performed."
 
-phoenix_release: 1.0.0-phase0
+phoenix_release: 1.0.0.dev0
 vendor_synced_at:
 dr_frank_and_eddy_commit:
 synqc_tds_commit:
@@ -414,7 +414,7 @@ Test-Path vendor                                  # → True
 Test-Path vendor\VENDOR_VERSION.txt              # → True
 Get-Content vendor\VENDOR_VERSION.txt            # → the placeholder above
 python -c "from phoenix._internal.version import read_vendor_version; v = read_vendor_version(); print(v)"
-# → {'phoenix_release': '1.0.0-phase0', 'vendor_synced_at': '', ...}
+# → {'phoenix_release': '1.0.0.dev0', 'vendor_synced_at': '', ...}
 ```
 
 **Common failure mode:** the reader returns `None` instead of the placeholder dict. Cause: file path mismatch in `phoenix/_internal/version.py::VENDOR_VERSION_FILE`. The path traversal is `__file__.parent.parent.parent / "vendor" / "VENDOR_VERSION.txt"` because `phoenix/_internal/version.py` is three levels deep relative to `C:\Phoenix\vendor\`.
@@ -796,18 +796,18 @@ from __future__ import annotations
 def test_phoenix_imports() -> None:
     import phoenix
     assert hasattr(phoenix, "__version__")
-    assert phoenix.__version__ == "1.0.0-phase0"
+    assert phoenix.__version__ == "1.0.0.dev0"
 
 
 def test_internal_version_module() -> None:
     from phoenix._internal.version import __version__, read_vendor_version
 
-    assert __version__ == "1.0.0-phase0"
+    assert __version__ == "1.0.0.dev0"
     # Phase 0 ships the placeholder vendor manifest; reader returns the parsed dict
     # (with empty values), not None.
     vendor = read_vendor_version()
     assert vendor is not None
-    assert vendor["phoenix_release"] == "1.0.0-phase0"
+    assert vendor["phoenix_release"] == "1.0.0.dev0"
     # Empty hashes are expected at Phase 0 — vendor sync runs in Phase 1.
     assert vendor["vendor_synced_at"] == ""
     assert vendor["dr_frank_and_eddy_commit"] == ""
@@ -867,7 +867,7 @@ def test_health_returns_200_and_expected_shape() -> None:
 
     # Required fields per Phase 0 contract.
     assert body["status"] == "ok"
-    assert body["phoenix_version"] == "1.0.0-phase0"
+    assert body["phoenix_version"] == "1.0.0.dev0"
     assert body["calibration_status"] == "not_loaded"  # Phase 0 placeholder
     assert "checked_at_utc" in body
     assert "vendor_manifest" in body
@@ -875,7 +875,7 @@ def test_health_returns_200_and_expected_shape() -> None:
     # Vendor manifest is the Phase 0 placeholder (file exists with empty hashes).
     vendor = body["vendor_manifest"]
     assert vendor is not None
-    assert vendor["phoenix_release"] == "1.0.0-phase0"
+    assert vendor["phoenix_release"] == "1.0.0.dev0"
     assert vendor["vendor_synced_at"] == ""        # Phase 1 populates this
     assert vendor["dr_frank_and_eddy_commit"] == ""  # Phase 1 populates this
 
@@ -887,7 +887,7 @@ def test_openapi_schema_served() -> None:
     assert response.status_code == 200
     schema = response.json()
     assert schema["openapi"].startswith("3.")
-    assert schema["info"]["version"] == "1.0.0-phase0"
+    assert schema["info"]["version"] == "1.0.0.dev0"
     # /v1/health is registered.
     assert "/v1/health" in schema["paths"]
 ```
@@ -1095,8 +1095,8 @@ python -m phoenix.api --port 8003
 Invoke-RestMethod -Uri http://127.0.0.1:8003/v1/health
 # Expected:
 #   status            : ok
-#   phoenix_version   : 1.0.0-phase0
-#   vendor_manifest   : @{phoenix_release=1.0.0-phase0; vendor_synced_at=; ...}
+#   phoenix_version   : 1.0.0.dev0
+#   vendor_manifest   : @{phoenix_release=1.0.0.dev0; vendor_synced_at=; ...}
 #   calibration_status: not_loaded
 #   checked_at_utc    : 2026-05-06T...
 
@@ -1119,7 +1119,7 @@ This step runs all of Phase 0's acceptance checks together and confirms the skel
 
 **Acceptance checklist:**
 
-1. ✅ `python -c "import phoenix; print(phoenix.__version__)"` prints `1.0.0-phase0`.
+1. ✅ `python -c "import phoenix; print(phoenix.__version__)"` prints `1.0.0.dev0`.
 2. ✅ `pytest tests/unit/test_smoke.py -v` passes 3/3.
 3. ✅ `pytest tests/integration/test_health.py -v` passes 2/2 (added per the 2026-05-06 tightening).
 4. ✅ `pytest tests/ -v` passes 5/5 (combined unit + integration).
@@ -1132,7 +1132,7 @@ This step runs all of Phase 0's acceptance checks together and confirms the skel
 11. ✅ Every directory under `phoenix/` and `vendor/` and `evals/` has a non-empty `README.md` (29 total: 21 phoenix/vendor + 8 evals).
 12. ✅ `pre-commit run --all-files` passes ruff (lint+format), mypy (strict mode), and the smoke-test hook.
 13. ✅ `pre-commit install` was run; `.git/hooks/pre-commit` exists and is executable.
-14. ✅ Dependency manager: `requirements.lock` is present (empty placeholder); `pyproject.toml` has upper bounds on every dep; Python pinned `>=3.11,<3.13`.
+14. ✅ Dependency manager: `requirements.lock` is present (empty placeholder); `pyproject.toml` has upper bounds on every dep; Python pinned `>=3.11,<3.14`.
 15. ✅ `git status` reports a clean working tree after staging Phase 0's files.
 
 **Combined verification command:**
@@ -1141,7 +1141,7 @@ This step runs all of Phase 0's acceptance checks together and confirms the skel
 Set-Location C:\Phoenix
 
 # Acceptance 1
-python -c "import phoenix; assert phoenix.__version__ == '1.0.0-phase0'; print('1: OK')"
+python -c "import phoenix; assert phoenix.__version__ == '1.0.0.dev0'; print('1: OK')"
 
 # Acceptance 2 + 3 + 4
 pytest tests/ -v
@@ -1156,7 +1156,7 @@ $daemon = Start-Process -PassThru python -ArgumentList "-m", "phoenix.api", "--p
 Start-Sleep -Seconds 3
 try {
     $health = Invoke-RestMethod -Uri http://127.0.0.1:8003/v1/health
-    if ($health.status -eq "ok" -and $health.phoenix_version -eq "1.0.0-phase0") {
+    if ($health.status -eq "ok" -and $health.phoenix_version -eq "1.0.0.dev0") {
         Write-Host "6+7: OK"
     } else {
         Write-Host "6+7: FAIL — health response unexpected"
@@ -1192,7 +1192,7 @@ if ($LASTEXITCODE -eq 0) { Write-Host "12: OK (pre-commit clean)" } else { Write
 
 # Acceptance 14: dep tightening evidence
 if ((Get-Content pyproject.toml -Raw) -match 'requires-python\s*=\s*">=3\.11,<3\.13"') {
-    Write-Host "14: OK (Python pinned to >=3.11,<3.13)"
+    Write-Host "14: OK (Python pinned to >=3.11,<3.14)"
 } else {
     Write-Host "14: FAIL — Python upper bound missing in pyproject.toml"
 }

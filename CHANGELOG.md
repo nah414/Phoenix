@@ -5,13 +5,17 @@ All notable changes to Phoenix are recorded here. The format follows
 release cadence is phase-gated rather than calendar-gated, so entries
 correspond to phase landings rather than fixed-interval releases.
 
-Version semantics: Phoenix uses `MAJOR.MINOR.PATCH-stage` where `stage` is
-omitted for stable releases. Pre-release stages are `phaseN` for the build-guide
-phase that produced the artifact (`1.0.0-phase0`, `1.0.0-phase1`, etc.).
+Version semantics: Phoenix follows [PEP 440](https://peps.python.org/pep-0440/).
+Pre-release builds during build-guide phases use `1.0.0.dev<N>` where `<N>`
+is the phase number (`1.0.0.dev0` = Phase 0, `1.0.0.dev1` = Phase 1, etc.).
+Once Phoenix enters integration testing it moves to `1.0.0a0` (alpha 0),
+`1.0.0b0` (beta), `1.0.0rc0` (release candidate), and finally `1.0.0` for
+the stable release. PEP 440 compliance is required by setuptools and lets
+Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
-## [1.0.0-phase0] — 2026-05-06
+## [1.0.0.dev0] — 2026-05-06
 
 The repository skeleton lands. No physics yet; this release is the foundation
 that subsequent phases build on.

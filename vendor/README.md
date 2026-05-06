@@ -28,7 +28,7 @@ PHOENIX_ARCHITECTURE_v1.md Section 10.2 (vendoring map — file-by-file mapping 
 
 ## Phase 0 state
 - `vendor/` directory exists.
-- `vendor/VENDOR_VERSION.txt` placeholder ships with `phoenix_release: 1.0.0-phase0` and four hash fields empty. The empty hashes are recognized by audit and replay paths as "vendoring not yet performed."
+- `vendor/VENDOR_VERSION.txt` placeholder ships with `phoenix_release: 1.0.0.dev0` and four hash fields empty. The empty hashes are recognized by audit and replay paths as "vendoring not yet performed."
 - `read_vendor_version()` in `phoenix/_internal/version.py` returns the parsed dict (with empty values) — earlier in Phase 0 it returned None because the file didn't exist.
 
 ## Common failure modes
