@@ -1,0 +1,124 @@
+# physics_v1.yaml
+#
+# Generative grammar for the Sanskrit codec (Phase 3.2). Drives E4's
+# symbolic-candidate mode: any string produced by `generate` from this
+# grammar is a well-formed compressed physics statement, and any such
+# string round-trips through the recursive-descent `parse` back to its
+# derivation tree.
+#
+# Conventions:
+#   - `<Name>` denotes a NON-TERMINAL. The name must appear as a top-
+#     level key under `productions` (validated at load time).
+#   - Anything else is a TERMINAL. Whitespace is significant -- the
+#     generator concatenates RHS tokens verbatim, so padding like " = "
+#     must include its own leading/trailing spaces.
+#
+# All Unicode glyphs used here are the SAME symbols the Phase 2.1 /
+# 2.2 codec tables target, so a statement produced by this grammar
+# sits inside the already-defined glyph pool: no collision with source
+# text, no extra escape needed.
+#
+# Coverage (>=30 productions per TIER3 Phase 3.2 acceptance):
+#   - Statements + quantifiers + implications
+#   - Equations (=, ≈, ∝)
+#   - Scalar arithmetic (+, -, ·)
+#   - Vector expressions
+#   - Operator algebra (tensor product, direct sum, commutator, inner product)
+#   - Differential operators (∂ₜ, ∇, ∇²)
+#   - Integrals
+#   - Canonical quantum expressions (expected value, Born probability)
+#   - Constants (ℏ, 𝑐, 𝑘, α)
+#   - Bound variables (t, 𝑥, 𝐸, ψ)
+
+grammar: physics_v1
+version: 1
+start: Statement
+
+productions:
+
+  # ---- Top-level sentence forms ------------------------------------
+  Statement:
+    - ["<Equation>"]
+    - ["<Quantifier>", " ", "<Var>", " : ", "<Equation>"]
+    - ["<Equation>", " ⇒ ", "<Equation>"]
+    - ["<Equation>", " ⇔ ", "<Equation>"]
+
+  # ---- Equation forms ----------------------------------------------
+  Equation:
+    - ["<Expr>", " = ", "<Expr>"]
+    - ["<Expr>", " ≈ ", "<Expr>"]
+    - ["<Expr>", " ∝ ", "<Expr>"]
+
+  # ---- Expression dispatch -----------------------------------------
+  Expr:
+    - ["<ScalarExpr>"]
+    - ["<OpExpr>"]
+    - ["<VectorExpr>"]
+
+  # ---- Scalar arithmetic -------------------------------------------
+  ScalarExpr:
+    - ["<ScalarAtom>"]
+    - ["<ScalarAtom>", " + ", "<ScalarExpr>"]
+    - ["<ScalarAtom>", " - ", "<ScalarExpr>"]
+    - ["<ScalarAtom>", " · ", "<ScalarExpr>"]
+
+  ScalarAtom:
+    - ["⦗E⦘"]
+    - ["⦗ϑ⦘"]
+    - ["⦗μ⦘"]
+    - ["<Constant>"]
+    - ["⟨⦗Ψ⦘|⦗Ψ⦘⟩"]
+    - ["⟨ ", "⦗Ψ⦘", " ⟩"]
+    - ["∫ ", "<Constant>", " 𝒹", "<Var>"]
+    - ["<DiffOp>", "⦗E⦘"]
+    - ["ℙ(", "⦗Ψ⦘", ")"]
+
+  # ---- Quantum operator algebra ------------------------------------
+  OpExpr:
+    - ["<OpAtom>"]
+    - ["<OpAtom>", " ⊗ ", "<OpExpr>"]
+    - ["<OpAtom>", " ⊕ ", "<OpExpr>"]
+    - ["[", "<OpAtom>", ",", "<OpAtom>", "]"]
+    - ["<DiffOp>", "<OpAtom>"]
+
+  OpAtom:
+    - ["⦗Ψ⦘"]
+    - ["Ĥ"]
+    - ["𝒪"]
+    - ["𝒰"]
+
+  # ---- Vector expressions ------------------------------------------
+  VectorExpr:
+    - ["<VectorAtom>"]
+    - ["<VectorAtom>", " + ", "<VectorExpr>"]
+    - ["∇ ", "⦗E⦘"]
+
+  VectorAtom:
+    - ["⦗V⦘"]
+    - ["⦗𝔸⦘"]
+
+  # ---- Differential operators --------------------------------------
+  DiffOp:
+    - ["∂ₜ "]
+    - ["∇ "]
+    - ["∇² "]
+
+  # ---- Constants ---------------------------------------------------
+  Constant:
+    - ["ℏ"]
+    - ["𝑐"]
+    - ["𝑘"]
+    - ["α"]
+    - ["0"]
+
+  # ---- Quantifiers -------------------------------------------------
+  Quantifier:
+    - ["∀"]
+    - ["∃"]
+
+  # ---- Bound variables ---------------------------------------------
+  Var:
+    - ["t"]
+    - ["𝑥"]
+    - ["𝐸"]
+    - ["ψ"]

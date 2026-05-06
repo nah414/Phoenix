@@ -25,12 +25,16 @@ def test_health_returns_200_and_expected_shape() -> None:
     assert "checked_at_utc" in body
     assert "vendor_manifest" in body
 
-    # Vendor manifest is the Phase 0 placeholder (file exists with empty hashes).
+    # Vendor manifest is populated after Phase 1 Step 3 (vendor sync ran).
+    # Phase 0 placeholder had empty hash fields; from Phase 1 forward they are
+    # populated with the real frank-data commit hash and the sync timestamp.
     vendor = body["vendor_manifest"]
     assert vendor is not None
-    assert vendor["phoenix_release"] == "1.0.0.dev0"
-    assert vendor["vendor_synced_at"] == ""  # Phase 1 populates this
-    assert vendor["dr_frank_and_eddy_commit"] == ""  # Phase 1 populates this
+    assert vendor["phoenix_release"], "phoenix_release must be set"
+    assert vendor["vendor_synced_at"], "vendor_synced_at must be set after vendor sync runs"
+    assert vendor[
+        "dr_frank_and_eddy_commit"
+    ], "dr_frank_and_eddy_commit must be set after vendor sync runs"
 
 
 def test_openapi_schema_served() -> None:

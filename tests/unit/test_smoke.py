@@ -19,14 +19,18 @@ def test_internal_version_module() -> None:
     from phoenix._internal.version import __version__, read_vendor_version
 
     assert __version__ == "1.0.0.dev0"
-    # Phase 0 ships the placeholder vendor manifest; reader returns the parsed dict
-    # (with empty values), not None.
+    # Vendor manifest is populated after Phase 1 Step 3 (vendor sync ran).
+    # Phase 0 placeholder had empty hash fields; from Phase 1 forward, the
+    # vendor sync writes real values for vendor_synced_at, dr_frank_and_eddy_commit,
+    # and (after Step 5) calibration_profile_hash.
     vendor = read_vendor_version()
     assert vendor is not None
-    assert vendor["phoenix_release"] == "1.0.0.dev0"
-    # Empty hashes are expected at Phase 0 -- vendor sync runs in Phase 1.
-    assert vendor["vendor_synced_at"] == ""
-    assert vendor["dr_frank_and_eddy_commit"] == ""
+    assert vendor["phoenix_release"], "phoenix_release must be set"
+    assert vendor["vendor_synced_at"], "vendor_synced_at must be set after vendor sync runs"
+    assert vendor[
+        "dr_frank_and_eddy_commit"
+    ], "dr_frank_and_eddy_commit must be set after vendor sync runs"
+    # calibration_profile_hash stays empty until Phase 1 Step 5 (calibration generation).
 
 
 def test_all_section_subpackages_import() -> None:

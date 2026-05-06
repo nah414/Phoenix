@@ -42,6 +42,12 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Vendored substrate keeps its upstream formatting verbatim (architecture v1
+# Section 11.7.1 -- "vendor verbatim including imports through v1"). Adding
+# `vendor` to extend-exclude tells ruff to skip those files for both linting
+# and formatting; the pre-commit hooks pass --force-exclude so this is
+# honored even when ruff is invoked with explicit vendor/ paths.
+extend-exclude = ["vendor"]
 
 [tool.mypy]
 python_version = "3.11"
