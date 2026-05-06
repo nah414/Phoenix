@@ -53,3 +53,11 @@ extend-exclude = ["vendor"]
 python_version = "3.11"
 strict = true
 exclude = ["vendor/", "build/", "dist/"]
+
+# Vendored module names resolve via sys.path injection (phoenix/__init__.py
+# per architecture v1 Section 11.7.1). The vendored code has no type stubs;
+# tell mypy not to complain when Phoenix code imports `synthesis.*`, `wobble.*`,
+# `grammar.*`, or `actor.*`. The vendored files themselves are excluded above.
+[[tool.mypy.overrides]]
+module = ["synthesis.*", "wobble.*", "grammar.*", "actor.*"]
+ignore_missing_imports = true

@@ -33,6 +33,26 @@ def test_internal_version_module() -> None:
     # calibration_profile_hash stays empty until Phase 1 Step 5 (calibration generation).
 
 
+def test_vendored_imports_resolve_from_vendor_dir() -> None:
+    """Phase 1 Step 4: sys.path injection in phoenix/__init__.py makes vendored
+    modules importable using their upstream paths (architecture v1 Section 11.7.1).
+    """
+    import phoenix  # noqa: F401  -- triggers sys.path injection on package load
+
+    # Vendored modules should resolve at their upstream import paths.
+    import actor.actor as vendored_actor
+    import grammar.parser as vendored_parser
+    import synthesis.equations.base as vendored_solver_base
+    import wobble.disagreement_types as vendored_wobble_types
+
+    # Each module's __file__ should live under vendor/.
+    for module in (vendored_actor, vendored_parser, vendored_solver_base, vendored_wobble_types):
+        assert module.__file__ is not None
+        assert "vendor" in module.__file__.replace("\\", "/").split(
+            "/"
+        ), f"{module.__name__} resolved from {module.__file__} -- expected under vendor/"
+
+
 def test_all_section_subpackages_import() -> None:
     """Every directory listed in architecture v1 Section 10.3 imports as a submodule."""
     import phoenix.adapters  # noqa: F401
