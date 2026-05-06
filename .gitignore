@@ -27,6 +27,12 @@ htmlcov/
 .audit/
 .runtime/
 
+# Vendor source workspace (defensive — lives at sibling path C:\Phoenix-vendor-source\
+# by design per Phase 1 build guide §3.1; this entry catches accidental moves
+# inside C:\Phoenix\ so the multi-GB frank-data clone never gets staged).
+Phoenix-vendor-source/
+phoenix-vendor-source/
+
 # IDE
 .vscode/
 .idea/
