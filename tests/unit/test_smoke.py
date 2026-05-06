@@ -12,13 +12,13 @@ def test_phoenix_imports() -> None:
     import phoenix
 
     assert hasattr(phoenix, "__version__")
-    assert phoenix.__version__ == "1.0.0.dev0"
+    assert phoenix.__version__ == "1.0.0.dev1"
 
 
 def test_internal_version_module() -> None:
     from phoenix._internal.version import __version__, read_vendor_version
 
-    assert __version__ == "1.0.0.dev0"
+    assert __version__ == "1.0.0.dev1"
     # Vendor manifest is populated after Phase 1 Step 3 (vendor sync ran).
     # Phase 0 placeholder had empty hash fields; from Phase 1 forward, the
     # vendor sync writes real values for vendor_synced_at, dr_frank_and_eddy_commit,

@@ -15,6 +15,130 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev1] — 2026-05-06
+
+Phase 1 lands. The vendored substrate from `dr-frank-and-eddy` is real,
+calibrated, and exercisable through Phoenix's package boundary. Trinity
+Core's Solver and Control subsystems now have the substrate they need
+when Phases 2–3 wire them through the pipeline; Orchestrate stays
+greenfield per the 2026-05-06 architecture revision.
+
+### Added
+
+- **Step 0 — frank-data housekeeping.** Adam's lab bench at
+  `C:\frank-data\` cleaned: 4 untracked items moved to git
+  (DrFrankEddy_Capabilities_Overview_for_Ash.md, evolution/candidates/epoch_0001/),
+  `electron-debug.log*` added to `.gitignore`. Commit `fa074e5` on
+  `nah414/dr-frank-and-eddy/wave-a-through-f-merge`. Prep for the
+  vendor source clone.
+- **Step 1 — vendor source workspace.** `C:\Phoenix-vendor-source\frank-data\`
+  cloned at commit `fa074e5` (sibling of `C:\Phoenix\`, never inside).
+  `Phoenix-vendor-source/` added to Phoenix `.gitignore` defensively.
+- **Step 2 — vendor sync infrastructure.** `scripts/vendor_sync.py`
+  (~370 lines, type-annotated, mypy-strict-clean) + `scripts/vendor_manifest.json`.
+  Eight typed errors, four frozen dataclasses, five CLI modes
+  (default / --validate-only / --dry-run / --target / --update-version-manifest /
+  --generate-calibration). Admin-gate placeholder via `PHOENIX_ADMIN_OVERRIDE=1`
+  env var (Phase 6 replaces with safety-gate Actor check).
+- **Step 3 — frank-data substrate vendored.** 56 files / 379 KB copied
+  per the manifest's 11 mappings: `vendor/synthesis/equations/` (29
+  files, 12 solvers + base + registry + llm_context + 12 specs +
+  README + __init__), `vendor/synthesis/core/` (6: dpd_engine,
+  lindblad_rk4, probe_model, hardware_backends + README + __init__),
+  `vendor/synthesis/quantum/tensor_lindblad.py`, `vendor/grammar/`
+  (11: 6 grammar files + 5 codec files), `vendor/actor/actor.py`,
+  `vendor/wobble/` (6 files). `pyproject.toml` `[tool.ruff]` gains
+  `extend-exclude = ["vendor"]` so vendored substrate keeps upstream
+  formatting verbatim.
+- **Step 4 — sys.path injection.** `phoenix/__init__.py` defines
+  `_inject_vendor_path()` that appends `C:\Phoenix\vendor\` to
+  `sys.path` on package load. Vendored modules now import at their
+  upstream paths (`from synthesis.equations.base import EquationSolver`).
+  `[[tool.mypy.overrides]]` block silences mypy on `synthesis.*`,
+  `wobble.*`, `grammar.*`, `actor.*` (the vendored code has no type
+  stubs and is excluded from analysis already).
+- **Step 5 — calibration profile generation.** `vendor/calibration_profile.json`
+  (3.9 KB) ships with the source-side calibration suite results: 32/32
+  tests passing in 1.4 seconds, all module-level physical constants
+  captured (HBAR, M_ELECTRON, MU_BOHR, C_LIGHT, G_NEWTON, EV_TO_JOULE),
+  source commit + branch + ISO timestamp. `vendor/VENDOR_VERSION.txt`'s
+  `calibration_profile_hash` field now populated.
+- **Step 6 — Tier-1 + invariants + DPD test infrastructure.** 13 new
+  Phoenix-side tests across three directories:
+  - `tests/tier1/`: 5 nominal Tier-1 benchmarks (HO-1 QHO, ISW-1 PIB,
+    H1S-1 Dirac, RABI-1 Pauli/Zeeman, SCG-1 weak-field gravity).
+  - `tests/invariants/`: 4 grammar invariants (load, safe-load
+    discipline, generate-then-parse round-trip, bounded generation).
+  - `tests/dpd/`: 4 DPDScheduler structural tests.
+  - Runtime deps grow: `numpy>=1.26,<3.0`, `scipy>=1.11,<2.0`,
+    `pyyaml>=6.0,<7.0`.
+- **Step 7 — Phase 1 acceptance + push.** Version bumps `1.0.0.dev0` →
+  `1.0.0.dev1` in `pyproject.toml`, `phoenix/_internal/version.py`,
+  test assertions. `vendor/VENDOR_VERSION.txt` regenerated with
+  `phoenix_release: 1.0.0.dev1`. `/v1/health` end-to-end check confirms
+  daemon serves dev1 with full vendor manifest.
+
+### Changed
+
+- `phoenix.__version__`: `1.0.0.dev0` → `1.0.0.dev1`.
+- `vendor/VENDOR_VERSION.txt`: all four hash fields populated (was
+  Phase 0 placeholder with empty values).
+- `tests/unit/test_smoke.py::test_internal_version_module`: now asserts
+  `vendor_synced_at`, `dr_frank_and_eddy_commit`, `calibration_profile_hash`
+  are non-empty (Phase 0 had asserted them empty as the placeholder).
+- `tests/integration/test_health.py::test_health_returns_200_and_expected_shape`:
+  same flip on the `/v1/health` response shape assertions.
+
+### Open architectural drifts (logged for follow-up before Phase 5)
+
+Three spec-vs-source naming drifts surfaced during Phase 1 execution
+when the test code touched the actual vendored API:
+
+1. **`AgreementType` (spec §6.2) vs `DisagreementType` (vendored).**
+   The architecture spec names the wobble enum `AgreementType` with
+   extended physics-wobble values; the actual vendored `wobble/disagreement_types.py`
+   has `class DisagreementType(Enum)` (the upstream cognition-wobble name).
+2. **`DPDEngine` (spec) vs `DPDScheduler` (vendored).** Spec references
+   `DPDEngine`; the actual vendored class in `synthesis/core/dpd_engine.py`
+   is `DPDScheduler`.
+3. **`ProbeType.STRONG` (spec implied) vs `ProbeType.STRONG_PROJECTIVE`
+   (vendored).** The vendored enum value spells out `STRONG_PROJECTIVE`,
+   `WEAK_MEASUREMENT`, `ANCILLA_BASED`, `NONE`.
+
+Phase 1's Phoenix-side tests use the real (vendored) class names and
+pass. A single spec-drift-correction commit before Phase 5 (verification
+gate work) will resolve all three: rename in spec, alias on Phoenix
+side, or accept upstream names as authoritative.
+
+### Acceptance
+
+Phase 1 acceptance (build guide §3.7):
+- ✅ `vendor/` populated with frank-data content; `VENDOR_VERSION.txt`
+  has all four fields (phoenix_release, vendor_synced_at,
+  dr_frank_and_eddy_commit, calibration_profile_hash) with real values.
+- ✅ `vendor/calibration_profile.json` exists, hash matches `VENDOR_VERSION.txt`.
+- ✅ `python -c "from synthesis.equations.base import EquationSolver"` works.
+- ✅ `pytest tests/tier1/`: 5/5 (HO-1, ISW-1, H1S-1, RABI-1, SCG-1).
+- ✅ `pytest tests/invariants/`: 4/4 grammar invariants.
+- ✅ `pytest tests/dpd/`: 4/4 DPD structural tests.
+- ✅ `pytest tests/`: 19/19 combined.
+- ✅ `pre-commit run --all-files`: ruff, ruff-format, mypy strict, smoke -- all 4 Passed.
+- ✅ `python -m phoenix.api --port 8003`: daemon boots; `GET /v1/health`
+  returns `phoenix_version=1.0.0.dev1` and the full vendor manifest.
+- ✅ `git status`: working tree clean after Step 7 commit.
+
+### Process notes
+
+- 7 phase-gated commits + 1 housekeeping commit in `frank-data`. Each
+  Phoenix-side step ended at `=== STEP N COMPLETE — AWAITING ADAM REVIEW ===`;
+  no auto-advancement.
+- Build-guide sequencing fix: Phase 1's Step 4 (sys.path) and Step 5
+  (calibration generation) both surfaced live in execution rather than
+  ahead of time -- they were `[OPEN: ...]` items in the Phase 1 build
+  guide that resolved as the code was written.
+
+---
+
 ## [1.0.0.dev0] — 2026-05-06
 
 The repository skeleton lands. No physics yet; this release is the foundation

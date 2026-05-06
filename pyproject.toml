@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev0"
+version = "1.0.0.dev1"
 description = "Production-grade quantum-accuracy middleware (Phase 0 skeleton)"
 readme = "README.md"
 license = { file = "LICENSE" }
