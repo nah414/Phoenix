@@ -1,0 +1,15 @@
+# Phoenix vendored substrate — version manifest
+# Populated by scripts/vendor_sync.py (lands in Phase 1).
+# Phase 0 ships an empty placeholder; reading this file in Phase 0 returns
+# all-empty hashes, which the audit and replay paths recognize as "vendoring
+# not yet performed."
+#
+# Per architecture v1 Section 10.2, this file is the single source of truth
+# for what's vendored. The replay path (Section 19-21) reads it to verify the
+# running vendor snapshot matches the ledger entry's recorded versions.
+
+phoenix_release: 1.0.0-phase0
+vendor_synced_at:
+dr_frank_and_eddy_commit:
+synqc_tds_commit:
+calibration_profile_hash:
