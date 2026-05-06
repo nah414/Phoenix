@@ -1,0 +1,21 @@
+{
+  "_doc": "Phoenix vendor source manifest. Read by scripts/vendor_sync.py per architecture v1 Section 10.4. Per the 2026-05-06 architecture revision, only frank-data is vendored; Trinity Core's Orchestrate subsystem is greenfield Phoenix code under phoenix/trinity/orchestrate/, NOT vendored from SynQc TDS Core.",
+  "frank_data": {
+    "source_path": "C:\\Phoenix-vendor-source\\frank-data",
+    "expected_branch": "wave-a-through-f-merge",
+    "expected_commit": "fa074e5ef103b11f415b882ac2ebc643ad20da3d",
+    "files": [
+      { "from": "synthesis/equations", "to": "vendor/synthesis/equations", "kind": "directory", "exclude_patterns": ["__pycache__", "*.pyc"] },
+      { "from": "synthesis/core",      "to": "vendor/synthesis/core",      "kind": "directory", "exclude_patterns": ["__pycache__", "*.pyc"] },
+      { "from": "synthesis/quantum/tensor_lindblad.py", "to": "vendor/synthesis/quantum/tensor_lindblad.py", "kind": "file" },
+      { "from": "evolution/knowledge/grammar", "to": "vendor/grammar", "kind": "directory", "exclude_patterns": ["__pycache__", "*.pyc"] },
+      { "from": "evolution/knowledge/sanskrit_codec.py", "to": "vendor/grammar/sanskrit_codec.py", "kind": "file" },
+      { "from": "evolution/knowledge/codec_classes.py",   "to": "vendor/grammar/codec_classes.py",   "kind": "file" },
+      { "from": "evolution/knowledge/codec_crypto.py",    "to": "vendor/grammar/codec_crypto.py",    "kind": "file" },
+      { "from": "evolution/knowledge/codec_permutation.py", "to": "vendor/grammar/codec_permutation.py", "kind": "file" },
+      { "from": "evolution/knowledge/codec_sandhi.py",    "to": "vendor/grammar/codec_sandhi.py",    "kind": "file" },
+      { "from": "evolution/knowledge/actor.py", "to": "vendor/actor/actor.py", "kind": "file" },
+      { "from": "wobble", "to": "vendor/wobble", "kind": "directory", "exclude_patterns": ["__pycache__", "*.pyc"] }
+    ]
+  }
+}
