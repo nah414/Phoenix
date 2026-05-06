@@ -1,0 +1,15 @@
+# Phoenix dependency lock file
+#
+# Per architecture v1 §1 Decision 21: every Phoenix release pins its full
+# dependency tree into requirements.lock as part of the release artifact.
+# The replay path refuses to run if the current dep tree doesn't match the
+# ledger entry's recorded versions.
+#
+# Phase 0 ships this file as an empty placeholder. Phase 1's build guide
+# runs the first real `uv pip compile pyproject.toml --output-file requirements.lock`
+# pass to populate it with the full transitive dependency graph and content
+# hashes, after the vendored substrate is locked at v6.6.
+#
+# Until Phase 1 lands, this file's emptiness is intentional. The smoke test
+# does not consult requirements.lock; the replay path does, and the replay
+# path is not exercised before Phase 7.

@@ -1,0 +1,29 @@
+# Phoenix pre-commit hooks — audit-friendly commit gate
+# Per the 2026-05-06 tightening: every commit lands having passed lint/type/test.
+# Install once per local clone with: pre-commit install
+# Run manually with: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9  # Pin specific version; bump deliberately, never via auto-update
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        additional_dependencies: [pydantic, fastapi]
+        exclude: ^(vendor/|tests/|evals/)
+
+  - repo: local
+    hooks:
+      - id: smoke-test
+        name: pytest smoke test
+        entry: pytest tests/unit/test_smoke.py -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]

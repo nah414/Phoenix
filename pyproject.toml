@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phoenix-middleware"
+version = "1.0.0-phase0"
+description = "Production-grade quantum-accuracy middleware (Phase 0 skeleton)"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Adam" }]
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115,<0.120",
+    "uvicorn[standard]>=0.27,<0.35",
+    "pydantic>=2.6,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.23,<0.25",
+    "httpx>=0.27,<0.29",
+    "ruff>=0.3,<0.10",
+    "mypy>=1.8,<2.0",
+    "pre-commit>=3.6,<4.0",
+]
+
+[project.scripts]
+phoenix = "phoenix.cli.entry:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["phoenix*"]
+exclude = ["vendor*", "tests*", "evals*", "scripts*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "evals"]
+python_files = ["test_*.py", "eval_*.py"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["vendor/", "build/", "dist/"]
