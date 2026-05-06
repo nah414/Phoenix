@@ -33,6 +33,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -83,6 +84,10 @@ class PathTraversal(VendorSyncError):
 
 class WriteOutsideVendor(VendorSyncError):
     """A copy operation would write outside ``C:/Phoenix/vendor/``."""
+
+
+class CalibrationFailed(VendorSyncError):
+    """The source-side calibration suite did not pass cleanly."""
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +384,119 @@ def compute_calibration_hash(profile_path: Path) -> str:
     return sha256(profile_path.read_bytes()).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Calibration profile generation.
+
+CALIBRATION_PROFILE_PATH = VENDOR_DIR / "calibration_profile.json"
+CALIBRATION_TEST_FILE = "tests/test_calibration_suite.py"
+CALIBRATION_CONSTANT_PATTERN = re.compile(r"^([A-Z_][A-Z0-9_]*)\s*=\s*([\d.eE+\-]+)\s*(?:#.*)?$")
+
+
+def _extract_constants_from_test_file(test_path: Path) -> dict[str, float]:
+    """Parse a Python file for top-level NAME = NUMERIC_LITERAL assignments.
+
+    Captures the physical constants the calibration suite uses (HBAR, M_ELECTRON,
+    MU_BOHR, C_LIGHT, G_NEWTON, EV_TO_JOULE, etc.) so the profile records what
+    physics-constant snapshot was active when the calibration was run.
+
+    Only matches *top-level* (un-indented) module-scope assignments. Local
+    variables inside test methods (like `B = 1.0` or `L = 4e-9`) are skipped
+    so they don't pollute the constants dict with per-test fixture values.
+    """
+    constants: dict[str, float] = {}
+    for raw_line in test_path.read_text(encoding="utf-8").splitlines():
+        # Skip indented lines -- those are inside functions/classes, not module scope.
+        if raw_line and raw_line[0] in (" ", "\t"):
+            continue
+        match = CALIBRATION_CONSTANT_PATTERN.match(raw_line.rstrip())
+        if not match:
+            continue
+        name, raw_value = match.group(1), match.group(2)
+        try:
+            constants[name] = float(raw_value)
+        except ValueError:
+            continue
+    return constants
+
+
+def _run_calibration_suite(source_path: Path) -> dict[str, Any]:
+    """Run frank-data's calibration suite via pytest. Raises if anything fails."""
+    test_file = CALIBRATION_TEST_FILE
+
+    collect = subprocess.run(
+        [sys.executable, "-m", "pytest", test_file, "--collect-only", "-q"],
+        cwd=source_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if collect.returncode != 0:
+        raise CalibrationFailed(
+            f"pytest --collect-only failed at {source_path}:\n"
+            f"stdout:\n{collect.stdout}\nstderr:\n{collect.stderr}"
+        )
+    test_names = sorted(line.strip() for line in collect.stdout.splitlines() if "::" in line)
+
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", test_file, "--tb=line", "-q"],
+        cwd=source_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if run.returncode != 0:
+        raise CalibrationFailed(
+            f"calibration suite did not pass cleanly at {source_path} "
+            f"(exit code {run.returncode}):\n{run.stdout}\n{run.stderr}"
+        )
+
+    summary_lines = [
+        line for line in run.stdout.splitlines() if "passed" in line or "failed" in line
+    ]
+    summary = summary_lines[-1].strip() if summary_lines else ""
+
+    return {
+        "test_file": test_file,
+        "total_tests": len(test_names),
+        "passed": len(test_names),
+        "failed": 0,
+        "test_names": test_names,
+        "pytest_summary": summary,
+    }
+
+
+def generate_calibration_profile(
+    target: VendorTarget, validation: TargetValidation
+) -> dict[str, Any]:
+    """Run the source-side calibration suite for `target` and produce the profile."""
+    test_path = target.source_path / CALIBRATION_TEST_FILE
+    if not test_path.exists():
+        raise CalibrationFailed(
+            f"calibration suite not found at {test_path} for target {target.name!r}"
+        )
+
+    suite = _run_calibration_suite(target.source_path)
+    constants = _extract_constants_from_test_file(test_path)
+
+    return {
+        "profile_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source_commit": validation.head,
+        "source_branch": validation.branch,
+        "calibration_suite": suite,
+        "physical_constants": constants,
+    }
+
+
+def write_calibration_profile(profile: dict[str, Any]) -> None:
+    """Write `profile` to vendor/calibration_profile.json with deterministic ordering."""
+    VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+    CALIBRATION_PROFILE_PATH.write_text(
+        json.dumps(profile, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def write_vendor_version(validations: dict[str, TargetValidation]) -> None:
     """Write vendor/VENDOR_VERSION.txt with the current state."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -438,6 +556,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="regenerate vendor/VENDOR_VERSION.txt only (after manual changes to vendor/)",
     )
+    parser.add_argument(
+        "--generate-calibration",
+        action="store_true",
+        help=(
+            "run the source-side calibration suite + write vendor/calibration_profile.json + "
+            "regenerate vendor/VENDOR_VERSION.txt with the new hash. Calibration target is "
+            "always the manifest's frank_data target; other targets are skipped."
+        ),
+    )
     return parser
 
 
@@ -474,6 +601,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.update_version_manifest:
             write_vendor_version(validations)
             print(f"Wrote {VENDOR_VERSION_PATH} (--update-version-manifest).", file=sys.stderr)
+            return 0
+
+        if args.generate_calibration:
+            for target in targets:
+                if target.name != "frank_data":
+                    print(
+                        f"  skipping {target.name} (calibration suite is frank-data-only)",
+                        file=sys.stderr,
+                    )
+                    continue
+                print(f"  generating calibration profile for {target.name}...", file=sys.stderr)
+                profile = generate_calibration_profile(target, validations[target.name])
+                write_calibration_profile(profile)
+                suite = profile["calibration_suite"]
+                print(
+                    f"    {suite['passed']}/{suite['total_tests']} tests passed",
+                    file=sys.stderr,
+                )
+                print(f"    wrote {CALIBRATION_PROFILE_PATH}", file=sys.stderr)
+            write_vendor_version(validations)
+            print(
+                f"Wrote {VENDOR_VERSION_PATH} with new calibration_profile_hash.", file=sys.stderr
+            )
             return 0
 
         for target in targets:

@@ -30,7 +30,9 @@ def test_internal_version_module() -> None:
     assert vendor[
         "dr_frank_and_eddy_commit"
     ], "dr_frank_and_eddy_commit must be set after vendor sync runs"
-    # calibration_profile_hash stays empty until Phase 1 Step 5 (calibration generation).
+    assert vendor[
+        "calibration_profile_hash"
+    ], "calibration_profile_hash must be set after Phase 1 Step 5 calibration generation"
 
 
 def test_vendored_imports_resolve_from_vendor_dir() -> None:
