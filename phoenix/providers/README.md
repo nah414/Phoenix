@@ -1,7 +1,7 @@
 # phoenix/providers
 
 ## Purpose
-**Provider adapters** per architecture v1 Section 4.2. Phoenix v1 ships local hardware adapters (NPU, GPU, CPU) plus three cloud quantum providers (IBM Quantum via Qiskit Runtime, AWS Braket, IonQ direct). Phoenix v1.1 adds cloud GPU (Lambda Cloud, RunPod) and cloud cognition (Anthropic, OpenAI, Google). Two layered abstractions: Frankenstein 1.0's `ProviderAdapter` ABC for raw provider operations, and SynQc TDS's `BaseProviderClient` Protocol for experiment-preset interface used by Trinity Core's Orchestrate subsystem.
+**Provider adapters** per architecture v1 Section 4.2. Phoenix v1 ships local hardware adapters (NPU, GPU, CPU) plus three cloud quantum providers (IBM Quantum via Qiskit Runtime, AWS Braket, IonQ direct). Phoenix v1.1 adds cloud GPU (Lambda Cloud, RunPod) and cloud cognition (Anthropic, OpenAI, Google). Two layered abstractions: Frankenstein 1.0's `ProviderAdapter` ABC (vendored, for raw provider operations) and Phoenix's own `BaseProviderClient` Protocol (greenfield, defined in `phoenix/trinity/orchestrate/provider_client.py`, for the experiment-preset interface used by Trinity Core's Orchestrate subsystem).
 
 ## Architectural reference
 PHOENIX_ARCHITECTURE_v1.md Section 1 Decision 23 (v1 provider scope), Decision 24 (v1.1 expansion), Section 4.2 (vendored ProviderAdapter + BaseProviderClient), Section 2.5 (how Orchestrate calls into provider clients).
@@ -18,9 +18,10 @@ PHOENIX_ARCHITECTURE_v1.md Section 1 Decision 23 (v1 provider scope), Decision 2
 
 ## Vendored substrate
 - **Frankenstein 1.0 `ProviderAdapter` ABC** from `integration/providers/base.py` — universal interface across 19 quantum providers + 12 classical hardware types. Vendored verbatim into `vendor/`.
-- **SynQc TDS `BaseProviderClient` Protocol** + `ProviderLiveResult` dataclass — vendored verbatim from SynQc TDS Core.
 
-The two layers compose: a `BaseProviderClient` implementation typically wraps one or more `ProviderAdapter` instances. The Router picks the `BaseProviderClient`; that client internally uses `ProviderAdapter` for raw operations.
+The `BaseProviderClient` Protocol used by Trinity Core's Orchestrate subsystem is **greenfield Phoenix code** (defined in `phoenix/trinity/orchestrate/provider_client.py` per the 2026-05-06 architecture revision). SynQc TDS Core inspired the interface shape but is not vendored.
+
+The two layers compose: a `BaseProviderClient` implementation (Phoenix-native) typically wraps one or more `ProviderAdapter` instances (vendored). The Router picks the `BaseProviderClient`; that client internally uses `ProviderAdapter` for raw operations.
 
 ## Common failure modes
 - Provider SDK breaking change between releases — quantum SDKs are the most volatile space; Phoenix's "single adapter interface" discipline is the defense, but each release validates against the current upstream SDK in CI.

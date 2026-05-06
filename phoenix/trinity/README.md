@@ -17,7 +17,9 @@ PHOENIX_ARCHITECTURE_v1.md Section 2 (Trinity Core deep dive), Section 1 Decisio
 | `orchestrate/` | Orchestrate subsystem — wraps vendored SynQc TDS Core. |
 
 ## Vendored substrate
-Trinity Core's three subsystems each vendor a portion of dr-frank-and-eddy v6.6 + SynQc TDS Core unchanged. See `vendor/VENDOR_VERSION.txt` for the pinned commits and `vendor/synthesis/`, `vendor/synqc_tds/` for the actual code (lands in Phase 1). Per Section 11.7.1, vendoring is verbatim including imports through v1.
+Trinity Core's Solver and Control subsystems vendor portions of dr-frank-and-eddy at the pinned frank-data commit. See `vendor/VENDOR_VERSION.txt` for the pinned commit and `vendor/synthesis/` for the actual code (lands in Phase 1). Per Section 11.7.1, vendoring is verbatim including imports through v1.
+
+Trinity Core's Orchestrate subsystem is **greenfield Phoenix code** per the 2026-05-06 architecture revision — it lives entirely under `phoenix/trinity/orchestrate/`, not in `vendor/`. SynQc TDS Core is a *design reference* for Orchestrate's contracts; Phoenix never vendors or imports from SynQc.
 
 ## Common failure modes
 None yet — Phase 0 skeleton stub. Section 2 catalogs expected failure modes that surface in Phases 2–3 (e.g., `FrontierPhysicsRefused` for ungated Wheeler-DeWitt requests, `WOBBLE` agreement type for cross-axis disagreement).

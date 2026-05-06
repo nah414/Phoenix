@@ -1,9 +1,9 @@
 # PHOENIX — Architecture Specification v1
 
-**Status:** v1 — locked. Build guides cite from this document.
+**Status:** v1 — locked, with the 2026-05-06 SynQc-greenfield revision applied. Build guides cite from this document.
 **Authoritative location:** `C:\Phoenix\PHOENIX_ARCHITECTURE_v1.md`
-**GitHub remote:** `nah414/Phoenix` (private; commit pending push).
-**Date opened:** 2026-05-05. **v0 closed:** 2026-05-06. **v1 locked:** 2026-05-06.
+**GitHub remote:** `nah414/Phoenix`.
+**Date opened:** 2026-05-05. **v0 closed:** 2026-05-06. **v1 locked:** 2026-05-06. **v1 revised:** 2026-05-06 (Orchestrate becomes greenfield; SynQc TDS Core becomes design-reference only — see Section 1 Decision 37 and Section 2.5).
 **Author of record:** Adam (with Claude as design partner)
 
 ---
@@ -14,7 +14,18 @@ This is the **architecture specification** for Phoenix — not a build guide. It
 
 The document covers what Phoenix is, why it exists, what it is and is not responsible for, the seven internal layers and their contracts, the public API surface, the file layout, the v1 acceptance criteria, and the open design tensions that remain after the v0→v1 disposition pass. It does not cover implementation order, sprints, or pull-request structure — that is build-guide territory.
 
-**v0 → v1 transition (2026-05-06):** v0 captured the locked decisions from the May 5 design conversation plus 19 open tensions. v1 lands with: (1) five Section 11 dispositions resolved and folded into Sections 4.7, 5.2, 5.4, 8.3, 8.4; (2) Phoenix Cloud's commercial-bundle scope clarified under Decision 35; (3) cost-ceiling enforcement specified end-to-end across the Router, verification gate, and post-solve accounting; (4) cloud-quantum reproducibility honesty surfaced explicitly on the Result envelope; (5) Phoenix Cloud's three abstraction seams specified concretely as Protocol definitions in `phoenix/_internal/cloud_seams.py`; (6) reference admin client moved to v1.1 acceptance with a new Section 10.8; (7) two new v1 acceptance tests added (compositional fail-closed "panic mode" and long-window six-month replay). Open tension count: 14 (down from 19). The document is expected to continue to evolve via the Section 11.10/11.12 update protocol; future evolutions land at v1.1 and beyond.
+**v0 → v1 transition (2026-05-06):** v0 captured the locked decisions from the May 5 design conversation plus 19 open tensions. v1 lands with: (1) five Section 11 dispositions resolved and folded into Sections 4.7, 5.2, 5.4, 8.3, 8.4; (2) Phoenix Cloud's commercial-bundle scope clarified under Decision 35; (3) cost-ceiling enforcement specified end-to-end across the Router, verification gate, and post-solve accounting; (4) cloud-quantum reproducibility honesty surfaced explicitly on the Result envelope; (5) Phoenix Cloud's three abstraction seams specified concretely as Protocol definitions in `phoenix/_internal/cloud_seams.py`; (6) reference admin client moved to v1.1 acceptance with a new Section 10.8; (7) two new v1 acceptance tests added (compositional fail-closed "panic mode" and long-window six-month replay). Open tension count: 14 (down from 19).
+
+**v1 revision (2026-05-06): Orchestrate becomes greenfield.** During Phase 1 build-guide drafting, Phoenix discovered that SynQc TDS Core's actual source structure (a FastAPI service with auth/Redis/agents/jobs scaffolding) is the wrong shape to vendor verbatim into Phoenix's middleware-grade Orchestrate subsystem. Decision 37's framing of "code skeleton, not literal git fork" wins over the conflicting "vendored verbatim" language elsewhere in the v0 spec. v1 (revised) ships:
+- Trinity Core's Solver and Control vendored from frank-data; Orchestrate built greenfield in Phoenix.
+- Section 2.5 rewritten to describe greenfield Orchestrate organized by Phoenix-native concerns (bundle building, provider client dispatch, result extraction, drift feedback, cross-provider verification, KPI aggregation, top-level engine).
+- Section 10 updated: directory tree drops `vendor/synqc_tds/`; vendoring map drops the SynQc TDS table; `phoenix/trinity/orchestrate/` description specifies the seven-module Phoenix-native breakdown; vendor sync script takes only frank-data as input.
+- Section 1 Decisions 4, 5, 7, 9, 37 reworded to reflect greenfield Orchestrate.
+- `vendor/VENDOR_VERSION.txt` format drops the `synqc_tds_commit` field.
+
+The architecture's load-bearing structure (seven layers, three peer engines, mandatory three-axis wobble, hashchained provenance, Phoenix Cloud commercial path, fourteen open tensions, all v1 acceptance criteria) is unchanged. The revision narrows the substrate that Phoenix vendors and clarifies that Orchestrate is Phoenix-native code informed by SynQc patterns, not vendored from SynQc.
+
+The document is expected to continue to evolve via the Section 11.10/11.12 update protocol; future evolutions land at v1.1 and beyond.
 
 ## What Phoenix is
 
@@ -91,15 +102,15 @@ These are settled from the May 5 design conversation, including the Trinity Core
 
 **Trinity Core (the physics heart)**
 
-4. **Trinity Core is Phoenix's physics heart.** It is a unified three-subsystem core: **Solver** (12 equation solvers from dr-frank-and-eddy `synthesis/equations/`), **Control** (DPD engine from dr-frank-and-eddy `synthesis/core/`), and **Orchestrate** (SynQc TDS Core framework). All three are vendored together at the same v6.6 snapshot.
-5. **Three peer engines, one cohesive core.** The three subsystems share data structures (density matrix `ρ`, `KPIBundle`, result envelope), pass through a unified pipeline, and are versioned together. Phoenix never ships one without the others.
+4. **Trinity Core is Phoenix's physics heart.** It is a unified three-subsystem core: **Solver** (12 equation solvers vendored from dr-frank-and-eddy `synthesis/equations/`), **Control** (DPD engine vendored from dr-frank-and-eddy `synthesis/core/`), and **Orchestrate** (greenfield Phoenix code, designed natively for Phoenix's task lifecycle). Solver and Control are versioned together at the same frank-data snapshot. Orchestrate uses SynQc TDS Core as a *design reference* — Phoenix does not vendor from SynQc; see Decision 37.
+5. **Three peer engines, one cohesive core.** The three subsystems share data structures (density matrix `ρ`, `KPIBundle`, result envelope) and pass through a unified pipeline. Solver and Control versions move together with each frank-data re-vendor; Orchestrate evolves on Phoenix's own release cadence as greenfield code. Phoenix never ships one of the three without the others.
 6. **A complete Phoenix solve traverses all three Trinity Core layers** by default. Users explicitly opt out per layer (e.g., "skip Orchestrate, simulator only") at the cost of widened error bars, and the opt-out is recorded in the result's provenance trace.
 
 **Substrate vendoring**
 
-7. Phoenix v1 vendors **dr-frank-and-eddy at v6.6 plus the SynQc TDS framework** as its substrate. This includes Trinity Core (per Decisions 4-6), the Sanskrit codec (`evolution/knowledge/sanskrit_codec.py`), the generative grammar (`evolution/knowledge/grammar/`), the MDL discovery loop, the Sanskrit MCP connector tools, the validation pipeline, and the Actor authentication module. The vendored substrate is **frozen and version-stamped** at the v6.6 calibration version. It does not auto-update; future Phoenix releases re-vendor a newer dr-frank-and-eddy snapshot.
+7. Phoenix v1 vendors **dr-frank-and-eddy at a pinned commit** as its substrate. This includes Trinity Core's Solver and Control subsystems (per Decisions 4-6), the Sanskrit codec (`evolution/knowledge/sanskrit_codec.py`), the generative grammar (`evolution/knowledge/grammar/`), the wobble disagreement types and classifier (`wobble/`), and the Actor authentication module (`evolution/knowledge/actor.py`). Trinity Core's Orchestrate subsystem is NOT vendored — it is greenfield Phoenix code (Decisions 4 and 37). The vendored substrate is **frozen and version-stamped** at the pinned commit recorded in `vendor/VENDOR_VERSION.txt`; it does not auto-update. Future Phoenix releases re-vendor a newer frank-data commit. The actual pinned commit is specified per release in `vendor/VENDOR_VERSION.txt`, not in this architecture document — the spec describes the discipline, not the commit.
 8. **LoRA hot-swap is a v1 capability, not v1 content.** Phoenix v1 ships the *interface* for loading trained adapters (v6.7-style or otherwise) but does not vendor a specific adapter. Users bring their own trained adapter or run Phoenix without one.
-9. **dr-frank-and-eddy and SynQc TDS stay untouched** as Adam's lab bench and reference orchestration repo respectively. Phoenix never live-imports from `C:\frank-data\` or the SynQc repo at runtime; it vendors stamped copies under `C:\Phoenix\vendor\` (path subject to design in Section 4).
+9. **dr-frank-and-eddy stays untouched** as Adam's lab bench. Phoenix never live-imports from `C:\frank-data\` at runtime; it vendors stamped copies under `C:\Phoenix\vendor\`. SynQc TDS Core is a *design reference* used during Orchestrate's design phase to inform Phoenix's greenfield implementation; Phoenix never imports from SynQc at runtime, never vendors SynQc files, and treats SynQc's source as informational rather than authoritative for the Orchestrate subsystem's contracts.
 
 **Authentication and identity**
 
@@ -174,7 +185,7 @@ The full architecture of Phoenix Cloud — multi-tenancy fabric, billing, on-cal
 **Repository**
 
 36. **`nah414/Phoenix`** on GitHub, fresh clean repository history.
-37. **SynQc TDS used as a code skeleton**, not a literal git fork. Specific code patterns from SynQc TDS — the agent registry, queue scaffold, KPI metrics, provider-adapter interface — are copied into Phoenix's repo as starting templates and evolved from there. SynQc TDS Core's `scheduler` / `probes` / `demod` / `adapt` modules are vendored verbatim into Trinity Core's Orchestrate subsystem (per Decision 4); only the surrounding orchestration scaffolding is treated as template.
+37. **SynQc TDS Core is a design reference for Phoenix's Orchestrate subsystem**, not a vendoring source. No SynQc code lives in Phoenix's repository or runtime; Phoenix's Orchestrate is greenfield Phoenix code organized by Phoenix-native concerns (bundle building, provider client dispatch, result extraction, drift feedback, KPI aggregation, cross-provider verification — see Section 10.3). The architectural concepts SynQc named (scheduling, probe types, signal demodulation, drift adaptation) inform the design of Phoenix's modules, but the specific module breakdown reflects Phoenix's task lifecycle, not SynQc's. Discovered during Phase 1 build-guide drafting (2026-05-06): SynQc TDS Core's actual structure (FastAPI service with auth/Redis/agents/jobs) is the wrong shape to vendor wholesale into Phoenix's middleware-grade Orchestrate; the greenfield approach is the correct one.
 38. **Local C drive is authoritative.** All files written under `C:\Phoenix\`. GitHub push happens after a section clears Adam's review.
 
 ## Conventions for this document
@@ -320,24 +331,28 @@ Control accepts a `CandidateAnswer` from Solver and produces a `VerifiedAnswer`.
 
 **Frontier physics gate:** if the upstream `PhysicsTask` carries `frontier_physics=True` (Wheeler-DeWitt or gravitational solver was used), Control inspects the user's `Actor` for the explicit `frontier_physics` permission. Without permission, Control raises `FrontierPhysicsRefused` and the pipeline halts. This implements the safety gate from Section 1 Decision 7.
 
-## 2.5 — Orchestrate subsystem (vendored SynQc TDS Core)
+## 2.5 — Orchestrate subsystem (greenfield Phoenix code)
 
-Orchestrate is the hardware-orchestration layer. It vendors SynQc TDS Core's `scheduler`, `probes`, `demod`, `adapt` modules and the hardware backend interface verbatim per Section 1 Decision 37.
+Orchestrate is the hardware-orchestration layer. Per Decisions 4 and 37, Orchestrate is **greenfield Phoenix code** — not vendored. SynQc TDS Core was originally named as a vendoring source in the v0 spec, but the 2026-05-06 architecture revision (driven by Phase 1 build-guide drafting against actual SynQc source) found SynQc's structure unsuitable for verbatim vendoring; SynQc TDS Core now serves as a *design reference* for Orchestrate's contracts and concerns, with all Orchestrate code authored fresh in Phoenix.
 
-**Vendored interfaces:**
-- `scheduler` builds time-ordered DPD bundles aligned to hardware timing grids, handles alignment, labeling, and resource limit enforcement.
-- `probes` is the typed probe catalog (strong projective, weak continuous, ancilla-mediated) with metadata for information regime, expected backaction, preferred hardware.
-- `demod` does IQ demodulation, mixing/filtering/windowing, and feature extraction — state probability estimators, visibility, amplitude/phase offsets.
-- `adapt` is the Kalman/Bayesian drift-tracking and adaptive-control layer, used both for in-flight DPD adjustments and for cross-run calibration drift.
-- The `HardwareBackend` interface is the single abstraction the router talks to. Concrete implementations: `LocalSimulatorBackend`, `IBMQuantumBackend`, `BraketBackend`, `IonQBackend` for v1; `LambdaCloudBackend`, `RunPodBackend`, plus cognition adapters for v1.1.
+**Phoenix-native module breakdown** (organized by Phoenix concern, not SynQc terminology — full file list in Section 10.3):
+- **`bundle_builder`** — translates a `VerifiedAnswer` from Control plus a `ProviderSelection` from the router into a provider-specific submission shape (Qiskit circuit, Braket task, IonQ shot batch, classical-simulator Hamiltonian). Pure translation, no I/O.
+- **`provider_client`** — `BaseProviderClient` Protocol plus dispatch into the concrete adapters under `phoenix/providers/`. Handles connection management, submission, polling, raw-result return; per-provider adapter classes live in `phoenix/providers/{quantum,classical,cognition,cloud_gpu}/`.
+- **`result_extractor`** — translates provider-specific raw results (shot counts, expectation values, density-matrix estimates) into Phoenix-uniform observables and `KPIBundle` fields. Pure post-processing, no I/O.
+- **`drift_feedback`** — emits drift signals to the Router's intelligence layer (Section 4.6) and the drift detector (Section 6.5) from the just-completed solve's measured KPIs, so future routing benefits from the latest empirical fidelity/latency.
+- **`cross_provider`** — Axis 3 wobble: when triggered by the verification gate (Section 6.4 rung selection), runs the same bundle on a second provider and produces `error_bar_orchestrate`.
+- **`kpi_bundle`** — typed `KPIBundle` aggregator: `fidelity`, `latency_us`, `backaction`, `shots_used`, `shot_budget`, `status` (`ok` / `warn` / `fail`).
+- **`engine`** — top-level orchestrator that runs the above through the orchestration pipeline and returns a `Result` to Trinity Core's pipeline.
 
-Orchestrate accepts a `VerifiedAnswer` from Control plus a `ProviderSelection` from the router and produces a `Result`. It does this by translating the verified DPD bundle into the chosen provider's native circuit form, submitting via that provider's SDK, polling/streaming for completion, demodulating shot results into observable estimates, and updating the adapt module with drift signals.
+Orchestrate accepts a `VerifiedAnswer` from Control plus a `ProviderSelection` from the router and produces a `Result`. The engine sequences: bundle_builder translates the bundle; provider_client submits and polls; result_extractor processes the raw results into observables and KPI fields; drift_feedback emits the signals; the typed `KPIBundle` becomes part of the Result.
+
+**Hardware backend selection** is informed by the vendored `synthesis/core/hardware_backends.py` (frank-data) for the four base modalities (superconducting, trapped-ion, NMR, telecom-photonic) plus per-provider concrete adapter classes under `phoenix/providers/`. Phoenix never vendored SynQc's separate hardware-backend code; the vendored frank-data hardware params are the authoritative source for modality-level constants, and provider-specific overrides come from each `BaseProviderClient` implementation.
 
 **Cross-provider wobble inside Orchestrate:** when the user has stated tight error-bar tolerance, Orchestrate runs the same bundle on a second provider (typically the local simulator alongside the chosen cloud provider) and compares results. The disagreement produces `error_bar_orchestrate`. **PERF:** doubles cloud-provider cost when triggered; the router decides whether to trigger based on the user's stated tolerance. **SAFETY:** if cloud and simulator disagree beyond noise expectations, Orchestrate flags `WOBBLE` and the dev-ops backdoor surfaces an alert.
 
 **Multi-provider failover (Section 1 Decision 18):** Orchestrate watches provider queue depth and health. If the chosen provider is degraded (queue > threshold, hardware offline, network failure), Orchestrate routes around it to an equivalent provider per the equivalence registry. The routing decision is recorded in provenance. **[OPEN: provider equivalence — when does X-on-IBM equal X-on-Braket — deferred to Section 11.]**
 
-**KPIBundle:** every Orchestrate execution produces a typed KPIBundle (vendored unchanged from SynQc TDS Core) with `fidelity`, `latency_us`, `backaction`, `shots_used`, `shot_budget`, `status` (`ok` / `warn` / `fail`). The KPIBundle becomes part of the final Result.
+**KPIBundle:** every Orchestrate execution produces a typed `KPIBundle` (Phoenix-native dataclass — designed for Phoenix's task lifecycle, not vendored) with the fields named above. The bundle becomes part of the final Result.
 
 ## 2.6 — How the wobble protocol composes across all three layers
 
@@ -2000,7 +2015,7 @@ C:\Phoenix\
 │   ├── trinity/                      # Section 2 — Trinity Core
 │   │   ├── solver/                   # Wraps vendored synthesis/equations
 │   │   ├── control/                  # Wraps vendored synthesis/core (DPD)
-│   │   └── orchestrate/              # Wraps vendored SynQc TDS Core
+│   │   └── orchestrate/              # Greenfield Phoenix code (SynQc TDS = design reference)
 │   ├── grammar/                      # Section 3 — task grammar layer
 │   ├── router/                       # Section 4 — provider routing
 │   ├── verification/                 # Section 6 — wobble verification gate
@@ -2015,14 +2030,13 @@ C:\Phoenix\
 │   ├── queue/                        # NATS JetStream client
 │   └── _internal/                    # Logging, config, utilities
 │
-├── vendor/                           # Frozen v6.6 substrate (read-only at runtime)
-│   ├── VENDOR_VERSION.txt            # Pinned dr-frank-and-eddy + SynQc snapshot
+├── vendor/                           # Frozen frank-data substrate (read-only at runtime)
+│   ├── VENDOR_VERSION.txt            # Pinned dr-frank-and-eddy commit + calibration hash
 │   ├── synthesis/                    # 12 solvers + DPD engine + Lindblad
-│   ├── synqc_tds/                    # SynQc TDS Core modules
 │   ├── grammar/                      # Sanskrit codec + grammar
 │   ├── wobble/                       # DisagreementFinding + classifier
 │   ├── actor/                        # Vendored Actor module
-│   └── calibration_profile.json      # v6.6 calibration manifest
+│   └── calibration_profile.json      # Per-solver calibration manifest
 │
 ├── tests/                            # Test suite
 │   ├── unit/
@@ -2051,11 +2065,11 @@ C:\Phoenix\
 └── .audit/                           # Local diagnostic output (gitignored)
 ```
 
-The top-level layout follows three principles. *Phoenix package code* lives under `phoenix/`, organized by architectural layer (one directory per major Section). *Vendored substrate* lives under `vendor/`, frozen at v6.6 and read-only at runtime. *Everything else* — tests, docs, scripts, audit artifacts — lives at the top level alongside.
+The top-level layout follows three principles. *Phoenix package code* lives under `phoenix/`, organized by architectural layer (one directory per major Section). *Vendored substrate* lives under `vendor/`, frozen at the pinned frank-data commit and read-only at runtime. *Everything else* — tests, docs, scripts, audit artifacts — lives at the top level alongside.
 
 ## 10.2 — The vendoring map
 
-Section 1 Decisions 7-9 commit to vendoring dr-frank-and-eddy v6.6 plus SynQc TDS Core unchanged. Section 10.2 specifies the file-by-file mapping. Every path under `vendor/` corresponds to a specific source path that gets copied verbatim during the vendor sync (Section 10.4).
+Section 1 Decisions 7-9 commit to vendoring dr-frank-and-eddy at a pinned commit. SynQc TDS Core is a *design reference* (Decision 37) and is NOT vendored. Section 10.2 specifies the file-by-file mapping for the frank-data vendoring. Every path under `vendor/` corresponds to a specific source path that gets copied verbatim during the vendor sync (Section 10.4).
 
 | Vendor path | Source path (dr-frank-and-eddy) | What's there |
 |---|---|---|
@@ -2063,30 +2077,23 @@ Section 1 Decisions 7-9 commit to vendoring dr-frank-and-eddy v6.6 plus SynQc TD
 | `vendor/synthesis/core/` | `synthesis/core/` | dpd_engine.py + lindblad_rk4.py + probe_model.py + hardware_backends.py |
 | `vendor/synthesis/quantum/tensor_lindblad.py` | `synthesis/quantum/tensor_lindblad.py` | MPS/TJM path for v1.x medium-systems extension |
 | `vendor/grammar/` | `evolution/knowledge/grammar/` | grammar_loader.py + generator.py + parser.py + physics_v1.yaml |
-| `vendor/grammar/codec/` | `evolution/knowledge/sanskrit_codec.py` (and supporting codec_*.py files) | Full Sanskrit codec |
+| `vendor/grammar/sanskrit_codec.py` | `evolution/knowledge/sanskrit_codec.py` (and supporting codec_*.py files) | Full Sanskrit codec |
 | `vendor/wobble/` | `wobble/` | disagreement_types.py + disagreement_classifier.py + supporting files |
-| `vendor/actor/` | `evolution/knowledge/actor.py` | Typed Actor + signature/verify |
-| `vendor/calibration_profile.json` | Generated from v6.6 calibration suite output | Hash + per-solver calibration constants |
+| `vendor/actor/actor.py` | `evolution/knowledge/actor.py` | Typed Actor + signature/verify |
+| `vendor/calibration_profile.json` | Generated from frank-data's source-side calibration suite output | Per-solver calibration constants + tolerances |
 
-| Vendor path | Source path (SynQc TDS) | What's there |
-|---|---|---|
-| `vendor/synqc_tds/scheduler.py` | SynQc TDS Core | Time-ordered DPD bundle scheduler |
-| `vendor/synqc_tds/probes/` | SynQc TDS Core | Probe catalog (strong projective, weak continuous, ancilla) |
-| `vendor/synqc_tds/demod.py` | SynQc TDS Core | IQ demodulation + feature extraction |
-| `vendor/synqc_tds/adapt.py` | SynQc TDS Core | Kalman/Bayesian drift tracking |
-| `vendor/synqc_tds/provider_clients/` | SynQc TDS backend/synqc_backend/provider_clients.py | BaseProviderClient + concrete adapters |
+**SynQc TDS Core is NOT vendored.** Trinity Core's Orchestrate subsystem is greenfield Phoenix code (Section 2.5 + Section 10.3). The architecture's prior v0 commitment to vendoring SynQc files (`scheduler.py`, `probes/`, `demod.py`, `adapt.py`, `provider_clients/`) was reversed in the 2026-05-06 revision after Phase 1 build-guide drafting found SynQc's actual source structure (FastAPI service with auth/Redis/agents/jobs) unsuitable for verbatim vendoring. SynQc serves as a design reference for Orchestrate's contracts; Phoenix authors all Orchestrate code natively.
 
 **`vendor/VENDOR_VERSION.txt`** is the single source of truth for what's vendored. Format:
 
 ```
-phoenix_release: 1.0.0
-vendor_synced_at: 2026-MM-DD
-dr_frank_and_eddy_commit: <sha>
-synqc_tds_commit: <sha>
-calibration_profile_hash: <sha256>
+phoenix_release: 1.0.0.dev<N>
+vendor_synced_at: 2026-MM-DDTHH:MM:SS+00:00
+dr_frank_and_eddy_commit: <40-char SHA>
+calibration_profile_hash: <sha256 of vendor/calibration_profile.json>
 ```
 
-Every Phoenix release pins these. The replay path (Section 1 Decisions 19-21) reads this file to verify the running vendor snapshot matches the ledger entry's recorded versions.
+Every Phoenix release pins these. The replay path (Section 1 Decisions 19-21) reads this file to verify the running vendor snapshot matches the ledger entry's recorded versions. Note: there is no `synqc_tds_commit` field — Orchestrate is greenfield Phoenix code under `phoenix/trinity/orchestrate/`, version-stamped by Phoenix's own `__version__`, not by an external commit.
 
 **[OPEN: should the vendored modules retain their dr-frank-and-eddy import paths internally, or get rewritten to import from `phoenix.vendor.*`? Rewriting is cleaner architecturally but adds churn to the vendor sync script. Defer to Section 11; v0 specifies "vendored verbatim including imports" as the simpler option for v1.]**
 
@@ -2124,10 +2131,14 @@ Each architectural Section gets its own subdirectory under `phoenix/`. The layou
   - `engine.py` — adapts the vendored DPDEngine into Trinity's pipeline.
   - `cross_probe.py` — Axis 2 wobble (probe-strength sweep).
   - `README.md` — Control subsystem doc.
-- `orchestrate/` — Orchestrate subsystem.
-  - `engine.py` — adapts SynQc scheduler/probes/demod/adapt into Trinity's pipeline.
+- `orchestrate/` — Orchestrate subsystem (greenfield Phoenix code per Section 2.5).
+  - `engine.py` — top-level orchestrator: takes (`VerifiedAnswer`, `ProviderSelection`) → runs the orchestration pipeline → returns `Result`.
+  - `bundle_builder.py` — translates a `VerifiedAnswer` into a provider-specific submission (Qiskit circuit, Braket task, IonQ shot batch, classical-sim Hamiltonian). Pure translation, no I/O.
+  - `provider_client.py` — `BaseProviderClient` Protocol + dispatch into the per-provider concrete adapters under `phoenix/providers/`. Handles connection management, submission, polling, raw-result return.
+  - `result_extractor.py` — provider-specific raw results → Phoenix-uniform observables and `KPIBundle` fields. Pure post-processing, no I/O.
+  - `drift_feedback.py` — emits drift signals to the Router intelligence (Section 4.6) and the drift detector (Section 6.5) from the just-completed solve's measured KPIs.
   - `cross_provider.py` — Axis 3 wobble (provider divergence).
-  - `kpi_bundle.py` — typed KPIBundle aggregator.
+  - `kpi_bundle.py` — typed KPIBundle aggregator (`fidelity`, `latency_us`, `backaction`, `shots_used`, `shot_budget`, `status`).
   - `README.md` — Orchestrate subsystem doc.
 - `data_model.py` — `PhysicsTask`, `CandidateAnswer`, `VerifiedAnswer`, `Result` dataclasses.
 - `pipeline.py` — the three-subsystem pipeline orchestrator.
@@ -2311,18 +2322,19 @@ This is the seam-level "build it right once" guarantee. When Phoenix Cloud ships
 
 ## 10.4 — The vendor sync script
 
-`scripts/vendor_sync.py` is the script that produces `vendor/` from upstream sources. It's invoked manually before each Phoenix release and never at runtime — `vendor/` is committed to the repo so that fresh clones get the substrate without external dependencies.
+`scripts/vendor_sync.py` is the script that produces `vendor/` from the upstream frank-data source. It's invoked manually before each Phoenix release and never at runtime — `vendor/` is committed to the repo so that fresh clones get the substrate without external dependencies.
 
 **Inputs:**
 - A path to a clean dr-frank-and-eddy clone at the desired commit.
-- A path to a clean SynQc TDS clone at the desired commit.
 - A target Phoenix version string.
 
+(SynQc TDS Core is NOT a vendor source — Orchestrate is greenfield Phoenix code per Section 2.5 and Decision 37. Earlier v0 spec drafts named SynQc as a vendor input; the 2026-05-06 revision removed that.)
+
 **Behavior:**
-1. Validates that both source clones are at known-good commits (manifest of accepted commit hashes ships with Phoenix).
+1. Validates that the source clone is at a known-good commit (manifest of accepted commit hashes ships with Phoenix).
 2. Runs the dr-frank-and-eddy Tier-1 calibration suite on the source. Refuses to proceed if any calibration test fails.
 3. Copies the file-by-file mapping from Section 10.2 into `vendor/`.
-4. Generates `vendor/VENDOR_VERSION.txt` with the resulting commit hashes and calibration profile hash.
+4. Generates `vendor/VENDOR_VERSION.txt` with the resulting commit hash and calibration profile hash.
 5. Runs Phoenix's vendor-integrity tests (Tier-1 battery + grammar invariant suite + DPD self-test) against the freshly-vendored substrate.
 6. Reports diff vs. previous vendor sync; any unexpected changes (file added/removed/renamed in the source) fail the script and require manual review.
 

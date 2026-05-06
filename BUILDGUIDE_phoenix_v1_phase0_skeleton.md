@@ -402,7 +402,6 @@ python -c "from phoenix._internal.version import read_vendor_version; print(read
 phoenix_release: 1.0.0.dev0
 vendor_synced_at:
 dr_frank_and_eddy_commit:
-synqc_tds_commit:
 calibration_profile_hash:
 ```
 

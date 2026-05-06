@@ -100,3 +100,45 @@ Phase 0 acceptance criteria from build guide §3.8 (15 items):
   guide's sequencing was wrong: the integration test depends on the daemon
   code. Documented in the commit message; a future build-guide revision
   should re-sequence (or merge) the two steps.
+
+### Architecture revision (2026-05-06, post Phase 0)
+
+- **`PHOENIX_ARCHITECTURE_v1.md` revised** to remove the v0 spec's
+  internal contradiction around SynQc TDS Core. Decision 37 originally
+  said "code skeleton, not literal git fork" but other places in the
+  spec (§1 Decision 4, §2.5, §10.2) said SynQc was vendored verbatim
+  alongside frank-data. The revised spec aligns with Decision 37: SynQc
+  is a *design reference* for Trinity Core's Orchestrate subsystem;
+  Orchestrate is greenfield Phoenix code under
+  `phoenix/trinity/orchestrate/`, not vendored.
+- **Affected sections:** §1 Decisions 4, 5, 7, 9, 37 (reworded);
+  §2.5 (rewritten — Orchestrate as greenfield with Phoenix-native
+  module breakdown: bundle_builder, provider_client, result_extractor,
+  drift_feedback, cross_provider, kpi_bundle, engine);
+  §10.1 (drops `vendor/synqc_tds/` from directory tree);
+  §10.2 (drops the SynQc TDS vendoring table; updates VENDOR_VERSION
+  format to remove `synqc_tds_commit` field);
+  §10.3 (`phoenix/trinity/orchestrate/` description specifies the
+  seven Phoenix-native modules);
+  §10.4 (vendor sync script takes only frank-data as input);
+  preamble adds a v1-revision transition note.
+- **Phase 0 README updates:** `phoenix/trinity/orchestrate/README.md`,
+  `phoenix/trinity/README.md`, `phoenix/providers/README.md`,
+  `vendor/README.md` updated to match the revised spec.
+- **`vendor/VENDOR_VERSION.txt`** drops the `synqc_tds_commit` field.
+- **Phase 0 build guide** stale `synqc_tds_commit:` example updated.
+- **Phase 1 build guide drafted** at `BUILDGUIDE_phoenix_v1_phase1_vendor_sync.md`
+  reflecting the simpler frank-data-only scope (8 phase-gated steps,
+  vs. 9 in the original draft that included a SynQc-vendoring step).
+- **Discovery driver:** Phase 1 build-guide drafting against actual
+  source state (the SynQc zip in Adam's Downloads) found that SynQc's
+  module structure (`backend/synqc_backend/` FastAPI service) didn't
+  match the v0 spec's named files (`scheduler.py`, `probes/`,
+  `demod.py`, `adapt.py`). Live reads beat memory.
+
+The architecture's load-bearing structure (seven layers, three peer
+engines, mandatory three-axis wobble, hashchained provenance, Phoenix
+Cloud commercial path, fourteen open tensions, all v1 acceptance
+criteria) is unchanged. The revision narrows the substrate that
+Phoenix vendors and clarifies that Orchestrate is Phoenix-native code
+informed by SynQc patterns, not vendored from SynQc.
