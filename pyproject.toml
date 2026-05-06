@@ -14,6 +14,10 @@ dependencies = [
     "fastapi>=0.115,<0.120",
     "uvicorn[standard]>=0.27,<0.35",
     "pydantic>=2.6,<3.0",
+    # Phase 1 Step 6 -- vendored physics solvers' core deps.
+    "numpy>=1.26,<3.0",       # twelve solvers + DPD engine numerical core
+    "scipy>=1.11,<2.0",       # eigensolvers, sparse linalg, ODE integrators
+    "pyyaml>=6.0,<7.0",       # vendored grammar's YAML loader (physics_v1.yaml)
 ]
 
 [project.optional-dependencies]
