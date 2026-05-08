@@ -249,7 +249,14 @@ class VerificationGate:
                 axis_3_result = axis_3.run(task, current_rung)
                 if not axis_3_result.metadata.get("skipped", False):
                     axis_results.append(axis_3_result)
-            except (NoEligibleProvidersError, OrchestrateProviderError) as exc:
+            except (
+                NoEligibleProvidersError,
+                OrchestrateProviderError,
+                NotImplementedError,
+            ) as exc:
+                # NotImplementedError surfaces when the alternate provider's
+                # quantum_technology isn't yet bundle-able (Phase 4+ stubs).
+                # The gate gracefully degrades to primary-only result.
                 log.info(
                     "Axis 3 skipped: alternate provider not available "
                     "(reason: %s); proceeding with primary-only result.",
