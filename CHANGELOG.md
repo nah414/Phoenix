@@ -15,6 +15,35 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [Architecture v1.1] — 2026-05-07
+
+Architecture-only revision; no package version bump. Phoenix-the-package stays at `1.0.0.dev1`. This entry documents the v1.0 → v1.1 spec revision triggered by the perception harness extension plan locking.
+
+### Added
+
+- **`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`** — extension plan locked at v1, 692 lines. All 21 open questions from the v0 draft resolved with Adam's recorded dispositions. Plan positions the perception harness as a v1.x extension landing at Phase 12 onwards (after v1 ships at Phase 11), reusing 70-80% of v1's substrate (vendored Sanskrit codec, grammar substrate, wobble framework, Actor authentication, Omega Ledger pattern, cloud seams). Six Sanskrit techniques scoped: kāraka, chanda, vivakṣā, anuvṛtti, paribhāṣā, lakṣaṇa-lakṣya. Plus Penrose spatial tilings and the IP-defensible novel temporal pulse-coding work (Phase 16).
+- **`PHOENIX_ARCHITECTURE_v1.md` Section 11.14** — new tension category for perception extension. Seven entries: 11.14.1 (placement, RESOLVED v1.1), 11.14.2 (substrate vendoring scope, build-guide territory), 11.14.3 (sensor ingest layer placement, RESOLVED v1.1), 11.14.4 (canonical example library storage, RESOLVED v1.1), 11.14.5 (Penrose hardware integration, RESOLVED v1.1 with Q5.2 scalability constraint), 11.14.6 (perception verification axes count, deferred v1.x perception milestone), 11.14.7 (perception real-time latency tier, recommended for documentation).
+- **`PHOENIX_ARCHITECTURE_v1.md` Section 10.8** — perception harness extension acceptance criterion. v1.1 acceptance now includes: all perception phases (12-22) shipped per the plan; Tier-1 perception calibration battery passing for supported weather modes; three-axis perception wobble verification producing typed Results; Penrose pulse-train simulator demonstrating ≥20% reconstruction-error reduction at 20% rain corruption; Phase 16 Q5.2 scalability gate (mock hardware driver swap test); front-door endpoints (REST, WebSocket, CLI, MCP) exercising the perception pipeline end-to-end; cross-protocol audit-log correlation working.
+- **`PHOENIX_ARCHITECTURE_v1.md` document header** — v1.1 revision date (2026-05-07) and revision summary added to the status line and date timeline.
+- **`PHOENIX_ARCHITECTURE_v1.md` Section 0** — new v1.1 transition paragraph documenting the perception extension's positioning as v1.x extension and the documentation-only nature of the revision.
+- **`README.md` Documents section** — new "Future extension planning (not part of locked v1)" subsection pointing to `PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`. Status table row added: "Perception harness extension | LOCKED v1 plan — awaiting Phase 11 release for Phase 12 build guide drafting".
+
+### Changed
+
+- **`PHOENIX_ARCHITECTURE_v1.md` Section 11.9** (Summary of dispositions) — updated to reflect the 7 new tensions added in v1.1. Open-tension count: 14 (v1.0) → 17 (v1.1: 14 + 3 unresolved from v1.1's 11.14.x catalog).
+
+### Critical scalability constraint locked (Q5.2 expansion)
+
+Adam's Q5.2 disposition added a binding architectural principle to Phase 16 that did not exist in the v0 plan: the Penrose temporal pulse-coding simulator must be architected so hardware integration in Phoenix v2 lands as a new driver implementing the same Protocol interfaces, not as a rewrite. Phase 16's deliverables now explicitly include `LidarTransmitter`, `LidarReceiver`, and `InterferenceModel` Protocols defined in `phoenix/perception/penrose/temporal/interfaces.py`. Phase 16's stop gate explicitly tests Protocol compatibility via a mock hardware driver swap. This constraint is binding from Phase 16 day one, not a v2 retrofit, and is recorded in both the perception plan v1 (Section 5, Phase 16) and the architecture v1.1 (Section 11.14.5).
+
+### Process notes
+
+- 21 open questions from `PHOENIX_PERCEPTION_HARNESS_PLAN_v0.md` Section 12 reviewed by Adam on 2026-05-07; all 21 dispositions recorded in v1's Section 12. Adam approved all 21 of Claude's recommendations, with one explicit expansion on Q5.2 (the scalability-on-top constraint).
+- v0 of the plan (`PHOENIX_PERCEPTION_HARNESS_PLAN_v0.md`) preserved as historical record alongside v1; may be deleted at Adam's discretion.
+- v1.1 is a documentation-only revision. v1.0's load-bearing structure (seven layers, three peer engines in Trinity Core, mandatory three-axis quantum wobble, hashchained provenance, Phoenix Cloud commercial path, all v1 acceptance criteria from Section 10.7) is unchanged. No v1 implementation impact; Phase 0 → Phase 11 build pipeline proceeds unchanged. Perception extension work begins at Phase 12 only after v1 reaches its Phase 5 verification-gate milestone.
+
+---
+
 ## [1.0.0.dev1] — 2026-05-06
 
 Phase 1 lands. The vendored substrate from `dr-frank-and-eddy` is real,

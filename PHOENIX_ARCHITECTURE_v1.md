@@ -1,9 +1,9 @@
 # PHOENIX — Architecture Specification v1
 
-**Status:** v1 — locked, with the 2026-05-06 SynQc-greenfield revision applied. Build guides cite from this document.
+**Status:** v1.1 — locked, with the 2026-05-07 perception harness extension revision applied on top of the 2026-05-06 SynQc-greenfield revision. Build guides cite from this document.
 **Authoritative location:** `C:\Phoenix\PHOENIX_ARCHITECTURE_v1.md`
 **GitHub remote:** `nah414/Phoenix`.
-**Date opened:** 2026-05-05. **v0 closed:** 2026-05-06. **v1 locked:** 2026-05-06. **v1 revised:** 2026-05-06 (Orchestrate becomes greenfield; SynQc TDS Core becomes design-reference only — see Section 1 Decision 37 and Section 2.5).
+**Date opened:** 2026-05-05. **v0 closed:** 2026-05-06. **v1 locked:** 2026-05-06. **v1 revised:** 2026-05-06 (Orchestrate becomes greenfield; SynQc TDS Core becomes design-reference only — see Section 1 Decision 37 and Section 2.5). **v1.1 revised:** 2026-05-07 (perception harness extension plan locked; Section 11.14 added with 7 new tensions; Section 10.8 v1.1 acceptance criteria extended — see `PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`).
 **Author of record:** Adam (with Claude as design partner)
 
 ---
@@ -26,6 +26,8 @@ The document covers what Phoenix is, why it exists, what it is and is not respon
 The architecture's load-bearing structure (seven layers, three peer engines, mandatory three-axis wobble, hashchained provenance, Phoenix Cloud commercial path, fourteen open tensions, all v1 acceptance criteria) is unchanged. The revision narrows the substrate that Phoenix vendors and clarifies that Orchestrate is Phoenix-native code informed by SynQc patterns, not vendored from SynQc.
 
 The document is expected to continue to evolve via the Section 11.10/11.12 update protocol; future evolutions land at v1.1 and beyond.
+
+**v1.1 revision (2026-05-07): Perception harness extension plan locked.** Adam's review of `PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md` (companion document to this architecture spec) approved the perception harness as a v1.x extension landing at Phase 12 onwards, after v1 ships at Phase 11. v1.1 ships with: (1) Section 11.14 added with 7 new tensions catalogued from the perception extension plan (4 RESOLVED in v1.1, 1 build-guide territory, 1 deferred to v1.x perception milestone, 1 architecture revision recommended); (2) Section 10.8 v1.1 acceptance criteria extended with the perception harness criterion. The locked v1 architecture's load-bearing structure (seven layers, three peer engines in Trinity Core, mandatory three-axis quantum wobble, hashchained provenance, Phoenix Cloud commercial path, all v1 acceptance criteria from Section 10.7) is unchanged. v1.1 is a documentation-only revision; no v1 implementation impact. Phoenix v1's Phase 0 → Phase 11 build pipeline proceeds unchanged; perception extension work begins at Phase 12 only after v1 reaches its Phase 5 verification-gate milestone, so v1 implementation attention is not diluted. Open tension count after v1.1: 17 (14 from v1.0 + 3 unresolved from v1.1: 11.14.2, 11.14.6, 11.14.7).
 
 ## What Phoenix is
 
@@ -2505,6 +2507,15 @@ Section 10.7 is the floor for v1. Section 10.8 captures items that are deferred 
 - The reference admin client (separate repo, e.g. `nah414/phoenix-reference-client`) successfully exercises Patterns 1, 2, and 3 (Section 9.3) against Phoenix v1 with the bootstrap actor.
 - Justification for moving: the client is a separate codebase, separate release cadence, and finishing it does not gate a Phoenix release. v1 ships when Phoenix v1 is ready; the reference client follows on its own track and earns acceptance against v1.1 (or against v1.0 retroactively, whichever lands first).
 
+**Perception harness extension (added 2026-05-07 in v1.1):**
+- All perception phases (Phase 12 through Phase 22) shipped per `PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`. Phase numbering continues v1's sequence; perception phases land after v1's Phase 11 release.
+- Perception's Tier-1 calibration battery (canonical examples per weather mode) passes for the supported modes (`clear`, `light_rain`, `heavy_rain`, `light_snow`, `heavy_snow`, `fog`, `night_clear`).
+- Three-axis perception wobble verification (cross-modality, cross-frame, cross-canonical) produces typed `Result(value, error_bar, sigma, agreement_type)` for perception solves, mirroring v1's Decision 13 contract.
+- Penrose temporal pulse coding simulator (Phase 16) demonstrates ≥20% reduction in residual-error point cloud reconstruction error vs M-sequence baseline at 20% rain-induced corruption rate. Phase 16 also passes the Q5.2 scalability gate: a mock hardware driver implementing the same `LidarTransmitter`, `LidarReceiver`, and `InterferenceModel` Protocols can be swapped for the simulator implementations and produce structurally compatible outputs without modifying decoder or interference-model code.
+- Front-door endpoints for perception (REST `/v1/perception/*`, WebSocket streaming, CLI `phoenix perception`, MCP perception tools) all exercise the perception pipeline end-to-end.
+- Cross-protocol audit-log correlation works for perception requests (single `request_id` traces across REST → audit-log → ledger → MCP), mirroring v1's existing acceptance test pattern.
+- Justification for landing in v1.1 rather than v1: the perception extension reuses 70-80% of v1's substrate (vendored Sanskrit codec, grammar substrate, wobble framework, Actor authentication, Omega Ledger pattern, cloud seams) and cleanly extends the existing architecture as Phase 12+ work. Including perception in v1 acceptance would block v1 release on substantial additional work; positioning as v1.1 lets v1's quantum-accuracy core ship cleanly while perception planning is locked and ready for execution after v1 reaches its Phase 5 milestone.
+
 **Items deferred to v1.x per Section 11.9 (acceptance is shaped at the time the disposition resolves):**
 - Error-bar combiner refinement based on empirical covariance data (S11.1.1).
 - MPS truncation axis decision based on v1.x medium-systems data (S11.1.2).
@@ -2793,6 +2804,8 @@ The 19 open tensions cataloged in Sections 11.1 through 11.8 break down as:
 
 **Open-tension count after the 2026-05-06 resolution round: 14** (down from 19).
 
+**v1.1 update (2026-05-07):** 7 new tensions catalogued in Section 11.14 from the perception harness extension plan (`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`). 4 RESOLVED in v1.1 (11.14.1, 11.14.3, 11.14.4, 11.14.5); 1 deferred to build-guide territory (11.14.2); 1 deferred to v1.x perception milestone (11.14.6); 1 with recommended disposition for the v1.1 architecture (11.14.7). **Open-tension count after the v1.1 perception-extension round: 17** (14 from v1.0 + 3 unresolved from v1.1: 11.14.2, 11.14.6, 11.14.7).
+
 The defer-to-v1.x items are tracked as a forward roadmap. They don't block v1 implementation; they shape v1.1+ planning.
 
 The defer-to-research items genuinely need empirical or theoretical work that v1 implementation cannot do alone. They stay open through v1 and beyond, with placeholders that are conservative (don't produce wrong results, just possibly suboptimal ones).
@@ -2867,6 +2880,86 @@ Every `[OPEN: ...]` marker in Sections 2-10 maps to a catalog entry in Section 1
 | 10.2 | Vendored import paths | 11.7.1 | Verbatim through v1 |
 | 10.4 | Multi-source vendoring | 11.2.3 | Single-version through v1 and v1.x |
 | 10.5 | Launcher icon | 11.7.2 | Cosmetic, get designed icon before public release |
+
+## 11.14 — Perception extension tensions (added in v1.1, 2026-05-07)
+
+These tensions arise from the perception harness extension proposed and locked in `PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`. They are catalogued here per Section 11's discipline of explicit visibility for deferred or open architectural decisions, following the living-artifact protocol described in 11.10.
+
+### 11.14.1 — Perception extension placement (RESOLVED in Phoenix v1.1)
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 4.
+
+**Tension:** Whether perception ships as v1.x extension to existing Phoenix v1 architecture (Option I), as a v2 reorganization (Option II), or as parallel v1.x and v2 tracks (Option III).
+
+**v0 placeholder:** Unspecified; surfaced for review.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-07):** Option I — v1.x extension. Perception extends the v1 substrate at Phase 12 onwards, after v1 ships at Phase 11. Justification: substrate audit showed 70-80% reuse of existing v1 layers (vendored Sanskrit codec at `vendor/grammar/sanskrit_codec.py`, grammar substrate at `vendor/grammar/`, wobble framework at `vendor/wobble/`, Actor authentication at `vendor/actor/`, Omega Ledger pattern at `phoenix/ledger/`, cloud seams at `phoenix/_internal/cloud_seams.py`). v2 reorganization is unnecessary and would dilute v1 implementation attention.
+
+**Cross-reference:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 4.
+
+### 11.14.2 — Perception substrate vendoring scope
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 6 question 6.3.
+
+**Tension:** What gets vendored at `vendor/perception_substrate/`? Possibilities include nuScenes annotation transforms, reference perception models, Penrose substitution-rule generators (proprietary IP), pre-curated canonical example libraries.
+
+**v0 placeholder:** Directory commits architecturally; specific contents unspecified.
+
+**Resolution path:** Specify during Phase 12 build-guide drafting. Adam reviews the proposed vendor manifest at that time.
+
+**Recommended disposition:** Build-guide territory. Architecturally the directory commits; specific contents land at Phase 12 build-guide drafting time.
+
+### 11.14.3 — Sensor ingest layer placement (RESOLVED in Phoenix v1.1)
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 6 question 6.1.
+
+**Tension:** Whether sensor ingest lives at top-level `phoenix/sensors/` or nested at `phoenix/perception/sensors/`.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-07):** Top-level `phoenix/sensors/`. Justification: sensor ingest is generally useful infrastructure that future non-perception domains may need. Top-level placement avoids future refactor.
+
+**Cross-reference:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 6.
+
+### 11.14.4 — Canonical example library storage (RESOLVED in Phoenix v1.1)
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 6 question 6.2.
+
+**Tension:** Storage strategy for canonical example libraries (Phase 19 deliverable) — in-tree, git-LFS, or external storage. Libraries hold sensor data (point cloud samples, frame samples) which is the bulk of perception package storage size.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-07):** git-LFS. Standard pattern for large in-repo binary artifacts; lets the architecture stay in one repo while storage is handled appropriately.
+
+**Cross-reference:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 6.
+
+### 11.14.5 — Penrose temporal pulse coding hardware integration (RESOLVED in Phoenix v1.1)
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 5 question 5.2 and Phase 16.
+
+**Tension:** Phase 16 simulator vs live hardware integration for the Penrose temporal pulse coding work — the IP-defensible novel contribution apparent from the public literature gap (May 2026 web search confirmed M-sequences, Gold codes, and true-random Geiger-mode coding are published; deterministic substitution-rule pulse coding is not).
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-07):** Simulator-only for v1.x; live hardware deferred to Phoenix v2 contingent on lidar vendor partnership. **Adam's specific Q5.2 expansion:** the simulator must be architected so that hardware integration in v2 lands as a new driver implementing the same Protocol interfaces, not as a rewrite. Phase 16 deliverables explicitly include scalability-to-hardware design constraints binding from Phase 16 day one: Protocol-based interface contracts (`LidarTransmitter`, `LidarReceiver`, and `InterferenceModel` Protocols defined in `phoenix/perception/penrose/temporal/interfaces.py`), hardware-realistic signal formats (timing precision, amplitude levels), pluggable interference models (rain modeled mathematically in sim; real hardware sees rain physically), and decoder paths that don't assume simulator-specific signal characteristics. Phase 16's stop gate explicitly tests Protocol compatibility via a mock hardware driver swap.
+
+**Cross-reference:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 5, Phase 16.
+
+### 11.14.6 — Perception verification axes count
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 8 Phase 20.
+
+**Tension:** Phase 20 commits to three perception wobble axes (cross-modality, cross-frame, cross-canonical) mirroring v1's three quantum wobble axes (cross-precision, cross-control, cross-provider). Whether perception should adopt a fourth axis (e.g., cross-temporal-window, cross-latency-tier) is open.
+
+**v0 placeholder:** Three axes mirroring quantum wobble.
+
+**Resolution path:** Empirical — once perception ships and accumulates real-world solves, evidence of fourth-axis necessity may emerge.
+
+**Recommended disposition:** Ship Phase 20 with three axes; revisit at v1.x perception milestone after empirical data exists. Mirrors the disposition pattern from 11.1.2 (MPS truncation as fourth quantum axis).
+
+### 11.14.7 — Perception real-time latency tier
+
+**Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 1.
+
+**Tension:** Phoenix v1 ships batch real-time at 10-100ms (Section 1 Decision 26). Perception requires sub-100ms hard real-time per sensor frame. This is a different latency tier from v1's batch real-time and v2's planned streaming real-time (Decision 28).
+
+**v0 placeholder:** Each phase's PERF callout commits to its specific latency budget.
+
+**Recommended disposition:** Document the perception real-time tier alongside v1's batch real-time and v2's streaming real-time tiers (Decisions 26, 28). Add a "perception real-time" entry to the latency tier roadmap. Specifically, perception real-time targets sub-100ms per sensor frame end-to-end, with hard budgets per phase set in the corresponding build guides.
 
 ```
 === SECTION 11 COMPLETE — AWAITING ADAM REVIEW ===
