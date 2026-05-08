@@ -22,15 +22,23 @@ phases:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
 from phoenix._internal.version import __version__, read_vendor_version
+from phoenix.api.event_broker import get_broker, to_dict
+from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
+from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.safety.errors import AuthError, PermissionDenied
+from phoenix.safety.gate import verify_request
+from phoenix.safety.kill_switch import KillSwitchEngaged
+from phoenix.safety.rate_limiter import RateLimitExceeded
 from phoenix.trinity.control.engine import ControlVerificationError
 from phoenix.trinity.data_model import PhysicsTask, ToleranceSpec
 from phoenix.trinity.orchestrate.kpi_bundle import KPIStatus
@@ -40,6 +48,7 @@ from phoenix.trinity.solver.engine import (
     FrontierPhysicsRefused,
     NoEligibleSolverError,
 )
+from phoenix.verification.rung_table import select_initial_rung
 
 app = FastAPI(
     title="Phoenix",
@@ -199,7 +208,10 @@ def _kpi_bundle_to_dict(bundle: Any) -> dict[str, Any]:
 
 
 @app.post("/v1/tasks")
-def submit_task(req: SolveRequest) -> dict[str, Any]:
+def submit_task(
+    req: SolveRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
     """Submit a physics task. Phase 3 returns the full :class:`Result` envelope.
 
     Phase 2 returned a Solver-only ``CandidateAnswer`` with a
@@ -231,6 +243,65 @@ def submit_task(req: SolveRequest) -> dict[str, Any]:
     # would break fresh clones before Phase 1 vendor sync.
     from synthesis.equations.base import PhysicsContext
 
+    # Phase 6a: Actor verification at the front door + safety gate.
+    # Per locked scope (2026-05-08): Actor required with bootstrap-actor
+    # fallback when the Authorization header is absent and the keystore
+    # is present. Tests + dev-mode "just call /v1/tasks" preserved via
+    # the bootstrap path; production callers send signed Actor headers.
+    try:
+        actor, _was_bootstrapped = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+
+    # Section 7.4 9-stage safety gate. Determine the rung-cost label
+    # from the user's max_error_bar (initial rung selection same as
+    # the verification gate). Frontier-physics regime read from
+    # task.metadata when present so the gate can do the authority
+    # check at Section 7.4 step 6.
+    initial_rung = select_initial_rung(req.tolerance.max_error_bar)
+    requested_regime = req.metadata.get("regime_hint") if req.metadata else None
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_submit",
+            requires_capability="can_submit_tasks",
+            rung_for_cost=initial_rung.name,
+            requested_regime=str(requested_regime).upper() if requested_regime else None,
+            task_frontier_physics_flag=req.tolerance.frontier_physics,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"kill switch engaged: {exc} (engaged_by={exc.engaged_by})",
+        ) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"permission denied: actor={exc.actor_name!r} lacks " f"{exc.missing_capability!r}"
+            ),
+        ) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"rate limit exceeded: cost={exc.cost}, tokens_remaining="
+                f"{exc.tokens_remaining:.2f}, retry_after_s={exc.retry_after_seconds:.1f}"
+            ),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+    except FrontierPhysicsRefused as exc:
+        # Section 7.4 step 6: frontier-physics authority check at the
+        # safety gate (earlier than the Phase 2 engine-boundary check).
+        # Same HTTP 403 status code; the gate-layer rejection has a
+        # more specific actor-level message.
+        raise HTTPException(
+            status_code=403,
+            detail=f"frontier-physics regime {exc.regime_name!r} refused: {exc}",
+        ) from exc
+
     # Map latency_tier string to enum (400 on bad value).
     try:
         tier = LatencyTier(req.tolerance.latency_tier)
@@ -258,7 +329,7 @@ def submit_task(req: SolveRequest) -> dict[str, Any]:
     task = PhysicsTask(
         physics_context=ctx,
         tolerance=tolerance,
-        actor=None,  # Phase 6 wires Actor verification at the front door.
+        actor=actor,  # Phase 6a wires verified Actor (bootstrap or signed).
         request_id=request_id,
         metadata=dict(req.metadata),
     )
@@ -330,3 +401,112 @@ def submit_task(req: SolveRequest) -> dict[str, Any]:
             "local-simulator path has `cloud_shots_recorded=False`."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 6a: identity + WebSocket endpoints
+
+
+class WSTokenRequest(BaseModel):
+    """JSON shape of POST /v1/identity/ws-token request body."""
+
+    # Phase 6a accepts an empty body and uses the Authorization header
+    # for actor verification (matches the same /v1/tasks pattern).
+    pass
+
+
+@app.post("/v1/identity/ws-token")
+def ws_token(
+    _req: WSTokenRequest | None = None,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Mint a single-use bearer token for opening a WebSocket connection.
+
+    Per architecture v1 Section 5.3: the WS handshake uses a short-
+    lived bearer token (60-second window, single-use) rather than the
+    full Actor signature. Phase 6a's safety gate enforces the
+    ``can_submit_tasks`` capability for this endpoint (it's a free
+    endpoint by Section 7.5 cost catalogue but ``ws_token`` is keyed
+    to 1 token).
+    """
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="ws_token",
+            requires_capability="can_submit_tasks",
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except (AuthError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+    token = get_ws_token_store().mint(actor.name)
+    return {
+        "token": token,
+        "actor": actor.name,
+        "expires_in_seconds": 60,
+        "single_use": True,
+    }
+
+
+@app.websocket("/v1/ws/tasks/{task_id}/stream")
+async def task_stream(websocket: WebSocket, task_id: str, token: str | None = None) -> None:
+    """Stream verification-gate events for a single task.
+
+    Per architecture v1 Section 5.3: the client opens this WS after
+    minting a bearer token via POST /v1/identity/ws-token. Token is
+    passed as the ``token`` query parameter (Phase 6a; the
+    Authorization header path is harder to test with FastAPI's
+    TestClient, so query param is the v1 contract for the simple
+    case). Token is consumed on connect (single-use).
+
+    Phase 6a streams events from the in-memory broker buffer in a
+    polling loop (100ms cadence). Phase 6b's NATS JetStream consumer
+    replaces this with a push-based subscription.
+
+    Close codes:
+    - 1000 (normal): task completed (task.complete event sent).
+    - 1008 (policy violation): token invalid / expired / used.
+    """
+    if not token:
+        await websocket.close(code=1008, reason="missing token query parameter")
+        return
+    try:
+        get_ws_token_store().consume(token)
+    except WSTokenError as exc:
+        await websocket.close(code=1008, reason=str(exc))
+        return
+
+    await websocket.accept()
+    broker = get_broker()
+    cursor = 0
+    # Phase 6a poll-based stream: bounded loop so a long-disconnected
+    # task doesn't keep the WS open forever. v1.x adjusts to push.
+    max_iterations = 6000  # 6000 * 0.1s = 600s = 10 min timeout
+    try:
+        for _ in range(max_iterations):
+            new_events = broker.get_events(task_id, since_index=cursor)
+            for event in new_events:
+                await websocket.send_json(to_dict(event))
+                cursor += 1
+                if event.type in ("task.complete", "task.failed"):
+                    await websocket.close(code=1000, reason="task finished")
+                    return
+            await asyncio.sleep(0.1)
+        # Polling timeout reached without task.complete; close gracefully.
+        await websocket.close(code=1000, reason="stream poll timeout")
+    except WebSocketDisconnect:
+        # Client disconnected; nothing to clean up (broker buffer
+        # remains for any future reconnect).
+        return
