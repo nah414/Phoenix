@@ -371,3 +371,118 @@ class CrossControlAxis:
                 "strong_control_result": strong,
             },
         )
+
+
+class CrossProviderAxis:
+    """Axis 3 -- cross-provider verification inside the Orchestrate subsystem.
+
+    Compares two :class:`Result` envelopes produced by running the same
+    verified bundle on two different providers (typically the chosen
+    primary plus a Router-selected alternate or local simulator). The
+    disagreement is the cross-provider error bar -- it surfaces
+    backend-specific physics that single-provider runs miss.
+
+    Per Section 6.4 the rung table fires Axis 3 at :attr:`RungDepth.R4_THREE_AXES`
+    and higher. R1 / R2 / R3 skip with a zero-contribution
+    :class:`AxisResult`.
+
+    Per Section 6.3 the axis skips when ``task.tolerance.reproducibility_mode``
+    forces a single-provider replay (Phase 5 stub: the axis honors the
+    string ``"replay"`` on :attr:`ToleranceSpec.reproducibility_mode`).
+
+    The :class:`VerificationGate` (Phase 5 Step 6) does the heavy lifting
+    of routing twice (with ``excluded_providers`` on the second call) and
+    invoking :func:`orchestrate` twice. This axis is a thin disagreement
+    composer: its constructor accepts the two pre-computed
+    :class:`Result` envelopes plus the two provider IDs, and :meth:`run`
+    just invokes the cross-provider helper.
+
+    Standalone callers (tests) that don't have two pre-computed Results
+    cannot exercise the R4+ path; the axis raises :class:`ValueError`
+    when called at R4+ without injected results. This matches the
+    Protocol contract while making the dependency explicit.
+    """
+
+    name: str = "cross_provider"
+
+    def __init__(
+        self,
+        *,
+        primary_result: Any = None,
+        alternate_result: Any = None,
+        primary_provider_id: str = "",
+        alternate_provider_id: str = "",
+    ) -> None:
+        # Typed Any to avoid a runtime import of Result + circular import
+        # concern; the gate passes real Result instances.
+        self._primary_result = primary_result
+        self._alternate_result = alternate_result
+        self._primary_provider_id = primary_provider_id
+        self._alternate_provider_id = alternate_provider_id
+
+    def applies_to(self, task: PhysicsTask) -> bool:
+        # Section 6.3: skip when reproducibility_mode is REPLAY (single-
+        # provider replay forces pinning to the recorded provider; no
+        # second provider for cross-check).
+        repro = task.tolerance.reproducibility_mode
+        if repro == "replay":
+            return False
+        return True
+
+    def run(self, task: PhysicsTask, depth: RungDepth) -> AxisResult:
+        # Section 6.4: Axis 3 fires at R4+. R1 / R2 / R3 skip with zero.
+        if depth in (
+            RungDepth.R1_FLOOR,
+            RungDepth.R2_CROSS_PRECISION,
+            RungDepth.R3_TWO_AXES,
+        ):
+            return AxisResult(
+                axis_name=self.name,
+                error_bar_contribution=0.0,
+                distance_matrix_row=[],
+                metadata={
+                    "skipped": True,
+                    "depth": depth.name,
+                    "reason": (
+                        "Axis 3 (cross-provider) fires only at R4+ per "
+                        "architecture Section 6.4 rung table."
+                    ),
+                },
+            )
+
+        # R4+: must have injected results (the gate's responsibility).
+        if self._primary_result is None or self._alternate_result is None:
+            raise ValueError(
+                "CrossProviderAxis at R4+ requires injected primary_result "
+                "+ alternate_result (the verification gate's responsibility "
+                "per Section 6.10). Standalone construction at R4+ is not "
+                "supported in v1."
+            )
+
+        # Lazy import: cross_provider helper imports Result type via
+        # TYPE_CHECKING; the runtime import here avoids the cycle.
+        from phoenix.trinity.orchestrate.cross_provider import (
+            compute_cross_provider_disagreement,
+        )
+
+        del task  # Phase 5 axis doesn't inspect task; consumers may at v1.x.
+        disagreement = compute_cross_provider_disagreement(
+            self._primary_result,
+            self._alternate_result,
+            primary_provider_id=self._primary_provider_id,
+            alternate_provider_id=self._alternate_provider_id,
+        )
+
+        return AxisResult(
+            axis_name=self.name,
+            error_bar_contribution=disagreement.error_bar_scalar,
+            distance_matrix_row=disagreement.distance_matrix_row,
+            metadata={
+                "depth": depth.name,
+                "metric": disagreement.metric,
+                "primary_provider_id": disagreement.primary_provider_id,
+                "alternate_provider_id": disagreement.alternate_provider_id,
+                "primary_value": disagreement.primary_value,
+                "alternate_value": disagreement.alternate_value,
+            },
+        )
