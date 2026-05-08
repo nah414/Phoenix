@@ -15,6 +15,46 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [Architecture v1.1 follow-up] — 2026-05-08
+
+Documentation-only follow-up to the 2026-05-07 v1.1 revision. Phoenix-the-package stays at `1.0.0.dev1`; no implementation impact. Captures five architectural decisions Adam approved on 2026-05-08 that future-proof v1 for the perception extension without writing perception code, plus three spec-vs-source drift corrections.
+
+### Architectural future-proofing additions
+
+- **`WobbleAxis` Protocol parameterization (Section 6.3, locks Phase 5 design intent).** The verification gate is parameterized by a list of `WobbleAxis` Protocol implementations rather than hardcoding three named methods. v1 ships three concrete impls (`CrossPrecisionAxis`, `CrossControlAxis`, `CrossProviderAxis`) in `phoenix/verification/wobble_axis.py`. Perception extension's Phase 20 axes (`CrossModalityAxis`, `CrossFrameAxis`, `CrossCanonicalAxis` per the perception plan) plug in as additional `WobbleAxis` impls without forking the gate. Same machinery, different axes. Section 10.3 phoenix/verification/ file list updated with the new `wobble_axis.py` entry.
+
+- **`CloudSeams` generic name-keyed registry (Section 10.3.1).** Refactored from three hardcoded slots (`auth: HttpAuthExtractor`, `audit: AuditLogExporter`, `budget: JobBudgetController`) to a generic dict keyed by name with `register(name, impl)` / `get(name)` / `names()` methods. Default constructor still registers v1's three seams; v1.x extensions register additional seams without core changes. The perception extension's optional fourth seam (`canonical_library` for hosted retention-SLA-bearing canonical-example libraries) plugs in via the same `register()` API. Protocol contracts and SAFETY guarantees unchanged.
+
+- **`LatencyTier` enum (Section 1, post-Decision-28 paragraph).** Three tiers encoded as a single enum in `phoenix/_internal/latency.py`: `BATCH_REALTIME` (v1, routable), `STREAMING_REALTIME` (v2, defined-but-not-routable), `PERCEPTION_REALTIME` (v1.1 perception phase, defined-but-not-routable). v1 routes only `BATCH_REALTIME`; raises typed `LatencyTierNotImplemented` for the other two. Routing layer accepts the tier as a parameter from day one so the perception extension at Phase 12+ doesn't have to retroactively add an enum value or churn callers. **Section 11.14.7 (perception real-time latency tier) RESOLVED** by this enum; open-tension count drops 17 → 16.
+
+- **Front-door namespacing (Section 5).** Decision recorded: `/v1/...` flat with implicit physics semantics. Perception slots in as `/v1/perception/*` sibling (per the perception plan). No spec change required — current spec already commits to this — but recorded for clarity.
+
+- **Strict no-perception-code-in-v1 discipline.** Decision recorded: v1 ships zero perception-shaped code. The v1.1 spec sections (11.14, 10.8) are the only acknowledgments. No empty `phoenix/perception/` or `phoenix/sensors/` directories during v1; perception phase 12 build guide drafts only after v1 Phase 5 milestone per the existing perception plan guardrail.
+
+### Spec-vs-source drift corrections
+
+Three architectural drifts between spec and the actual vendored substrate, surfaced during Phase 1 execution and logged for follow-up:
+
+- **`AgreementType` → `DisagreementType`** (Section 2.2 Result envelope, Section 6.2 vendored types block + Phoenix extension block, prose around line 1165). Spec called the wobble enum `AgreementType`; vendored frank-data has `class DisagreementType(Enum)`. Spec drifted; vendored is source-of-truth per Section 11.7.1's verbatim-through-v1 disposition. Phase 1 tests already use the vendored name; spec now follows reality. Field name `agreement_type` kept (it describes the semantic concept); type renamed to `DisagreementType` (matches the vendored class).
+- **`DPDEngine` → `DPDScheduler`** (Section 0 Control description, Section 10.3 phoenix/trinity/control/engine.py description). Same shape: spec drifted from vendored `class DPDScheduler` in `synthesis/core/dpd_engine.py`.
+- **`ProbeType.STRONG` → `ProbeType.STRONG_PROJECTIVE`** (Phase 1 build guide content was updated during Phase 1 execution; no architecture spec drift to correct since the spec uses prose "strong projective", not the enum value name). Logged for completeness.
+
+### Spec consistency cleanup (bonus)
+
+- **Section 0 Orchestrate paragraph** updated to reflect the 2026-05-06 SynQc-greenfield revision. The 2026-05-06 commit updated Section 2.5 (Orchestrate as greenfield) but missed Section 0's intro paragraph, which still claimed "Orchestrate vendors the SynQc TDS Core framework." Now correctly describes Orchestrate as greenfield Phoenix code with seven Phoenix-native modules and SynQc as design reference.
+
+### README count update
+
+- README "Documents" section: tension count updated 17 → 16 (with 11.14.7 resolution noted).
+
+### Process notes
+
+- Five architectural decisions and three drift corrections all approved by Adam on 2026-05-08 via a structured-options review of the v1.1 follow-up scope.
+- Seven decision points in total: A (verification gate parameterization), B (cloud seams generic registry), C (API namespacing), D (`LatencyTier` enum), E (strict no-perception-code), F (spec drifts), G (commit shape: two commits — this is the second).
+- v1.1 is now a two-step revision: 2026-05-07 captured the perception extension scope and 7 tensions; 2026-05-08 locked the v1-side future-proofing and resolved the 7th tension. v1's Phase 0 → Phase 11 build pipeline remains unchanged.
+
+---
+
 ## [Architecture v1.1] — 2026-05-07
 
 Architecture-only revision; no package version bump. Phoenix-the-package stays at `1.0.0.dev1`. This entry documents the v1.0 → v1.1 spec revision triggered by the perception harness extension plan locking.

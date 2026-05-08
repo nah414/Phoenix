@@ -29,6 +29,8 @@ The document is expected to continue to evolve via the Section 11.10/11.12 updat
 
 **v1.1 revision (2026-05-07): Perception harness extension plan locked.** Adam's review of `PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md` (companion document to this architecture spec) approved the perception harness as a v1.x extension landing at Phase 12 onwards, after v1 ships at Phase 11. v1.1 ships with: (1) Section 11.14 added with 7 new tensions catalogued from the perception extension plan (4 RESOLVED in v1.1, 1 build-guide territory, 1 deferred to v1.x perception milestone, 1 architecture revision recommended); (2) Section 10.8 v1.1 acceptance criteria extended with the perception harness criterion. The locked v1 architecture's load-bearing structure (seven layers, three peer engines in Trinity Core, mandatory three-axis quantum wobble, hashchained provenance, Phoenix Cloud commercial path, all v1 acceptance criteria from Section 10.7) is unchanged. v1.1 is a documentation-only revision; no v1 implementation impact. Phoenix v1's Phase 0 → Phase 11 build pipeline proceeds unchanged; perception extension work begins at Phase 12 only after v1 reaches its Phase 5 verification-gate milestone, so v1 implementation attention is not diluted. Open tension count after v1.1: 17 (14 from v1.0 + 3 unresolved from v1.1: 11.14.2, 11.14.6, 11.14.7).
 
+**v1.1 follow-up (2026-05-08): perception-friendly v1 design choices locked.** A second documentation-only revision lands the same day, capturing five architectural decisions Adam approved that future-proof v1 for the perception extension without writing perception code: (a) `WobbleAxis` Protocol parameterizes Phase 5's verification gate (Section 6.3) so perception's three axes plug in as `WobbleAxis` impls without forking the gate; (b) `CloudSeams` registry refactored from named slots to generic name-keyed registration (Section 10.3.1) so v1.x extensions register additional seams without core changes; (c) front-door endpoint namespacing kept as `/v1/...` flat with implicit physics semantics, perception slots in as `/v1/perception/*` sibling (no spec change required, decision recorded for clarity); (d) `LatencyTier` enum defined in v1 with all three values (BATCH_REALTIME routable, STREAMING_REALTIME and PERCEPTION_REALTIME defined-but-not-routable) per the post-Decision-28 paragraph in Section 1; (e) strict no-perception-code-in-v1 discipline confirmed (only the spec acknowledges perception). The follow-up also resolves three architectural drifts between spec and vendored substrate (`AgreementType` → `DisagreementType`, `DPDEngine` → `DPDScheduler`, and the §0 Orchestrate paragraph that had been missed in the 2026-05-06 SynQc-greenfield revision). With 11.14.7 now RESOLVED by the locked `LatencyTier` enum, the open-tension count drops to 16 (14 from v1.0 + 2 unresolved from v1.1: 11.14.2, 11.14.6).
+
 ## What Phoenix is
 
 Phoenix is a **production-grade quantum-accuracy middleware**. It is a downloadable software component that other systems integrate with to gain access to validated quantum computation, hardware-aware routing, and physics-grounded verification of results.
@@ -45,9 +47,9 @@ Trinity Core is a unified physics core with three composable subsystems, each re
 
 **Solver** vendors the dr-frank-and-eddy synthesis engine — twelve calibrated equation solvers covering non-relativistic TISE/TDSE, Pauli, Dirac, Klein-Gordon, Breit-Pauli, Ehrenfest, WKB, Stochastic SE, gravitational decoherence, Wheeler-DeWitt, and semiclassical gravity. This is the *equation-level* layer: take a Hamiltonian specification, return a numerical solution with calibrated error bars against analytical references. Calibration profile vendored at v6.6.
 
-**Control** vendors the Drive-Probe-Drive engine from `synthesis/core/` — DPDEngine, LindbladPropagator (RK4 4th-order, verified against QuTiP mesolve and Qiskit Dynamics), ProbeModel (information-backaction tradeoff), and HardwareBackend abstractions for four quantum modalities (superconducting, trapped-ion, NMR, telecom-photonic). This is the *control-level* layer: take a candidate solution, verify it via a formal three-phase Drive-Probe-Drive protocol with POVM weak measurement, XY4 dynamical decoupling, and dual-clock synchronization. Provable error suppression via `p_eff = p_phys × (1 − η_DD) × (1 − η_probe) × (1 − η_clock)`, with each suppression mechanism independently tunable.
+**Control** vendors the Drive-Probe-Drive engine from `synthesis/core/` — DPDScheduler, LindbladPropagator (RK4 4th-order, verified against QuTiP mesolve and Qiskit Dynamics), ProbeModel (information-backaction tradeoff), and HardwareBackend abstractions for four quantum modalities (superconducting, trapped-ion, NMR, telecom-photonic). This is the *control-level* layer: take a candidate solution, verify it via a formal three-phase Drive-Probe-Drive protocol with POVM weak measurement, XY4 dynamical decoupling, and dual-clock synchronization. Provable error suppression via `p_eff = p_phys × (1 − η_DD) × (1 − η_probe) × (1 − η_clock)`, with each suppression mechanism independently tunable.
 
-**Orchestrate** vendors the SynQc TDS Core framework — scheduler (time-ordered DPD bundles aligned to hardware timing grids), probes (typed catalog: strong projective, weak continuous, ancilla-mediated), demod (IQ demodulation and feature extraction), adapt (Kalman/Bayesian drift tracking and adaptive control), and the hardware backend interface that talks to IBM Quantum, AWS Braket, IonQ direct, Azure Quantum, Rigetti, FPGA/DAQ, or local simulators. This is the *hardware-orchestration* layer: take a verified DPD bundle, run it across the chosen provider, return a typed `KPIBundle` with fidelity, latency, backaction, shot-usage, and status fields.
+**Orchestrate** is **greenfield Phoenix code** organized into seven Phoenix-native modules (engine, bundle_builder, provider_client, result_extractor, drift_feedback, cross_provider, kpi_bundle) per Section 2.5 and the 2026-05-06 SynQc-greenfield revision. SynQc TDS Core serves as a *design reference* for Orchestrate's contracts — informing how the Phoenix-native modules organize scheduling, probe handling, demodulation, and drift adaptation — but no SynQc code is vendored. The hardware backend interface talks to IBM Quantum, AWS Braket, IonQ direct, Azure Quantum, Rigetti, FPGA/DAQ, or local simulators via Phoenix's `BaseProviderClient` Protocol (defined in `phoenix/trinity/orchestrate/provider_client.py`). This is the *hardware-orchestration* layer: take a verified DPD bundle, run it across the chosen provider, return a typed `KPIBundle` with fidelity, latency, backaction, shot-usage, and status fields.
 
 The three subsystems compose along a shared pipeline. A complete Phoenix solve traverses all three: Solver predicts the answer, Control verifies the prediction's robustness against decoherence and probe back-action, Orchestrate runs it on the chosen backend and returns measured KPIs alongside the theoretical prediction. The **mandatory physics-wobble verification** locked earlier — cross-precision and cross-solver checks — now runs across all three layers, giving the wobble formula three independent disagreement axes (cross-precision inside Solver, cross-control inside Control via probe-strength sweep, cross-provider inside Orchestrate) instead of one. That makes the agreement metric far more rigorous than what was sketched before this audit.
 
@@ -154,7 +156,35 @@ Phoenix v1 ships with four commercial-grade capabilities that distinguish it fro
 
 26. **Phoenix v1 ships batch real-time** — 10-100 ms loops on local hardware (NPU/GPU/CPU). This is sufficient for drift tracking, adaptive calibration, and slow-control feedback loops in lab settings. Cloud-orchestrated loops run in the 100 ms-1 s range depending on provider latency, and that is acceptable for v1.
 27. **Phoenix v1.x extends Trinity Core's Solver layer to medium-size systems** via tensor-network execution (MPS/TJM, already present at `synthesis/quantum/tensor_lindblad.py` in dr-frank-and-eddy but not yet wired into the production path). Enables 16-24 qubit problems in the real-time loop.
-28. **Phoenix v2 ships streaming real-time as a first-class application mode** — sub-millisecond loops, standing-computation API, continuous probe-drive feedback where the user describes a continuous experiment and Phoenix sets up a pipeline that runs continuously. The architecture supports it natively (DPD primitive + SynQc adapt module + Solver per-update calls), but the streaming-result mode and standing-computation API are real engineering past v1.
+28. **Phoenix v2 ships streaming real-time as a first-class application mode** — sub-millisecond loops, standing-computation API, continuous probe-drive feedback where the user describes a continuous experiment and Phoenix sets up a pipeline that runs continuously. The architecture supports it natively (DPD primitive + SynQc-inspired greenfield adapt module + Solver per-update calls), but the streaming-result mode and standing-computation API are real engineering past v1.
+
+**`LatencyTier` enum (canonical encoding of Decisions 26–28, added 2026-05-08).** The three tiers above are encoded as a single enum so the router, scheduler, and front-door scheduling logic can route by tier rather than by string-comparison or hardcoded Decision references. Defined in `phoenix/_internal/latency.py`:
+
+```python
+from enum import Enum
+
+class LatencyTier(Enum):
+    """Latency tier each Phoenix solve commits to. Drives Router selection,
+    timeout policies, and front-door scheduling decisions."""
+
+    BATCH_REALTIME = "batch_realtime"
+    """v1 (Decision 26): 10-100 ms loops on local hardware; 100 ms-1 s for
+    cloud-orchestrated. The default tier for v1 solves."""
+
+    STREAMING_REALTIME = "streaming_realtime"
+    """v2 (Decision 28): sub-millisecond loops, standing-computation API.
+    Defined here so the routing layer accepts the tier as a parameter from
+    day one; v1 raises `LatencyTierNotImplemented` if a request specifies
+    this tier (deferred to v2 implementation)."""
+
+    PERCEPTION_REALTIME = "perception_realtime"
+    """v1.1 (Section 11.14.7, locked 2026-05-08): sub-100 ms hard real-time
+    per sensor frame end-to-end. Routed only by the perception harness
+    extension at Phase 12+; v1 raises `LatencyTierNotImplemented` for
+    non-perception tasks specifying this tier."""
+```
+
+**Why now (v1, not v1.1 or perception phase):** v1 commits to the enum's three values from day one even though only `BATCH_REALTIME` is routable in v1. Defining the enum in v1 prevents the perception extension from having to retroactively add an enum value (which would churn every caller). Routing logic in the Router (Phase 4) accepts a `LatencyTier` parameter; routes only `BATCH_REALTIME`; raises a typed `LatencyTierNotImplemented` for the other two with a message naming which release will support them. The Router's `RoutingDecision` provenance records the requested tier so audit-log readers can see which tier a solve operated under.
 
 **Distribution**
 
@@ -252,7 +282,7 @@ Three dataclasses are passed along the pipeline. They are typed, hashable, JSON-
 
 **`VerifiedAnswer`** is what Control produces. Fields: `rho_verified: np.ndarray` (the post-DPD density matrix), `dpd_result: DPDResult` (the full DPDResult dataclass from `synthesis/core/dpd_engine.py`, vendored unchanged), `kpi_bundle_control: KPIBundle` (fidelity/latency/backaction from the control phase), `error_bar_control: float` (the cross-control wobble result from running probe-strength sweep ε ∈ {ε₁, ε₂}), `probe_strengths_used: List[float]` (which ε values were exercised).
 
-**`Result`** is what Orchestrate produces — the final return value of any Phoenix solve. Fields: `value: Any` (the requested observable: an energy, a state, a probability distribution, depending on the task), `error_bar: float` (the combined error bar across all three Trinity Core layers), `sigma: float` (the standard wobble disagreement metric, computed across the three independent axes), `agreement_type: AgreementType` (enum: `CONVERGED`, `WOBBLE`, `SPLIT`, `DEGRADED`, `DEGRADED_BUDGET_BOUND` — see Section 6.2 for the full enum and Section 4.7 for `DEGRADED_BUDGET_BOUND` semantics), `kpi_bundle_orchestrate: KPIBundle` (final KPIs from the chosen provider), `provenance: ProvenanceTrace` (the full audit trail per Section 1 Decision 15).
+**`Result`** is what Orchestrate produces — the final return value of any Phoenix solve. Fields: `value: Any` (the requested observable: an energy, a state, a probability distribution, depending on the task), `error_bar: float` (the combined error bar across all three Trinity Core layers), `sigma: float` (the standard wobble disagreement metric, computed across the three independent axes), `agreement_type: DisagreementType` (enum: `CONVERGED`, `WOBBLE`, `SPLIT`, `DEGRADED`, `DEGRADED_BUDGET_BOUND` — see Section 6.2 for the full enum and Section 4.7 for `DEGRADED_BUDGET_BOUND` semantics), `kpi_bundle_orchestrate: KPIBundle` (final KPIs from the chosen provider), `provenance: ProvenanceTrace` (the full audit trail per Section 1 Decision 15).
 
 **Reproducibility asterisk surfaced on the Result envelope.** `Result.provenance` carries a `cloud_shots_recorded: bool` field that is `True` whenever any Trinity Core run inside the solve invoked a cloud-quantum provider whose shot results were intrinsically nondeterministic and were *recorded once* in the ledger per Section 1 Decision 20. When `cloud_shots_recorded=True`, the strongest reproducibility guarantee Phoenix can make is: "the post-shot pipeline reproduces bit-exactly via the recorded shots; the original cloud run cannot be re-run on hardware to match bit-exactly." This is meaningful and Phoenix must not let the user infer otherwise. CLI output, MCP tool responses, and the WebSocket `task.complete` event all surface this field prominently when it is `True`. The user-facing `docs/reproducibility/` (Section 10.6) leads with the asterisk, not buries it.
 
@@ -1126,7 +1156,7 @@ Phoenix vendors the typed wobble substrate that already exists in dr-frank-and-e
 **Vendored types (verbatim from `wobble/disagreement_types.py`):**
 
 ```python
-class AgreementType(Enum):
+class DisagreementType(Enum):
     """Disagreement classification for wobble findings."""
     CONTRADICTION = "contradiction"        # Factual disagreement, ground-truth-lookupable
     AMBIGUITY = "ambiguity"                # Multiple valid interpretations
@@ -1144,7 +1174,7 @@ class SuggestedAction(Enum):
 @dataclass
 class DisagreementFinding:
     """The wobble finding with structured uncertainty preserved (DO NOT COLLAPSE)."""
-    agreement_type: AgreementType
+    agreement_type: DisagreementType
     classifier_confidence: float           # 0.0 to 1.0
     classifier_rationale: str
     classifier_evidence: List[str]         # specific differences that drove the call
@@ -1162,10 +1192,10 @@ This is dr-frank-and-eddy's resolution of an architectural limitation flagged in
 
 **What Phoenix builds on top:**
 
-The cognition-wobble's `DisagreementFinding` was designed for *LLM responses comparing semantic content*. Phoenix's three-axis physics wobble produces disagreements between *numerical results*. The vendored `AgreementType` enum needs an extension for the physics case:
+The cognition-wobble's `DisagreementFinding` was designed for *LLM responses comparing semantic content*. Phoenix's three-axis physics wobble produces disagreements between *numerical results*. The vendored `DisagreementType` enum needs an extension for the physics case:
 
 ```python
-class AgreementType(Enum):
+class DisagreementType(Enum):
     # Vendored values (cognition wobble) — kept for cross-compat
     CONTRADICTION = "contradiction"
     AMBIGUITY = "ambiguity"
@@ -1197,6 +1227,27 @@ When a `PhysicsTask` enters the verification gate, the gate plans which axes to 
 The full distance matrix has at most 6 rows (2 per axis), all preserved in provenance. The `wobble_score` scalar is computed as the standard wobble formula `sqrt(Var(matrix))` over the upper triangle, exactly the way the cognition wobble does it. The `agreement_type` is classified by inspecting which axes contributed which disagreements — `NUMERICAL_DRIFT` if Axis 1 dominated, `BACKACTION_SENSITIVE` if Axis 2 dominated, and so on.
 
 **Combined error bar:** Section 2.2 specified quadrature: `error_bar = sqrt(error_bar_solver**2 + error_bar_control**2 + error_bar_orchestrate**2)`. The open question flagged there (whether quadrature is correct given non-independence of layer errors) remains open and is addressed in Section 11.
+
+**WobbleAxis Protocol — parameterization for domain extensions.** The verification gate (`phoenix/verification/gate.py`) does not hard-code the three quantum axes as named methods. Instead, the gate accepts a list of `WobbleAxis` Protocol implementations and orchestrates whichever axes the active domain registers. v1 ships three concrete `WobbleAxis` impls in `phoenix/verification/wobble_axis.py`: `CrossPrecisionAxis` (Axis 1), `CrossControlAxis` (Axis 2), `CrossProviderAxis` (Axis 3). The Protocol contract is small and discipline-bearing:
+
+```python
+class WobbleAxis(Protocol):
+    """A single disagreement axis the verification gate can orchestrate."""
+
+    @property
+    def name(self) -> str: ...
+    """Stable identifier (e.g. 'cross_precision') used in provenance + the distance matrix."""
+
+    def applies_to(self, task: PhysicsTask) -> bool: ...
+    """Does this axis exercise meaningfully on the given task? (e.g. CrossProviderAxis
+    returns False when the task's reproducibility mode forces a single-provider replay.)"""
+
+    def run(self, task: PhysicsTask, depth: RungDepth) -> AxisResult: ...
+    """Run the axis at the requested depth; return the row that lands in the distance matrix
+    plus the axis's contribution to the combined error bar."""
+```
+
+This parameterization is the design intent for Phase 5 (verification gate). It enables Phoenix v1.x extensions — specifically the perception harness extension locked at v1.1 (`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`) — to register their own `WobbleAxis` impls (`CrossModalityAxis`, `CrossFrameAxis`, `CrossCanonicalAxis` per the perception plan's Phase 20) without forking the gate. Same gate, same machinery, different axes. **SAFETY:** the gate does NOT auto-discover axes; each domain registers its impls explicitly at startup, so a forgotten axis fails fast at registration rather than silently producing under-verified solves. The parameterization also makes Section 11.14.6 (perception verification axes count, currently three) trivially extensible if a fourth perception axis emerges in field testing — no architectural revision required, just a registration call.
 
 ## 6.4 — Adaptive depth: how `max_error_bar` becomes a depth decision
 
@@ -2130,7 +2181,7 @@ Each architectural Section gets its own subdirectory under `phoenix/`. The layou
   - `cross_precision.py` — Axis 1 wobble (cross-grid-resolution).
   - `README.md` — Solver subsystem doc.
 - `control/` — Control subsystem.
-  - `engine.py` — adapts the vendored DPDEngine into Trinity's pipeline.
+  - `engine.py` — adapts the vendored DPDScheduler into Trinity's pipeline.
   - `cross_probe.py` — Axis 2 wobble (probe-strength sweep).
   - `README.md` — Control subsystem doc.
 - `orchestrate/` — Orchestrate subsystem (greenfield Phoenix code per Section 2.5).
@@ -2162,7 +2213,8 @@ Each architectural Section gets its own subdirectory under `phoenix/`. The layou
 - `README.md` — router doc.
 
 **`phoenix/verification/`** — Section 6 verification gate.
-- `gate.py` — the wobble protocol orchestrator.
+- `gate.py` — the wobble protocol orchestrator. Parameterized by a list of `WobbleAxis` Protocol impls (Section 6.3) so v1.x extensions can register their own axes without forking the gate.
+- `wobble_axis.py` — the `WobbleAxis` Protocol contract plus v1's three concrete impls: `CrossPrecisionAxis` (Axis 1), `CrossControlAxis` (Axis 2), `CrossProviderAxis` (Axis 3). Perception extension at Phase 20 adds `CrossModalityAxis`, `CrossFrameAxis`, `CrossCanonicalAxis` to the same Protocol contract.
 - `rung_table.py` — the five-rung adaptive depth dial.
 - `promotion.py` — promotion/demotion logic.
 - `agreement_classifier.py` — extends vendored DisagreementFinding with physics-wobble values.
@@ -2297,26 +2349,42 @@ class JobBudgetController(Protocol):
         the Orchestrate subsystem with the final KPIBundle's cost figures."""
 ```
 
-**Registry and replacement:**
+**Registry and replacement (generic, name-keyed):**
 
 ```python
 class CloudSeams:
-    """Holds the active implementations of the three seams.
+    """Generic name-keyed registry of cloud seam Protocol implementations.
 
-    Default constructor wires up local impls. Phoenix Cloud's process startup
-    overrides via .replace_*() methods before opening the front door. Phoenix
-    code reaches the seams through phoenix._internal.cloud_seams.get() — never
-    by direct import of the default impls."""
-    auth: HttpAuthExtractor
-    audit: AuditLogExporter
-    budget: JobBudgetController
+    Default constructor registers Phoenix v1's three seams (`auth`, `audit`, `budget`)
+    with their local default impls. Phoenix Cloud's process startup overrides specific
+    seams via `register()` before opening the front door. Phoenix code reaches a seam
+    through `phoenix._internal.cloud_seams.get(name)` — never by direct import of the
+    default impls.
 
-    def replace_auth(self, impl: HttpAuthExtractor) -> None: ...
-    def replace_audit(self, impl: AuditLogExporter) -> None: ...
-    def replace_budget(self, impl: JobBudgetController) -> None: ...
+    Generic-by-design (not hardcoded with three named slots) so v1.x extensions can
+    register additional seams without modifying core. The perception harness extension
+    locked at v1.1 (`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md` Section 2 substrate audit)
+    plans an optional fourth seam (`canonical_library`) for hosted, retention-SLA-bearing
+    canonical-example libraries that the perception phase 19 deliverable consumes.
+    """
+
+    def register(self, name: str, impl: Any) -> None:
+        """Replace (or register) the implementation for `name`. Phoenix Cloud calls
+        this once per seam at process startup before the front door opens."""
+
+    def get(self, name: str) -> Any:
+        """Return the active impl for `name`. Raises `UnknownSeam` if unregistered.
+        Phoenix code calls this lazily, on demand."""
+
+    def names(self) -> list[str]:
+        """Return registered seam names (for dev-ops introspection only)."""
 ```
 
-**SAFETY:** the seam Protocols deliberately do *not* expose mutation surfaces beyond what each seam owns. A Phoenix Cloud implementation cannot inject a fake Actor for a different tenant via `HttpAuthExtractor` because the returned Actor is still HMAC-verified at Section 7's safety gate against the tenant's HKDF subkey — the seam can only return *some* Actor, not bypass signature verification. Similarly, `JobBudgetController` cannot suppress safety-gate denials; it can only deny solves that would otherwise be allowed by the safety gate.
+The three v1 seams (`auth` → `HttpAuthExtractor`, `audit` → `AuditLogExporter`, `budget` → `JobBudgetController`) are registered at startup via the default constructor's seam-loading routine. Their Protocol contracts are unchanged from the v1.0 spec; only the registry shape is refactored from named-slot fields to a generic dict.
+
+**SAFETY:** the seam Protocols deliberately do *not* expose mutation surfaces beyond what each seam owns. A Phoenix Cloud implementation cannot inject a fake Actor for a different tenant via `HttpAuthExtractor` because the returned Actor is still HMAC-verified at Section 7's safety gate against the tenant's HKDF subkey — the seam can only return *some* Actor, not bypass signature verification. Similarly, `JobBudgetController` cannot suppress safety-gate denials; it can only deny solves that would otherwise be allowed by the safety gate. Adding a fourth seam at v1.x extends the registry but does NOT relax these guarantees — every new seam Protocol carries the same defense-in-depth constraint that the seam can only contribute information into the existing safety/audit gates, never bypass them. The `register()` API does not allow replacing the safety gate or the HMAC verifier.
+
+**Extension discipline.** Registering an unknown name (e.g. `cloud_seams.register("canonical_library", MyImpl())`) succeeds silently in v1; consumers that don't know the seam exist won't call `get("canonical_library")`. v1.x extensions follow this pattern: the perception phase 12 build guide registers `canonical_library` at perception-startup and only the perception subsystem queries it. The core `phoenix._internal.cloud_seams` module knows nothing about perception.
 
 **v1 acceptance:** Phoenix v1 ships the Protocols plus default impls plus a `tests/integration/test_cloud_seams.py` that swaps in a mock Phoenix-Cloud-shaped impl and verifies the three seams compose correctly without modifying Phoenix code. Specifically, the test confirms: (1) a request with a synthesized Actor from the mock auth extractor flows through the safety gate normally; (2) audit events written by Phoenix reach both the local JSONL writer *and* the mock Phoenix Cloud retention store; (3) a tenant-scoped budget denial from the mock budget controller surfaces as `CostCeilingExceeded` to the user with no leak of tenant-scoped state into Phoenix-the-middleware.
 
@@ -2804,7 +2872,9 @@ The 19 open tensions cataloged in Sections 11.1 through 11.8 break down as:
 
 **Open-tension count after the 2026-05-06 resolution round: 14** (down from 19).
 
-**v1.1 update (2026-05-07):** 7 new tensions catalogued in Section 11.14 from the perception harness extension plan (`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`). 4 RESOLVED in v1.1 (11.14.1, 11.14.3, 11.14.4, 11.14.5); 1 deferred to build-guide territory (11.14.2); 1 deferred to v1.x perception milestone (11.14.6); 1 with recommended disposition for the v1.1 architecture (11.14.7). **Open-tension count after the v1.1 perception-extension round: 17** (14 from v1.0 + 3 unresolved from v1.1: 11.14.2, 11.14.6, 11.14.7).
+**v1.1 update (2026-05-07):** 7 new tensions catalogued in Section 11.14 from the perception harness extension plan (`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`). 4 RESOLVED in v1.1 (11.14.1, 11.14.3, 11.14.4, 11.14.5); 1 deferred to build-guide territory (11.14.2); 1 deferred to v1.x perception milestone (11.14.6); 1 with recommended disposition for the v1.1 architecture (11.14.7).
+
+**v1.1 follow-up (2026-05-08):** 11.14.7 resolved — the `LatencyTier` enum (introduced in Section 1 post-Decision-28) locks the perception real-time tier alongside batch and streaming. **Open-tension count after the v1.1 follow-up: 16** (14 from v1.0 + 2 unresolved from v1.1: 11.14.2 and 11.14.6).
 
 The defer-to-v1.x items are tracked as a forward roadmap. They don't block v1 implementation; they shape v1.1+ planning.
 
@@ -2951,7 +3021,7 @@ These tensions arise from the perception harness extension proposed and locked i
 
 **Recommended disposition:** Ship Phase 20 with three axes; revisit at v1.x perception milestone after empirical data exists. Mirrors the disposition pattern from 11.1.2 (MPS truncation as fourth quantum axis).
 
-### 11.14.7 — Perception real-time latency tier
+### 11.14.7 — Perception real-time latency tier (RESOLVED in Phoenix v1.1, follow-up 2026-05-08)
 
 **Origin:** PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md Section 1.
 
@@ -2959,7 +3029,9 @@ These tensions arise from the perception harness extension proposed and locked i
 
 **v0 placeholder:** Each phase's PERF callout commits to its specific latency budget.
 
-**Recommended disposition:** Document the perception real-time tier alongside v1's batch real-time and v2's streaming real-time tiers (Decisions 26, 28). Add a "perception real-time" entry to the latency tier roadmap. Specifically, perception real-time targets sub-100ms per sensor frame end-to-end, with hard budgets per phase set in the corresponding build guides.
+**Resolution (Phoenix v1.1 follow-up, locked 2026-05-08):** The three latency tiers are encoded as a single `LatencyTier` enum (`BATCH_REALTIME`, `STREAMING_REALTIME`, `PERCEPTION_REALTIME`) defined in `phoenix/_internal/latency.py` per the post-Decision-28 paragraph in Section 1. v1 routes only `BATCH_REALTIME`; the other two values exist in the enum so v1's Router and front door accept the tier as a parameter from day one and raise typed `LatencyTierNotImplemented` for non-routable tiers. The enum is the canonical encoding of Decisions 26–28; the perception harness extension at Phase 12+ implements `PERCEPTION_REALTIME` routing without enum churn or retroactive caller changes.
+
+**Cross-reference:** Section 1 (post-Decision-28 `LatencyTier` enum paragraph), Section 4 (Router accepts tier parameter; `LatencyTierNotImplemented` typed error).
 
 ```
 === SECTION 11 COMPLETE — AWAITING ADAM REVIEW ===
