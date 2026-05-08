@@ -46,10 +46,22 @@ import dataclasses
 import time
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
-from phoenix.providers.classical.local_simulator import LocalClassicalSimulator
-from phoenix.router.data_model import ProviderSelection
+from phoenix.router.data_model import (
+    ProviderSelection,
+    ReproducibilityMode,
+    RoutingDecision,
+    RoutingRequest,
+)
+from phoenix.router.decision import Router
+from phoenix.router.errors import AllAlternatesExhausted
+from phoenix.router.failover import FailoverProtocol
+from phoenix.router.provider_registry import build_default_registry
+from phoenix.trinity.control.engine import (
+    ControlVerificationError as ControlVerificationError,  # re-export for docstring + tests
+)
 from phoenix.trinity.data_model import (
     ControlProvenance,
+    OrchestrateProvenance,
     PhysicsTask,
     ProvenanceTrace,
     Result,
@@ -57,6 +69,7 @@ from phoenix.trinity.data_model import (
     VerifiedAnswer,
 )
 from phoenix.trinity.orchestrate.engine import orchestrate
+from phoenix.trinity.orchestrate.provider_client import OrchestrateProviderError
 from phoenix.trinity.solver.engine import SolverRunResult
 from phoenix.verification.wobble_axis import (
     AxisResult,
@@ -120,21 +133,159 @@ def _extract_value(high_grid_result: SolverRunResult) -> float:
     return 0.0
 
 
-def _build_default_provider_selection(task: PhysicsTask) -> ProviderSelection:
-    """Construct a default :class:`ProviderSelection` for Phase 3.
+# Module-level Router + FailoverProtocol singletons. Phase 4 ships
+# in-process state; Phase 6+ wires the persistent state backend so registry
+# health survives daemon restarts. The Router constructor pre-loads pricing,
+# so deferring construction to first call also defers the JSON disk read.
+_ROUTER: Router | None = None
+_FAILOVER: FailoverProtocol | None = None
 
-    Points at :class:`LocalClassicalSimulator` directly (no real routing).
-    Phase 4's Router subsystem replaces this helper with the seven-stage
-    routing algorithm; the call site in :func:`solve` becomes
-    ``selection = router.decide(routing_request_from_task(task))``.
+
+def _get_router() -> Router:
+    """Lazy module-level Router singleton.
+
+    Tests can override by monkey-patching ``phoenix.trinity.pipeline._ROUTER``
+    to a custom :class:`Router` instance pointing at a fixture
+    :class:`ProviderRegistry`.
     """
-    del task  # Phase 4's Router will inspect the task; Phase 3 does not.
-    return ProviderSelection(
-        provider_id="phoenix.local_simulator",
-        backend_name="local_density_matrix",
-        quantum_technology="simulation",
-        client=LocalClassicalSimulator(),
-        selection_metadata={"phase": "phase_3_default_local_sim"},
+    global _ROUTER
+    if _ROUTER is None:
+        _ROUTER = Router(build_default_registry())
+    return _ROUTER
+
+
+def _get_failover() -> FailoverProtocol:
+    """Lazy module-level FailoverProtocol singleton."""
+    global _FAILOVER
+    if _FAILOVER is None:
+        _FAILOVER = FailoverProtocol(_get_router().registry)
+    return _FAILOVER
+
+
+def _build_routing_request(task: PhysicsTask) -> RoutingRequest:
+    """Translate a :class:`PhysicsTask` into a :class:`RoutingRequest`.
+
+    Phase 4 maps directly: latency tier already validated upstream,
+    cost / latency / fidelity policy fields default to None (no caps),
+    reproducibility_mode mapped from ``task.tolerance.reproducibility_mode``
+    string. Future phases (especially Phase 8 admin policy) may inject
+    per-actor cost ceilings here from the actor's tier.
+    """
+    repro_str = task.tolerance.reproducibility_mode
+    try:
+        repro_mode = ReproducibilityMode(repro_str)
+    except ValueError:
+        # Unknown reproducibility string -> default per the spec.
+        repro_mode = ReproducibilityMode.DEFAULT
+    return RoutingRequest(
+        task=task,
+        cost_ceiling_usd=None,
+        latency_budget_ms=None,
+        fidelity_floor=None,
+        reproducibility_mode=repro_mode,
+        preferred_providers=[],
+        excluded_providers=[],
+        allow_failover=True,
+        allow_simulator_fallback=True,
+    )
+
+
+def _orchestrate_with_failover(
+    verified: VerifiedAnswer,
+    decision: RoutingDecision,
+    *,
+    request_id: str,
+    error_bar_solver: float,
+    error_bar_control: float,
+    solver_id: str,
+    tolerance_max_error_bar: float,
+    allow_simulator_fallback: bool,
+) -> tuple[Result, OrchestrateProvenance, ProviderSelection]:
+    """Call orchestrate() with failover walking primary -> alternates.
+
+    Returns ``(result, orchestrate_provenance, used_selection)`` -- the
+    ``used_selection`` is the ProviderSelection that finally succeeded
+    (primary, an alternate, or the simulator fallback). The pipeline
+    composes the final ProvenanceTrace from these three.
+
+    On every :class:`OrchestrateProviderError` the failover protocol
+    quarantines the failed provider in the shared registry and walks to
+    the next candidate. When all RoutingDecision candidates fail and
+    ``allow_simulator_fallback`` is True, the failover wrapper falls
+    back to a :class:`LocalClassicalSimulator` and continues; when
+    False, raises :class:`AllAlternatesExhausted`.
+    """
+    failover = _get_failover()
+    candidates: list[ProviderSelection] = [decision.primary, *decision.alternates]
+    attempts: list[dict[str, str]] = []
+
+    for selection in candidates:
+        try:
+            result, orch_prov = orchestrate(
+                verified,
+                selection,
+                request_id=request_id,
+                error_bar_solver=error_bar_solver,
+                error_bar_control=error_bar_control,
+                solver_id=solver_id,
+                tolerance_max_error_bar=tolerance_max_error_bar,
+            )
+        except OrchestrateProviderError as exc:
+            quarantine_until = failover.quarantine(selection.provider_id)
+            attempts.append(
+                {
+                    "provider_id": selection.provider_id,
+                    "reason": f"orchestrate_failed: {exc}",
+                    "quarantine_until_utc": quarantine_until,
+                }
+            )
+            continue
+        return result, orch_prov, selection
+
+    # All RoutingDecision candidates exhausted.
+    if allow_simulator_fallback:
+        # Fall back to a fresh LocalClassicalSimulator (not in the
+        # registry's failure tracking; clean fallback path).
+        from phoenix.providers.classical.local_simulator import LocalClassicalSimulator
+
+        fallback_client = LocalClassicalSimulator()
+        fallback_selection = ProviderSelection(
+            provider_id=fallback_client.provider_id,
+            backend_name=fallback_client.backend_name,
+            quantum_technology=fallback_client.quantum_technology,
+            client=fallback_client,
+            selection_metadata={
+                "phase": "phase_4_simulator_fallback",
+                "fallback_reason": "all_alternates_exhausted",
+                "attempts_before_fallback": len(attempts),
+            },
+        )
+        try:
+            result, orch_prov = orchestrate(
+                verified,
+                fallback_selection,
+                request_id=request_id,
+                error_bar_solver=error_bar_solver,
+                error_bar_control=error_bar_control,
+                solver_id=solver_id,
+                tolerance_max_error_bar=tolerance_max_error_bar,
+            )
+        except OrchestrateProviderError as exc:
+            attempts.append(
+                {
+                    "provider_id": fallback_client.provider_id,
+                    "reason": f"simulator_fallback_failed: {exc}",
+                }
+            )
+            raise AllAlternatesExhausted(
+                "All alternates failed AND simulator fallback also failed.",
+                attempts=attempts,
+            ) from exc
+        return result, orch_prov, fallback_selection
+
+    raise AllAlternatesExhausted(
+        "All alternates failed and allow_simulator_fallback=False.",
+        attempts=attempts,
     )
 
 
@@ -206,17 +357,26 @@ def solve(task: PhysicsTask) -> Result:
         ],
     )
 
-    # ---- Layer 3: Orchestrate -----------------------------------------------
-    selection = _build_default_provider_selection(task)
-    result, orchestrate_provenance = orchestrate(
+    # ---- Layer 3: Router decision + Orchestrate (with failover) ------------
+    # Phase 4 replaced Phase 3's _build_default_provider_selection helper
+    # with a real Router.decide call. The decision carries primary +
+    # alternates ranked by Section 4.4 weighted score; the failover
+    # wrapper walks them on OrchestrateProviderError, falling back to a
+    # LocalClassicalSimulator when allow_simulator_fallback is True
+    # (default). _used_selection records which provider actually
+    # produced the Result -- lands in OrchestrateProvenance via the
+    # provider_id field on the dispatched selection.
+    routing_request = _build_routing_request(task)
+    decision = _get_router().decide(routing_request)
+    result, orchestrate_provenance, _used_selection = _orchestrate_with_failover(
         verified,
-        selection,
+        decision,
         request_id=task.request_id,
         error_bar_solver=error_bar_solver,
         error_bar_control=error_bar_control,
         solver_id=solver_id,
-        shots=1024,
         tolerance_max_error_bar=task.tolerance.max_error_bar,
+        allow_simulator_fallback=routing_request.allow_simulator_fallback,
     )
 
     # ---- Provenance composition ---------------------------------------------
