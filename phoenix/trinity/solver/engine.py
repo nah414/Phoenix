@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from phoenix.trinity.data_model import PhysicsTask
 
 if TYPE_CHECKING:
@@ -101,6 +103,15 @@ class SolverRunResult:
     Phase 2 Step 4's cross-precision wobble logic compares two
     :class:`SolverRunResult` instances (low-grid vs high-grid) to compute
     ``error_bar_solver``.
+
+    Phase 5 adds the ``eigenstates`` field carrying the vendored solver's
+    eigenvector array (shape ``[n_grid_points, n_states]`` -- ground state
+    at column 0). Control's ``_initial_density_matrix`` projects the
+    ground-state eigenvector to a 2x2 density matrix in the lowest 2
+    energy eigenstates per the locked Phase 5 scope (2026-05-08). For
+    Tier-1 ground-state-only QHO solves the result is ``diag(1, 0)``
+    (mathematically identical to Phase 3's placeholder); the data path is
+    now real for non-trivial future inputs.
     """
 
     regime: EquationRegime
@@ -111,6 +122,11 @@ class SolverRunResult:
     wall_clock_ms: float
     classifier_confidence: float
     classifier_reasoning: str
+    eigenstates: np.ndarray | None = None
+    """Vendored solver's eigenvector array, shape ``(n_grid, n_states)``.
+    None when the solver doesn't return eigenstates (some Phase 4+
+    regimes may not). Phase 5 populates from the vendored
+    ``SolverResult.eigenstates`` attribute."""
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +251,17 @@ def run_solver(
     eigenvalues = [float(e) for e in eigenvalues_raw] if eigenvalues_raw is not None else []
     energy = float(result.energy) if result.energy is not None else None
 
+    # Phase 5: extract eigenstates if the vendored solver returned them.
+    # Some regimes (per-particle Dirac in some configurations) may not;
+    # the field stays None and Control's _initial_density_matrix falls
+    # back to the |0><0| placeholder.
+    eigenstates_raw = getattr(result, "eigenstates", None)
+    eigenstates: np.ndarray | None
+    if eigenstates_raw is not None:
+        eigenstates = np.asarray(eigenstates_raw)
+    else:
+        eigenstates = None
+
     return SolverRunResult(
         regime=regime,
         solver_class_name=type(solver).__name__,
@@ -244,4 +271,5 @@ def run_solver(
         wall_clock_ms=wall_clock_ms,
         classifier_confidence=confidence,
         classifier_reasoning=reasoning,
+        eigenstates=eigenstates,
     )

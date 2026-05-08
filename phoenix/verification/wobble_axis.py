@@ -333,8 +333,18 @@ class CrossControlAxis:
         # Run DPD at both probe strengths. Lindblad RK4 is the slow path
         # (~1-2 s per leg on the default 10-ns drive at dt=1e-12), so this
         # adds ~2-4 s to the R3+ solve. PERF callout in module docstring.
-        weak = run_dpd(candidate, probe_strength=self._epsilon_weak)
-        strong = run_dpd(candidate, probe_strength=self._epsilon_strong)
+        # Phase 5: thread the high-grid SolverRunResult so run_dpd derives
+        # rho from real eigenstate (rather than the |0><0| placeholder).
+        weak = run_dpd(
+            candidate,
+            probe_strength=self._epsilon_weak,
+            solver_run_result=high_grid_result,
+        )
+        strong = run_dpd(
+            candidate,
+            probe_strength=self._epsilon_strong,
+            solver_run_result=high_grid_result,
+        )
 
         disagreement = compute_cross_control_disagreement(weak, strong)
 

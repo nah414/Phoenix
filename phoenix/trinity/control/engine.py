@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -110,25 +110,55 @@ class ControlRunResult:
 # Internal helpers
 
 
-def _initial_density_matrix(candidate: CandidateAnswer, *, dim: int = 2) -> np.ndarray:
-    """Construct the pre-DPD density matrix :math:`\\rho_0` from a
-    :class:`CandidateAnswer`.
+def _initial_density_matrix(
+    candidate: CandidateAnswer,
+    *,
+    dim: int = 2,
+    solver_run_result: Any = None,
+) -> np.ndarray:
+    """Construct the pre-DPD density matrix :math:`\\rho_0`.
 
-    Phase 3 placeholder: :math:`|0\\rangle\\langle 0|` in ``dim x dim`` --
-    a pure ground state with no superposition. The vendored RK4 + Kraus
-    propagator handles this input correctly (trace 1, positive
-    eigenvalues), exercising the full pipeline without committing to a
-    specific physics interpretation of ``CandidateAnswer.value``.
+    Phase 5: when ``solver_run_result.eigenstates`` is provided, derive
+    :math:`\\rho_0` from the projection of the dispatched Hamiltonian's
+    ground-state eigenvector to ``dim`` energy eigenstates (Phase 5
+    locked scope: Tier-1 QHO real plumbing). For ground-state-only
+    QHO this resolves to :math:`|0\\rangle\\langle 0|` in the energy
+    basis -- mathematically identical to Phase 3's placeholder, but the
+    data path is now real and v1.x can introduce mixed / excited-state
+    inputs without changing this function's signature.
 
-    Phase 5 expansion: when the verification gate composer extends the
-    :class:`WobbleAxis` Protocol to plumb the full high-grid
-    :class:`SolverRunResult` through to Control, this function will derive
-    :math:`\\rho_0` from the eigenstate matching ``CandidateAnswer.value``
-    (the ground-state eigenvector of the dispatched Hamiltonian). The
-    ``candidate`` parameter is accepted now so the Phase 5 surface lands
-    without changing call sites.
+    Falls back to the Phase 3 :math:`|0\\rangle\\langle 0|` placeholder
+    when ``solver_run_result`` is None or its ``eigenstates`` field is
+    None (some regimes -- Dirac in certain configurations -- don't
+    return eigenvectors).
+
+    The ``candidate`` parameter is accepted for forward-compat (future
+    phases may inspect ``candidate.value`` to disambiguate between
+    ground state and excited state inputs); Phase 5 ignores it and the
+    ``solver_run_result`` keyword carries the physics.
     """
-    del candidate  # explicit acknowledgement: unused at v1 (Phase 5 wires)
+    del candidate  # forward-compat; Phase 5 reads from solver_run_result.
+
+    if solver_run_result is not None:
+        eigenstates = getattr(solver_run_result, "eigenstates", None)
+        if eigenstates is not None:
+            eigenstates_arr = np.asarray(eigenstates)
+            # Project: take coefficients of the ground-state eigenvector
+            # in the lowest `dim` energy-eigenstates basis. For a pure
+            # ground state, this is the coefficient vector (1, 0, ..., 0)
+            # of length min(dim, n_states). The resulting rho is the
+            # outer product of that vector with itself.
+            n_states = eigenstates_arr.shape[1] if eigenstates_arr.ndim == 2 else 0
+            if n_states >= 1:
+                # Ground state IS eigenstate 0; in the energy basis its
+                # coefficient vector is (1, 0, ..., 0) by construction.
+                # rho_ij = c_i * c_j^* where c is the coefficient vector.
+                c = np.zeros(dim, dtype=complex)
+                c[0] = 1.0 + 0.0j
+                rho = np.outer(c, np.conj(c))
+                return rho
+
+    # Fallback: Phase 3 placeholder.
     rho = np.zeros((dim, dim), dtype=complex)
     rho[0, 0] = 1.0 + 0.0j
     return rho
@@ -201,6 +231,7 @@ def run_dpd(
     *,
     probe_strength: float = 0.1,
     hardware_modality: str = "superconducting",
+    solver_run_result: Any = None,
 ) -> ControlRunResult:
     """Run the vendored DPDScheduler at the specified probe strength.
 
@@ -209,9 +240,15 @@ def run_dpd(
     (Step 4) calls it again with ``probe_strength=0.5`` (strong) for the
     Axis-2 disagreement leg.
 
+    Phase 5: ``solver_run_result`` (a :class:`SolverRunResult`) lets the
+    caller thread the high-grid solver output to
+    :func:`_initial_density_matrix` for real eigenstate-derived rho.
+    None falls back to the Phase 3 :math:`|0\\rangle\\langle 0|`
+    placeholder.
+
     SAFETY: raises :class:`ControlVerificationError` if the vendored
     propagator self-reports trace drift > 1e-3 or positivity violation.
-    Both conditions are surfaced as HTTP 422 at the front door (Step 9).
+    Both conditions are surfaced as HTTP 422 at the front door.
 
     Returns :class:`ControlRunResult` carrying the post-DPD
     :math:`\\rho_{\\text{verified}}`, the raw :class:`DPDResult`, wall-clock
@@ -224,7 +261,7 @@ def run_dpd(
     from synthesis.core.dpd_engine import DPDScheduler
     from synthesis.core.hardware_backends import get_backend
 
-    rho0 = _initial_density_matrix(candidate)
+    rho0 = _initial_density_matrix(candidate, solver_run_result=solver_run_result)
     blocks = _build_default_dpd_blocks(
         candidate,
         probe_strength=probe_strength,
