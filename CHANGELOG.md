@@ -15,6 +15,85 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev2] — 2026-05-08
+
+Phase 2 shipped. Trinity Core's Solver subsystem is wired through the front
+door end-to-end. `POST /v1/tasks` accepts a `SolveRequest`, dispatches via
+the vendored `HamiltonianClassifier`, runs cross-precision wobble (Axis 1)
+at `RungDepth.R2_CROSS_PRECISION`, and returns a `CandidateAnswer` with
+the `phase: phase_2_solver_only` honesty marker. Phase 3 promotes the
+return type to a full `Result` envelope once Control + Orchestrate land.
+
+### What landed (commits ba1100d → this release)
+
+- **Trinity Core data model** (`phoenix/trinity/data_model.py`): seven
+  frozen dataclasses -- `ToleranceSpec`, `SolverProvenance`,
+  `ProvenanceTrace`, `PhysicsTask`, `CandidateAnswer`, `VerifiedAnswer`,
+  `Result` -- plus their supporting types. `agreement_type:
+  DisagreementType` per the 2026-05-08 drift correction (vendored class
+  name, not the v1.0 spec drift `AgreementType`).
+- **Latency tier dial** (`phoenix/_internal/latency.py`): `LatencyTier`
+  enum with `BATCH_REALTIME` / `STREAMING_REALTIME` /
+  `PERCEPTION_REALTIME` plus `LatencyTierNotImplemented` typed exception.
+  v1 routes only `BATCH_REALTIME`; the other two are
+  defined-but-not-routable per the v1.1 follow-up locked 2026-05-08.
+- **`WobbleAxis` Protocol** (`phoenix/verification/wobble_axis.py`): the
+  Protocol contract that parameterizes Phase 5's verification gate, plus
+  `RungDepth` enum, `AxisResult` dataclass, and the first concrete impl
+  `CrossPrecisionAxis`. Perception extension's three axes at Phase 20 plug
+  in as additional `WobbleAxis` impls without forking the gate.
+- **Solver engine adapter** (`phoenix/trinity/solver/engine.py`): wraps the
+  vendored `EquationSolver` registry into Phoenix's `PhysicsTask` ->
+  dispatched-solver flow. `pick_solver()` honors `regime_hint` override
+  on `PhysicsTask.metadata`; `run_solver()` runs at a specified grid
+  resolution and returns a typed `SolverRunResult`. Frontier-physics
+  regime gate raises `FrontierPhysicsRefused` for Wheeler-DeWitt /
+  Gravitational Decoherence / Semiclassical Gravity without
+  `frontier_physics=True` permission (architecture Decision 7).
+- **Cross-precision wobble logic** (`phoenix/trinity/solver/cross_precision.py`):
+  pure-function `compute_cross_precision_disagreement(low, high)` that
+  preserves the full pairwise distance row alongside the scalar per
+  Section 6.2's DO-NOT-COLLAPSE invariant.
+- **Trinity Core pipeline** (`phoenix/trinity/pipeline.py`): `solve(task)
+  -> CandidateAnswer` orchestrates the Solver-only path. Latency-tier
+  gate refuses non-routable tiers with typed exceptions naming the
+  release that ships support. Reuses Step 4's high-grid `SolverRunResult`
+  (stashed in `AxisResult.metadata["high_grid_result"]`) to extract the
+  canonical value -- saves one solver invocation per solve.
+- **Front-door endpoint** (`phoenix/api/routes.py`): `POST /v1/tasks`
+  accepts `SolveRequest`, returns Solver-only response with
+  `reproducibility_asterisk`. Status code mapping: 200 success, 400 bad
+  latency_tier or no eligible solver, 403 frontier-physics refused, 501
+  latency tier defined-but-not-routable.
+
+### Tests
+
+- 34 tests passing (was 19 at end of Phase 1; +15 from Phase 2).
+  - Phase 2 unit tests: 3 (CrossPrecisionAxis) + 5 (pipeline) = 8.
+  - Phase 2 integration tests: 7 (POST /v1/tasks).
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all 4 pass.
+
+### Out of scope for Phase 2 (explicit deferrals)
+
+- Cross-control wobble (Axis 2) and cross-provider wobble (Axis 3) full
+  impls land in Phase 3 (axis classes) + Phase 5 (gate orchestration).
+- Verification gate's full rung table (R1-R5) and adaptive promotion
+  logic land in Phase 5.
+- Tasks list / get / replay / approve_promotion / cancel endpoints land
+  in Phase 3+ once the ledger backs them.
+- WebSocket events (Section 5.3) land with the verification gate at Phase 5+.
+- Actor-verification at the front door lands in Phase 6.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev1` ->
+  `1.0.0.dev2`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev2`,
+  `vendor_synced_at: 2026-05-08T18:05:38+00:00`, `dr_frank_and_eddy_commit`
+  unchanged at `fa074e5e...`).
+
+---
+
 ## [Architecture v1.1 follow-up] — 2026-05-08
 
 Documentation-only follow-up to the 2026-05-07 v1.1 revision. Phoenix-the-package stays at `1.0.0.dev1`; no implementation impact. Captures five architectural decisions Adam approved on 2026-05-08 that future-proof v1 for the perception extension without writing perception code, plus three spec-vs-source drift corrections.
