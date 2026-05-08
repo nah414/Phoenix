@@ -32,6 +32,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from phoenix.api.event_broker import get_broker
 from phoenix.router.data_model import RoutingRequest
 from phoenix.router.errors import NoEligibleProvidersError
 from phoenix.trinity.control.engine import run_dpd
@@ -113,6 +114,7 @@ class VerificationGate:
         subsystems unchanged.
         """
         t_start = time.perf_counter()
+        broker = get_broker()
 
         # Section 6.8 fail-closed: read drift state first; raise if
         # unavailable (Phase 5 stub never raises; Phase 7 wires real
@@ -125,6 +127,18 @@ class VerificationGate:
         promotions = 0
         budget_bound = False
 
+        # Phase 6a Section 5.3: emit task.started so WS clients streaming
+        # /v1/ws/tasks/{task_id}/stream see the gate kick off.
+        broker.emit(
+            task.request_id,
+            "task.started",
+            {
+                "initial_rung": initial_rung.name,
+                "max_error_bar": max_error_bar,
+                "drift_state": drift.state,
+            },
+        )
+
         axis_results: list[AxisResult] = []
 
         # ---- Layer 1: Solver + Axis 1 (cross-precision) -------------------
@@ -136,9 +150,29 @@ class VerificationGate:
         else:
             high_grid_result = None
 
+        # Section 5.3: task.solver.complete.
+        broker.emit(
+            task.request_id,
+            "task.solver.complete",
+            {
+                "error_bar_solver": axis_1_result.error_bar_contribution,
+                "skipped": axis_1_result.metadata.get("skipped", False),
+            },
+        )
+
         # Reactive promotion check after Axis 1.
         promoted = self._maybe_promote(axis_1_result, current_rung, max_error_bar, promotions)
         if promoted is not None:
+            broker.emit(
+                task.request_id,
+                "task.verification.promoted",
+                {
+                    "from_rung": current_rung.name,
+                    "to_rung": promoted.name,
+                    "promoting_axis": axis_1_result.axis_name,
+                    "reason": "axis_disagreement_exceeded_half_remaining_budget",
+                },
+            )
             current_rung = promoted
             promotions += 1
 
@@ -157,9 +191,30 @@ class VerificationGate:
                 axis_results.append(axis_2_result)
                 weak_control = axis_2_result.metadata.get("weak_control_result")
 
+            # Section 5.3: task.control.complete.
+            broker.emit(
+                task.request_id,
+                "task.control.complete",
+                {
+                    "error_bar_control": axis_2_result.error_bar_contribution,
+                    "skipped": axis_2_result.metadata.get("skipped", False),
+                    "metric": axis_2_result.metadata.get("metric"),
+                },
+            )
+
             # Reactive promotion check after Axis 2.
             promoted = self._maybe_promote(axis_2_result, current_rung, max_error_bar, promotions)
             if promoted is not None:
+                broker.emit(
+                    task.request_id,
+                    "task.verification.promoted",
+                    {
+                        "from_rung": current_rung.name,
+                        "to_rung": promoted.name,
+                        "promoting_axis": axis_2_result.axis_name,
+                        "reason": "axis_disagreement_exceeded_half_remaining_budget",
+                    },
+                )
                 current_rung = promoted
                 promotions += 1
 
@@ -201,6 +256,16 @@ class VerificationGate:
         primary_request = self._build_routing_request(task)
         primary_decision = self._router.decide(primary_request)
         solver_id = self._build_solver_id(high_grid_result)
+        # Section 5.3: task.orchestrate.progress.
+        broker.emit(
+            task.request_id,
+            "task.orchestrate.progress",
+            {
+                "provider_id": primary_decision.primary.provider_id,
+                "backend_name": primary_decision.primary.backend_name,
+                "estimated_fidelity": primary_decision.estimated_fidelity,
+            },
+        )
         primary_result, primary_orch_prov = orchestrate(
             verified,
             primary_decision.primary,
@@ -336,7 +401,7 @@ class VerificationGate:
         # PhoenixDisagreementType is a sibling enum exposed via the
         # VerificationProvenance for audit. Map back to the closest vendored
         # value for the Result envelope.
-        return Result(
+        result = Result(
             value=primary_result.value,
             error_bar=error_bar,
             sigma=sigma,
@@ -344,6 +409,24 @@ class VerificationGate:
             kpi_bundle_orchestrate=primary_result.kpi_bundle_orchestrate,
             provenance=trace,
         )
+
+        # Section 5.3: task.complete with summary fields the WS client
+        # can use to render final status without re-fetching the full
+        # ProvenanceTrace (which is large).
+        broker.emit(
+            task.request_id,
+            "task.complete",
+            {
+                "value": float(result.value) if isinstance(result.value, (int, float)) else None,
+                "error_bar": result.error_bar,
+                "sigma": result.sigma,
+                "agreement_type": result.agreement_type.value,
+                "phoenix_agreement_type": agreement_type.value,
+                "final_rung": current_rung.name,
+                "promotions": promotions,
+            },
+        )
+        return result
 
     # ----- helpers ------------------------------------------------------
 
