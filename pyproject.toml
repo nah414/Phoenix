@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev2"
-description = "Production-grade quantum-accuracy middleware (Phase 2 -- Solver-only path)"
+version = "1.0.0.dev3"
+description = "Production-grade quantum-accuracy middleware (Phase 3 -- Solver + Control + Orchestrate path)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]

@@ -15,6 +15,152 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev3] — 2026-05-08
+
+Phase 3 shipped. Trinity Core's Control and Orchestrate subsystems are
+now wired through the pipeline end-to-end. `POST /v1/tasks` returns the
+architecturally-correct `Result` envelope (top-level value, error_bar,
+sigma, agreement_type, kpi_bundle_orchestrate, three-layer ProvenanceTrace
+with cloud_shots_recorded mirror per Section 1 Decision 20). The
+`phase_2_solver_only` honesty marker is retired; everything reads
+`phase_3_solver_control_orchestrate`. Six of seven Orchestrate modules
+ship in Phase 3; `cross_provider.py` and `CrossProviderAxis` (Axis 3)
+defer to Phase 5 alongside the verification gate's rung table.
+
+### Locked scope decisions (2026-05-08, executed)
+
+1. Axis 3 fully deferred to Phase 5. No `cross_provider.py`, no
+   `CrossProviderAxis` class in Phase 3. Aligns with the orchestrate/README
+   timeline.
+2. `LocalClassicalSimulator` is the only Phase 3 `BaseProviderClient` impl,
+   landing at `phoenix/providers/classical/local_simulator.py`. Phase 4
+   adds cloud quantum adapters as siblings.
+3. Default verification depth = `R3_TWO_AXES`. The pipeline runs Axis 1 +
+   Axis 2 by default. Phase 5's rung-table promotion logic is not in scope.
+4. Typed `KPIBundle` introduced; `data_model.py` field types tightened from
+   `dict[str, Any]` to `KPIBundle` per Section 2.5.
+
+### What landed (commits 3c910d8 → eb20d36)
+
+- **Typed `KPIBundle`** (`phoenix/trinity/orchestrate/kpi_bundle.py`):
+  Phoenix-native frozen dataclass with `fidelity`, `latency_us`,
+  `backaction`, `shots_used`, `shot_budget`, `status` per Section 2.5.
+  `KPIStatus` enum: `OK` / `WARN` / `FAIL`.
+- **Data model tightening** (`phoenix/trinity/data_model.py`):
+  `VerifiedAnswer.dpd_result` (`Any` → `DPDResult`),
+  `VerifiedAnswer.kpi_bundle_control` and `Result.kpi_bundle_orchestrate`
+  (`dict[str, Any]` → `KPIBundle`), `ProvenanceTrace.control` and
+  `.orchestrate` (`Any` → typed). New `ControlProvenance` and
+  `OrchestrateProvenance` dataclasses.
+- **Control engine adapter** (`phoenix/trinity/control/engine.py`):
+  `run_dpd(candidate, *, probe_strength=0.1,
+  hardware_modality="superconducting") -> ControlRunResult`. Wraps the
+  vendored `DPDScheduler.execute()` against a `|0⟩⟨0|` placeholder
+  density matrix (Phase 5 wires the real eigenstate). SAFETY: raises
+  `ControlVerificationError` on `trace_preservation` drift > 1e-3 or
+  positivity violation.
+- **Cross-control wobble (Axis 2)** (`phoenix/trinity/control/cross_probe.py`
+  + `phoenix/verification/wobble_axis.py`): trace-distance metric
+  `T(ρ₁, ρ₂) = (1/2) Σ |λᵢ(ρ₁ - ρ₂)|` per the plan's R1 risk decision.
+  `CrossControlAxis` registers as the second concrete `WobbleAxis`
+  Protocol impl. R3+ runs eps=0.1 + eps=0.5 sweep; the weak-probe leg
+  doubles as the canonical run for the pipeline (PERF win ~1-2 s saved).
+  Optional `prior_high_grid_result` constructor injection lets the
+  pipeline skip a redundant solver call.
+- **Orchestrate scaffolding** (4 new modules under
+  `phoenix/trinity/orchestrate/`): `provider_client.py` (BaseProviderClient
+  Protocol + ProviderSubmission/RawResult dataclasses + ProviderError
+  hierarchy), `bundle_builder.py` (pure translator with deterministic
+  16-char SHA-256 bundle hash), `result_extractor.py` (raw result + KPI
+  composer), `drift_feedback.py` (in-memory DriftSignal buffer for
+  Phase 4's Router intelligence layer to drain).
+- **Router data model** (`phoenix/router/data_model.py`):
+  `RoutingDecision` + `ProviderSelection` typed dataclasses;
+  forward-compat with Phase 4's Router producer.
+- **LocalClassicalSimulator** (`phoenix/providers/classical/local_simulator.py`):
+  the only Phase 3 concrete `BaseProviderClient`. Synchronous trace
+  expectation against the verified ρ; `cloud_shots_recorded=False`.
+- **Orchestrate engine** (`phoenix/trinity/orchestrate/engine.py`):
+  top-level `orchestrate(verified, selection, ...)` that sequences
+  bundle_builder → provider_client.submit → result_extractor →
+  drift_feedback and produces `(Result, OrchestrateProvenance)`.
+  Quadrature combiner per Section 11.1.1 placeholder; agreement_type
+  mapping per the vendored `DisagreementType` enum (HEDGED_CONSENSUS /
+  UNKNOWN; Phase 5 extends).
+- **Three-layer pipeline** (`phoenix/trinity/pipeline.py`):
+  `solve(task) -> Result` (return type promoted from `CandidateAnswer`).
+  Default depth `R2_CROSS_PRECISION` → `R3_TWO_AXES`. Layer 1 runs Axis
+  1 (cross-precision); Layer 2 runs Axis 2 (cross-control) with
+  prior_high_grid_result injection; Layer 3 dispatches Orchestrate via
+  default `_build_default_provider_selection(task)` pointing at
+  `LocalClassicalSimulator`. Provenance composition stitches all three
+  sub-traces into `ProvenanceTrace` with `cloud_shots_recorded` mirror.
+- **POST /v1/tasks promotion** (`phoenix/api/routes.py`): response shape
+  changes from `candidate_answer`-wrapped to top-level `value`,
+  `error_bar`, `sigma`, `agreement_type`, `kpi_bundle_orchestrate`,
+  flattened `provenance` with solver/control/orchestrate sub-blocks.
+  HTTP 422 added for `ControlVerificationError`; HTTP 502 added for
+  `OrchestrateProviderError`.
+
+### Tests
+
+- 50 tests passing (was 34 at end of Phase 2; +16 from Phase 3).
+  - 5 new unit-test files: `test_kpi_bundle.py` (3 tests),
+    `test_control_engine.py` (3 tests including a synthetic-injection
+    `ControlVerificationError` exercise), `test_cross_control_axis.py`
+    (4 tests including the prior_high_grid_result PERF path),
+    `test_local_simulator.py` (3 tests including unknown bundle_kind
+    refusal), `test_orchestrate_engine.py` (3 tests including a
+    BrokenProvider stub for failure propagation).
+  - Phase 2 `test_pipeline.py` and `test_solve_endpoint.py` adjusted in
+    Steps 8+9 to assert the new Result envelope shape.
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Out of scope for Phase 3 (explicit deferrals)
+
+- Cross-provider wobble (Axis 3) and `cross_provider.py` -- Phase 5
+  alongside the verification gate's rung-table orchestrator.
+- Real eigenstate plumbing (replaces the `|0⟩⟨0|` placeholder; surfaces
+  non-zero Axis 2 trace distance signal) -- Phase 5.
+- Real observable extraction at the local simulator (replaces the trace
+  expectation placeholder) -- Phase 5.
+- Cloud quantum providers (IBM Eagle / Braket / IonQ) and the Router
+  producer -- Phase 4.
+- Adaptive rung selection driven by `max_error_bar` -- Phase 5.
+- Tasks list / get / replay / approve_promotion / cancel endpoints --
+  Phase 3+ once the ledger backs them.
+- WebSocket events (Section 5.3) -- Phase 5+ with the gate.
+- Actor verification at the front door -- Phase 6.
+
+### Open tensions touching Phase 3 (per plan risk register)
+
+All deferrals or known-placeholders, none blocking:
+
+- **R1 (cross-control metric):** Phase 3 ships trace distance; metric name
+  in `CrossControlDisagreement.metric` and `AxisResult.metadata` so Phase
+  5's gate composer can introspect or override.
+- **R2 (DPD initial ρ placeholder):** `|0⟩⟨0|` in dim=2; Phase 5 wires
+  multi-state ρ from the high-grid `SolverRunResult`.
+- **R4 (quadrature combiner):** Section 11.1.1 OPEN; Phase 3 ships the v0
+  placeholder, per-axis bars recorded in provenance for v1.1 covariance
+  refinement.
+- **R5 (agreement_type mapping):** Phase 3 maps
+  "all axes agree within tolerance" → `HEDGED_CONSENSUS`; Phase 5's
+  `agreement_classifier` extends the vendored enum with the
+  architecture-spec values.
+- **R6 (drift buffer unbounded):** Phase 4's Router intelligence layer
+  will drain on schedule; Phase 4 may add ring-buffer semantics.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev2` ->
+  `1.0.0.dev3`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev3`,
+  `vendor_synced_at` refreshed, `dr_frank_and_eddy_commit` unchanged).
+
+---
+
 ## [1.0.0.dev2] — 2026-05-08
 
 Phase 2 shipped. Trinity Core's Solver subsystem is wired through the front
