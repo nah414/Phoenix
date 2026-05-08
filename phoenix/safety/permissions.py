@@ -100,7 +100,9 @@ class PermissionsRegistry:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path if path is not None else _permissions_path()
         self._cache: dict[str, ActorPermissions] | None = None
-        self._lock = threading.Lock()
+        # RLock so set() -> _ensure_loaded -> with self._lock doesn't
+        # deadlock against the outer set()'s acquire.
+        self._lock = threading.RLock()
 
     def _ensure_loaded(self) -> dict[str, ActorPermissions]:
         if self._cache is not None:
