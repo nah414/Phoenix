@@ -20,7 +20,6 @@ behavior is part of the v1 contract that future phases must not break.
 
 from __future__ import annotations
 
-import math
 
 import phoenix  # noqa: F401  -- triggers sys.path injection for vendored modules
 
@@ -54,51 +53,68 @@ def _qho_task(latency_tier=None, frontier_physics: bool = False):
     )
 
 
-def test_solve_returns_candidate_answer_for_qho() -> None:
-    """The Solver-only pipeline produces a sane CandidateAnswer for QHO."""
-    from phoenix.trinity.data_model import CandidateAnswer, SolverProvenance
+def test_solve_returns_result_for_qho() -> None:
+    """Phase 3: the three-layer pipeline produces a full Result envelope.
+
+    Phase 2's version of this test asserted CandidateAnswer + Solver-only
+    fields. Phase 3 promotes solve() to return a Result; this test now
+    walks the three-layer Solver + Control + Orchestrate path and verifies
+    the full envelope shape.
+    """
+    from phoenix.trinity.data_model import (
+        ControlProvenance,
+        OrchestrateProvenance,
+        ProvenanceTrace,
+        Result,
+        SolverProvenance,
+    )
+    from phoenix.trinity.orchestrate.kpi_bundle import KPIBundle, KPIStatus
     from phoenix.trinity.pipeline import solve
 
     task = _qho_task()
-    candidate = solve(task)
+    result = solve(task)
 
-    assert isinstance(candidate, CandidateAnswer)
+    assert isinstance(result, Result)
 
-    # solver_id format: "<regime>/<solver_class_name>"
-    assert "/" in candidate.solver_id
+    # value is the trace-expectation from the local-simulator path; ~1.0
+    # for valid density matrices (Phase 3 placeholder; Phase 5 wires real
+    # observable extraction).
+    assert abs(float(result.value) - 1.0) < 1e-6, f"Phase 3 trace expectation: got {result.value}"
 
-    # value is the ground-state eigenvalue; QHO analytical = HBAR * omega / 2.
+    # Combined error_bar is the quadrature of the three layer bars; in
+    # Phase 3 only error_bar_solver contributes meaningfully (error_bar_control
+    # depends on the cross-control trace distance, which is 0 for the
+    # placeholder |0><0| input; error_bar_orchestrate is 0 at R3).
     expected_e0 = HBAR * 1e15 * 0.5
-    assert math.isclose(
-        float(candidate.value), expected_e0, rel_tol=0.02
-    ), f"QHO ground state: expected {expected_e0:.4e}, got {candidate.value:.4e}"
+    assert result.error_bar > 0.0
+    assert result.error_bar < 0.05 * expected_e0
 
-    # error_bar_solver should be small relative to E0 since the QHO
-    # converges rapidly with grid refinement.
-    assert candidate.error_bar_solver >= 0.0
-    assert candidate.error_bar_solver < 0.05 * expected_e0
+    # sigma is a Phase 3 placeholder; tracks error_bar.
+    assert result.sigma == result.error_bar
 
-    # sigma_solver tracks error_bar_solver in Phase 2 (placeholder).
-    assert candidate.sigma_solver == candidate.error_bar_solver
+    # KPIBundle from Orchestrate is typed.
+    assert isinstance(result.kpi_bundle_orchestrate, KPIBundle)
+    assert result.kpi_bundle_orchestrate.status in {KPIStatus.OK, KPIStatus.WARN, KPIStatus.FAIL}
+    assert result.kpi_bundle_orchestrate.shots_used > 0
 
-    # KPI bundle carries the audit fields the architecture spec promises.
-    bundle = candidate.solver_kpi_bundle
-    assert "wall_clock_ms_total" in bundle
-    assert "wall_clock_ms_low" in bundle
-    assert "wall_clock_ms_high" in bundle
-    assert bundle["n_grid_low"] == 200
-    assert bundle["n_grid_high"] == 400
-    assert bundle["rung_depth"] == "R2_CROSS_PRECISION"
-    assert "dispatched_regime" in bundle
-    assert "dispatched_solver_class" in bundle
+    # Full ProvenanceTrace with all three sub-blocks.
+    assert isinstance(result.provenance, ProvenanceTrace)
+    assert isinstance(result.provenance.solver, SolverProvenance)
+    assert isinstance(result.provenance.control, ControlProvenance)
+    assert isinstance(result.provenance.orchestrate, OrchestrateProvenance)
+    assert result.provenance.solver.phase == "phase_3_solver_control_orchestrate"
+    assert result.provenance.control.phase == "phase_3_solver_control_orchestrate"
+    assert result.provenance.orchestrate.phase == "phase_3_solver_control_orchestrate"
+    assert result.provenance.solver.request_id == "test-pipeline-qho"
+    assert result.provenance.cloud_shots_recorded is False  # local simulator path
 
-    # Provenance carries the phase-2-incomplete honesty marker.
-    assert isinstance(candidate.provenance_solver, SolverProvenance)
-    assert candidate.provenance_solver.phase == "phase_2_solver_only"
-    assert candidate.provenance_solver.request_id == "test-pipeline-qho"
-    assert candidate.provenance_solver.n_grid_low == 200
-    assert candidate.provenance_solver.n_grid_high == 400
-    assert candidate.provenance_solver.cross_precision_axis_result is not None
+    # Solver provenance carries the cross-precision axis result.
+    assert result.provenance.solver.cross_precision_axis_result is not None
+    # Control provenance carries the cross-control axis result.
+    assert result.provenance.control.cross_control_axis_result is not None
+    # Orchestrate provenance carries the bundle hash + provider id.
+    assert result.provenance.orchestrate.provider_id == "phoenix.local_simulator"
+    assert len(result.provenance.orchestrate.bundle_hash) == 16
 
 
 def test_solve_streaming_realtime_raises_with_v2_message() -> None:
@@ -175,7 +191,7 @@ def test_solve_frontier_physics_allowed_when_opted_in() -> None:
     from synthesis.equations.base import PhysicsContext
 
     from phoenix._internal.latency import LatencyTier
-    from phoenix.trinity.data_model import CandidateAnswer, PhysicsTask, ToleranceSpec
+    from phoenix.trinity.data_model import PhysicsTask, Result, ToleranceSpec
     from phoenix.trinity.pipeline import solve
 
     ctx = PhysicsContext(
@@ -198,6 +214,9 @@ def test_solve_frontier_physics_allowed_when_opted_in() -> None:
         metadata={"regime_hint": "SEMICLASSICAL_GRAVITY"},
     )
 
-    candidate = solve(task)
-    assert isinstance(candidate, CandidateAnswer)
-    assert "SEMICLASSICAL_GRAVITY" in candidate.solver_id
+    result = solve(task)
+    assert isinstance(result, Result)
+    # Solver provenance carries the dispatched solver name.
+    assert result.provenance is not None
+    assert result.provenance.solver is not None
+    assert "SEMICLASSICAL_GRAVITY" in result.provenance.solver.dispatched_solver

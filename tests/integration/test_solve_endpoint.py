@@ -24,8 +24,14 @@ from phoenix.api.routes import app
 HBAR = 1.054571817e-34
 
 
-def test_solve_endpoint_qho_ground_state() -> None:
-    """A QHO solve over HTTP returns a sane ground-state energy."""
+def test_solve_endpoint_qho_returns_full_result_envelope() -> None:
+    """A QHO solve over HTTP returns the full Phase 3 Result envelope.
+
+    Phase 2 wrapped the solver-only output in a ``candidate_answer``
+    sub-block; Phase 3 promotes to top-level ``value`` / ``error_bar`` /
+    ``sigma`` / ``agreement_type`` / ``kpi_bundle_orchestrate`` plus a
+    flattened ``provenance`` carrying solver + control + orchestrate.
+    """
     client = TestClient(app)
     body = {
         "physics_context": {
@@ -45,31 +51,52 @@ def test_solve_endpoint_qho_ground_state() -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
 
-    assert payload["status"] == "completed_solver_only"
-    assert payload["phase"] == "phase_2_solver_only"
+    assert payload["status"] == "completed"
+    assert payload["phase"] == "phase_3_solver_control_orchestrate"
     assert payload["task_id"].startswith("req_")
     assert "reproducibility_asterisk" in payload
 
-    cand = payload["candidate_answer"]
-    expected_e0 = HBAR * 1e15 * 0.5
-    assert (
-        abs(cand["value"] - expected_e0) / expected_e0 < 0.02
-    ), f"QHO ground state: expected {expected_e0:.4e}, got {cand['value']:.4e}"
-    assert cand["error_bar_solver"] > 0
-    assert cand["error_bar_solver"] < 1e-3  # within max_error_bar in absolute J
-    assert cand["sigma_solver"] == cand["error_bar_solver"]  # Phase 2 placeholder
+    # Result envelope: top-level value, error_bar, sigma, agreement_type.
+    # Phase 3's local-simulator path returns trace expectation ~1.0.
+    assert abs(payload["value"] - 1.0) < 1e-6
+    # error_bar quadrature-combined from cross-precision (Phase 3 only
+    # contributing axis); sigma tracks error_bar (Phase 3 placeholder).
+    assert payload["error_bar"] > 0
+    assert payload["sigma"] == payload["error_bar"]
+    assert payload["agreement_type"] in {"hedged_consensus", "unknown"}
 
-    bundle = cand["solver_kpi_bundle"]
-    assert bundle["n_grid_low"] == 200
-    assert bundle["n_grid_high"] == 400
-    assert bundle["rung_depth"] == "R2_CROSS_PRECISION"
-    assert "/" in cand["solver_id"]  # "<regime>/<solver_class>"
+    # Typed KPIBundle fields.
+    kpi = payload["kpi_bundle_orchestrate"]
+    assert "fidelity" in kpi
+    assert "latency_us" in kpi
+    assert "backaction" in kpi
+    assert "shots_used" in kpi
+    assert "shot_budget" in kpi
+    assert kpi["status"] in {"ok", "warn", "fail"}
 
+    # Provenance carries all three sub-blocks.
     prov = payload["provenance"]
-    assert prov["phase"] == "phase_2_solver_only"
     assert prov["request_id"] == payload["task_id"]
-    assert prov["n_grid_low"] == 200
-    assert prov["n_grid_high"] == 400
+    assert prov["cloud_shots_recorded"] is False  # local-simulator path
+
+    assert "solver" in prov
+    assert prov["solver"]["phase"] == "phase_3_solver_control_orchestrate"
+    assert "/" in prov["solver"]["dispatched_solver"]
+    assert prov["solver"]["n_grid_low"] == 200
+    assert prov["solver"]["n_grid_high"] == 400
+    assert prov["solver"]["axis_1_error_bar_contribution"] is not None
+
+    assert "control" in prov
+    assert prov["control"]["phase"] == "phase_3_solver_control_orchestrate"
+    assert prov["control"]["dpd_n_blocks"] >= 1
+    assert prov["control"]["axis_2_metric"] == "trace_distance"
+
+    assert "orchestrate" in prov
+    assert prov["orchestrate"]["phase"] == "phase_3_solver_control_orchestrate"
+    assert prov["orchestrate"]["provider_id"] == "phoenix.local_simulator"
+    assert prov["orchestrate"]["quantum_technology"] == "simulation"
+    assert len(prov["orchestrate"]["bundle_hash"]) == 16
+    assert prov["orchestrate"]["cloud_shots_recorded"] is False
 
 
 def test_solve_endpoint_streaming_returns_501() -> None:
