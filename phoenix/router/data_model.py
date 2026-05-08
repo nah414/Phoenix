@@ -1,33 +1,56 @@
-"""Router subsystem typed data model (Phase 3 forward-compat).
+"""Router subsystem typed data model.
 
 Per architecture v1 Section 4: every Phoenix solve produces a
 :class:`RoutingDecision` selecting which provider Orchestrate dispatches
-against. Phase 4 ships the producer (the seven-stage routing algorithm at
-``phoenix/router/decision.py``); Phase 3 ships the typed dataclasses so
-Orchestrate's :func:`engine.orchestrate` can accept a ``ProviderSelection``
-argument from day one without churning the call site when Phase 4 lands.
+against. Phase 3 shipped :class:`ProviderSelection` and
+:class:`RoutingDecision` as forward-compat dataclasses with no producer.
+Phase 4 adds:
 
-This is the same forward-compat pattern Phase 2 used for
-:class:`VerifiedAnswer` / :class:`Result`: define the data classes now,
-defer the producer to the phase that owns it.
+- :class:`RoutingRequest` -- the input shape :func:`Router.decide` consumes.
+  Carries the :class:`PhysicsTask` plus user-policy filters
+  (cost_ceiling_usd, latency_budget_ms, fidelity_floor) and the
+  reproducibility-mode constraint.
+- :class:`ReproducibilityMode` -- one of ``default`` / ``strict`` /
+  ``replay`` per Section 1 Decision 19. Phase 4 honors ``replay`` (Stage 5
+  pins to recorded provider) and ``default`` (no replay constraint);
+  ``strict`` semantics land at Phase 7 with the ledger.
 
-Phase 3's pipeline orchestrator constructs a default
-:class:`ProviderSelection` pointing at
-:class:`LocalClassicalSimulator` directly (no real routing yet). Phase 4
-replaces that path with ``Router.decide(routing_request) -> RoutingDecision``
-and the seven-stage algorithm.
+The seven-stage routing algorithm lives in
+``phoenix/router/decision.py`` (Phase 4 Step 7).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     # TYPE_CHECKING import keeps the runtime cycle broken (provider_client
     # imports nothing from phoenix.router); mypy resolves the type via the
     # forward reference.
+    from phoenix.trinity.data_model import PhysicsTask
     from phoenix.trinity.orchestrate.provider_client import BaseProviderClient
+
+
+class ReproducibilityMode(Enum):
+    """Reproducibility tier per architecture v1 Section 1 Decision 19.
+
+    Three tiers; Phase 4's Router honors the first two (Stage 5 pins to
+    the recorded provider on ``REPLAY``); ``STRICT`` semantics (bit-exact
+    local replay) land at Phase 7 with the Omega Ledger.
+    """
+
+    DEFAULT = "default"
+    """Provenance written; no replay guarantee."""
+
+    STRICT = "strict"
+    """Bit-exact local replay (Phase 7 backed)."""
+
+    REPLAY = "replay"
+    """Re-execute and verify before returning. Stage 5 pins the provider
+    to the recorded :class:`ProviderSelection` from the ledger entry being
+    replayed; raises :class:`ReplayProviderUnavailable` if it's gone."""
 
 
 @dataclass(frozen=True)
@@ -106,3 +129,56 @@ class RoutingDecision:
     estimated_latency_ms: float = 0.0
     estimated_fidelity: float = 0.0
     decision_provenance: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RoutingRequest:
+    """The input :func:`Router.decide` consumes (Phase 4).
+
+    Per architecture v1 Section 4.3: the Router takes a ``PhysicsTask``
+    plus the user-policy envelope (cost ceiling, latency budget, fidelity
+    floor, preferred / excluded providers, reproducibility mode) and
+    returns a :class:`RoutingDecision`.
+
+    Fields:
+        task: The :class:`PhysicsTask` to route. The Router parses its
+            ``physics_context`` to determine the dispatched Hamiltonian
+            regime + qubit count for Stage 1's modality eligibility filter.
+        cost_ceiling_usd: Per-solve dollar cap. ``None`` means no ceiling.
+            Section 4.7 v1 defaults: $5.00 (default), $25.00 (strict),
+            $50.00 (replay). Phase 4's Stage 2 refuses candidates whose
+            ``estimated_cost_usd`` exceeds the ceiling.
+        latency_budget_ms: Soft latency cap in milliseconds. ``None``
+            means no budget. Stage 2 drops candidates whose
+            ``estimated_latency_ms`` exceeds; Stage 6 ranking penalizes
+            higher latency.
+        fidelity_floor: Soft minimum fidelity. ``None`` means no floor.
+            Stage 2 drops candidates whose ``estimated_fidelity`` falls
+            below.
+        reproducibility_mode: Phase 4 honors ``DEFAULT`` and ``REPLAY``;
+            ``STRICT`` Phase 7.
+        preferred_providers: Stage 6 ranking adds a small bonus to
+            candidates whose ``provider_id`` appears here. Empty list =
+            no preference.
+        excluded_providers: Stage 2 drops candidates whose ``provider_id``
+            appears here. Used by the verification gate's Axis 3 routing
+            (Phase 5) to force a different provider for the cross-provider
+            comparison run.
+        allow_failover: When ``False``, the Router's failover protocol
+            (Section 4.5) refuses to retry on alternates; the original
+            failure surfaces directly. ``True`` is the default.
+        allow_simulator_fallback: When ``True`` and all alternates exhaust,
+            the Router falls back to :class:`LocalClassicalSimulator` with
+            a ``degraded`` flag on the eventual :class:`Result`. ``False``
+            raises :class:`AllAlternatesExhausted`.
+    """
+
+    task: PhysicsTask
+    cost_ceiling_usd: float | None = None
+    latency_budget_ms: float | None = None
+    fidelity_floor: float | None = None
+    reproducibility_mode: ReproducibilityMode = ReproducibilityMode.DEFAULT
+    preferred_providers: list[str] = field(default_factory=list)
+    excluded_providers: list[str] = field(default_factory=list)
+    allow_failover: bool = True
+    allow_simulator_fallback: bool = True
