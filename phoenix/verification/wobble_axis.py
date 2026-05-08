@@ -125,15 +125,27 @@ class WobbleAxis(Protocol):
 class CrossPrecisionAxis:
     """Axis 1 -- cross-precision verification inside the Solver subsystem.
 
-    Runs the dispatched solver at two grid resolutions (default ``N`` and
-    ``2N``). Disagreement between the two solutions is the cross-precision
-    error bar. Always applies in v1 (all twelve vendored solvers use grids).
+    Runs the dispatched solver at two grid resolutions (``N`` from
+    ``task.physics_context.metadata["n_grid_points"]``, default 400, and
+    ``2N``). Disagreement between the two eigenvalue spectra is the
+    cross-precision error bar; the full pairwise difference row is preserved
+    in :class:`AxisResult` per architecture Section 6.2's DO-NOT-COLLAPSE
+    invariant.
 
-    **Phase 2 status:** the ``run()`` method is a skeleton. Phase 2 Step 4
-    fills in the real cross-precision logic by calling
-    ``phoenix/trinity/solver/cross_precision.py``. The ``name`` and
-    ``applies_to`` methods are operational from Step 2 so the data model's
-    forward references resolve.
+    Always applies in v1: all twelve vendored solvers use numerical grids.
+
+    Depth handling:
+        - :attr:`RungDepth.R1_FLOOR`: skip cross-precision; return a
+          zero-contribution :class:`AxisResult` with ``skipped=True`` in
+          metadata. Used by the verification gate when ``max_error_bar``
+          is loose enough that single-precision is acceptable.
+        - :attr:`RungDepth.R2_CROSS_PRECISION` and higher: run the full
+          ``N + 2N`` comparison. The high-grid :class:`SolverRunResult` is
+          stashed in ``AxisResult.metadata["high_grid_result"]`` so the
+          pipeline orchestrator (Step 5) can extract the canonical
+          ``CandidateAnswer.value`` without re-running the solver. **PERF:**
+          saves one solver invocation per solve (~10-30 ms on Phase 2's
+          QHO benchmark).
     """
 
     name: str = "cross_precision"
@@ -148,7 +160,52 @@ class CrossPrecisionAxis:
         return True
 
     def run(self, task: PhysicsTask, depth: RungDepth) -> AxisResult:
-        raise NotImplementedError(
-            "CrossPrecisionAxis.run lands in Phase 2 Step 4. "
-            "Step 4 wires phoenix/trinity/solver/cross_precision.py against this skeleton."
+        if depth == RungDepth.R1_FLOOR:
+            return AxisResult(
+                axis_name=self.name,
+                error_bar_contribution=0.0,
+                distance_matrix_row=[],
+                metadata={"skipped": True, "depth": depth.name},
+            )
+
+        # Lazy imports to avoid circular concerns at module load (engine.py
+        # imports PhysicsTask from data_model; data_model has TYPE_CHECKING
+        # import of AxisResult from this module). Function-local imports
+        # break the runtime cycle while preserving the typing-level cycle
+        # which `from __future__ import annotations` resolves.
+        from phoenix.trinity.solver.cross_precision import (
+            compute_cross_precision_disagreement,
+        )
+        from phoenix.trinity.solver.engine import run_solver
+
+        raw_n_grid_default = task.physics_context.metadata.get("n_grid_points", 400)
+        n_grid_low = int(raw_n_grid_default)
+        n_grid_high = 2 * n_grid_low
+
+        result_low = run_solver(task, n_grid=n_grid_low)
+        result_high = run_solver(task, n_grid=n_grid_high)
+
+        disagreement = compute_cross_precision_disagreement(result_low, result_high)
+
+        return AxisResult(
+            axis_name=self.name,
+            error_bar_contribution=disagreement.error_bar_scalar,
+            distance_matrix_row=disagreement.distance_matrix_row,
+            metadata={
+                "depth": depth.name,
+                "n_grid_low": disagreement.n_grid_low,
+                "n_grid_high": disagreement.n_grid_high,
+                "eig_low_count": disagreement.eig_low_count,
+                "eig_high_count": disagreement.eig_high_count,
+                "wall_clock_ms_low": result_low.wall_clock_ms,
+                "wall_clock_ms_high": result_high.wall_clock_ms,
+                "regime": result_high.regime.name,
+                "solver_class_name": result_high.solver_class_name,
+                "classifier_confidence": result_high.classifier_confidence,
+                "classifier_reasoning": result_high.classifier_reasoning,
+                # The high-grid SolverRunResult is preserved for the pipeline
+                # orchestrator to extract CandidateAnswer.value without
+                # re-running the solver. PERF win per Phase 2 docstring.
+                "high_grid_result": result_high,
+            },
         )
