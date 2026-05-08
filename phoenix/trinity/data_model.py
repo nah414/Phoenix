@@ -195,6 +195,53 @@ class OrchestrateProvenance:
 
 
 @dataclass(frozen=True)
+class VerificationProvenance:
+    """Verification-gate provenance trace (Phase 5).
+
+    Captures the gate's per-task decisions: initial rung, final rung,
+    promotion/demotion history, drift state at solve time, and the
+    full distance-matrix-derived sigma.
+
+    Fields:
+        request_id: Echoes :attr:`PhysicsTask.request_id`.
+        initial_rung: :class:`RungDepth` selected from
+            ``task.tolerance.max_error_bar`` per Section 6.4 indicative
+            thresholds.
+        final_rung: :class:`RungDepth` actually exercised (after
+            promotions / demotions). Same as ``initial_rung`` for static
+            paths.
+        promotions: Number of reactive promotions per Section 6.4 (max 2
+            per task).
+        demotions: Number of reactive demotions (max 1 per task; Phase
+            5 records as telemetry without a functional change since
+            axes already ran).
+        drift_state: Drift-state classification at solve time (``healthy``
+            / ``warning`` / ``unavailable``). Phase 5 reads from
+            :func:`phoenix.verification.drift_state.read_drift_state`
+            stub; Phase 7 wires real telemetry.
+        distance_matrix: Full per-axis distance rows, preserved per
+            Section 6.2 DO-NOT-COLLAPSE invariant.
+        wobble_score_sigma: ``sqrt(Var(distance_matrix_upper_triangle))``
+            -- standard wobble disagreement metric across all axes.
+        budget_bound: ``True`` when a promotion was refused because the
+            cost ceiling can't accommodate the next rung. Drives the
+            DEGRADED_BUDGET_BOUND classification.
+        phase: ``"phase_5_verification_gate"`` for Phase 5 honesty.
+    """
+
+    request_id: str
+    initial_rung: str
+    final_rung: str
+    promotions: int = 0
+    demotions: int = 0
+    drift_state: str = "healthy"
+    distance_matrix: list[list[float]] = field(default_factory=list)
+    wobble_score_sigma: float = 0.0
+    budget_bound: bool = False
+    phase: str = "phase_5_verification_gate"
+
+
+@dataclass(frozen=True)
 class ProvenanceTrace:
     """Full per-solve audit trail.
 
@@ -215,6 +262,7 @@ class ProvenanceTrace:
     solver: SolverProvenance | None = None
     control: ControlProvenance | None = None
     orchestrate: OrchestrateProvenance | None = None
+    verification: VerificationProvenance | None = None
     cloud_shots_recorded: bool = False
 
 
