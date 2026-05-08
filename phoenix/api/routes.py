@@ -312,7 +312,7 @@ def submit_task(req: SolveRequest) -> dict[str, Any]:
     return {
         "task_id": request_id,
         "status": "completed",
-        "phase": "phase_3_solver_control_orchestrate",
+        "phase": "phase_5_verification_gate",
         "value": float(result.value),
         "error_bar": float(result.error_bar),
         "sigma": float(result.sigma),

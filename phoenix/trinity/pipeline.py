@@ -42,8 +42,6 @@ Phase 5's adaptive rung selection lets loose-tolerance tasks demote to R2.
 
 from __future__ import annotations
 
-import dataclasses
-import time
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
 from phoenix.router.data_model import (
@@ -60,21 +58,16 @@ from phoenix.trinity.control.engine import (
     ControlVerificationError as ControlVerificationError,  # re-export for docstring + tests
 )
 from phoenix.trinity.data_model import (
-    ControlProvenance,
     OrchestrateProvenance,
     PhysicsTask,
-    ProvenanceTrace,
     Result,
-    SolverProvenance,
     VerifiedAnswer,
 )
 from phoenix.trinity.orchestrate.engine import orchestrate
 from phoenix.trinity.orchestrate.provider_client import OrchestrateProviderError
 from phoenix.trinity.solver.engine import SolverRunResult
+from phoenix.verification.gate import VerificationGate
 from phoenix.verification.wobble_axis import (
-    AxisResult,
-    CrossControlAxis,
-    CrossPrecisionAxis,
     RungDepth,
 )
 
@@ -139,6 +132,20 @@ def _extract_value(high_grid_result: SolverRunResult) -> float:
 # so deferring construction to first call also defers the JSON disk read.
 _ROUTER: Router | None = None
 _FAILOVER: FailoverProtocol | None = None
+_GATE: VerificationGate | None = None
+
+
+def _get_gate() -> VerificationGate:
+    """Lazy module-level VerificationGate singleton.
+
+    Tests can override by monkey-patching ``phoenix.trinity.pipeline._GATE``
+    with a custom :class:`VerificationGate` instance pointing at a
+    fixture :class:`Router`.
+    """
+    global _GATE
+    if _GATE is None:
+        _GATE = VerificationGate(_get_router())
+    return _GATE
 
 
 def _get_router() -> Router:
@@ -313,108 +320,10 @@ def solve(task: PhysicsTask) -> Result:
     """
     _enforce_latency_tier(task)
 
-    t_start = time.perf_counter()
-
-    # ---- Layer 1: Solver + Axis 1 (cross-precision) -------------------------
-    axis_1 = CrossPrecisionAxis()
-    axis_1_result: AxisResult = axis_1.run(task, _DEFAULT_DEPTH)
-    high_grid_result: SolverRunResult = axis_1_result.metadata["high_grid_result"]
-
-    solver_id = f"{high_grid_result.regime.name}/{high_grid_result.solver_class_name}"
-    error_bar_solver = axis_1_result.error_bar_contribution
-
-    # Note: Phase 2 extracted the solver's ground-state value here and wrapped
-    # it as a CandidateAnswer. Phase 3's Orchestrate engine produces the
-    # canonical Result.value via the local-simulator's expectation
-    # measurement (currently a placeholder trace ~1.0; Phase 5 wires real
-    # observable extraction). The solver's ground-state value still
-    # survives indirectly via :func:`_extract_value` on the high-grid result
-    # when CrossControlAxis builds its internal CandidateAnswer; the
-    # function is exported for that consumer and for Phase 5's expansion.
-
-    # ---- Layer 2: Control + Axis 2 (cross-control) --------------------------
-    # Inject Axis 1's high-grid result so Axis 2 doesn't re-run the solver.
-    # PERF win: ~10-30 ms saved per solve (matches Phase 2's high_grid_result
-    # caching pattern but applied to the Axis 2 setup path).
-    axis_2 = CrossControlAxis(prior_high_grid_result=high_grid_result)
-    axis_2_result: AxisResult = axis_2.run(task, _DEFAULT_DEPTH)
-
-    # The weak-probe ControlRunResult was preserved in metadata by Step 4
-    # specifically so this orchestrator can use it as the canonical
-    # rho_verified without a third DPD invocation. PERF win: ~1-2 s saved
-    # per solve at the default 10 ns drive.
-    weak_control = axis_2_result.metadata["weak_control_result"]
-
-    error_bar_control = axis_2_result.error_bar_contribution
-    verified = VerifiedAnswer(
-        rho_verified=weak_control.rho_verified,
-        dpd_result=weak_control.dpd_result,
-        kpi_bundle_control=weak_control.kpi_bundle_control,
-        error_bar_control=error_bar_control,
-        probe_strengths_used=[
-            axis_2_result.metadata["epsilon_weak"],
-            axis_2_result.metadata["epsilon_strong"],
-        ],
-    )
-
-    # ---- Layer 3: Router decision + Orchestrate (with failover) ------------
-    # Phase 4 replaced Phase 3's _build_default_provider_selection helper
-    # with a real Router.decide call. The decision carries primary +
-    # alternates ranked by Section 4.4 weighted score; the failover
-    # wrapper walks them on OrchestrateProviderError, falling back to a
-    # LocalClassicalSimulator when allow_simulator_fallback is True
-    # (default). _used_selection records which provider actually
-    # produced the Result -- lands in OrchestrateProvenance via the
-    # provider_id field on the dispatched selection.
-    routing_request = _build_routing_request(task)
-    decision = _get_router().decide(routing_request)
-    result, orchestrate_provenance, _used_selection = _orchestrate_with_failover(
-        verified,
-        decision,
-        request_id=task.request_id,
-        error_bar_solver=error_bar_solver,
-        error_bar_control=error_bar_control,
-        solver_id=solver_id,
-        tolerance_max_error_bar=task.tolerance.max_error_bar,
-        allow_simulator_fallback=routing_request.allow_simulator_fallback,
-    )
-
-    # ---- Provenance composition ---------------------------------------------
-    wall_clock_ms_total = (time.perf_counter() - t_start) * 1000.0
-
-    solver_provenance = SolverProvenance(
-        request_id=task.request_id,
-        dispatched_solver=solver_id,
-        n_grid_low=axis_1_result.metadata["n_grid_low"],
-        n_grid_high=axis_1_result.metadata["n_grid_high"],
-        wall_clock_ms_total=wall_clock_ms_total,
-        cross_precision_axis_result=axis_1_result,
-        phase="phase_3_solver_control_orchestrate",
-    )
-
-    control_provenance = ControlProvenance(
-        request_id=task.request_id,
-        dpd_n_blocks=int(weak_control.dpd_result.n_blocks),
-        probe_strengths_used=[
-            axis_2_result.metadata["epsilon_weak"],
-            axis_2_result.metadata["epsilon_strong"],
-        ],
-        total_backaction=float(weak_control.dpd_result.total_backaction),
-        trace_preservation=float(weak_control.dpd_result.trace_preservation),
-        positivity_check=bool(weak_control.dpd_result.positivity_check),
-        wall_clock_ms=weak_control.wall_clock_ms,
-        cross_control_axis_result=axis_2_result,
-        phase="phase_3_solver_control_orchestrate",
-    )
-
-    trace = ProvenanceTrace(
-        request_id=task.request_id,
-        solver=solver_provenance,
-        control=control_provenance,
-        orchestrate=orchestrate_provenance,
-        cloud_shots_recorded=orchestrate_provenance.cloud_shots_recorded,
-    )
-
-    # The Result returned by orchestrate() has provenance=None; attach the
-    # composed trace via dataclasses.replace (Result is frozen).
-    return dataclasses.replace(result, provenance=trace)
+    # Phase 5: delegate the entire three-layer flow to the verification
+    # gate. The gate handles rung selection (replaces Phase 3's hardcoded
+    # _DEFAULT_DEPTH), reactive promotion, drift fail-closed wiring,
+    # Axis 1 + Axis 2 + Axis 3 dispatch, distance matrix composition,
+    # and agreement classification. The gate's verify() returns a fully-
+    # composed Result with VerificationProvenance attached.
+    return _get_gate().verify(task)

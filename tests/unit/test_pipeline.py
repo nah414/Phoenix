@@ -89,8 +89,13 @@ def test_solve_returns_result_for_qho() -> None:
     assert result.error_bar > 0.0
     assert result.error_bar < 0.05 * expected_e0
 
-    # sigma is a Phase 3 placeholder; tracks error_bar.
-    assert result.sigma == result.error_bar
+    # Phase 5: sigma is the real wobble_score from Section 6.2's
+    # sqrt(Var(distance_matrix_upper_triangle)) formula. It's no longer
+    # equal to error_bar (which is the quadrature combine). For QHO
+    # at R3 with the eigenstate plumbing's diag(1,0) input, sigma is
+    # the variance of Axis 1's per-eigenvalue distance row plus
+    # Axis 2's zero contribution.
+    assert result.sigma >= 0.0
 
     # KPIBundle from Orchestrate is typed.
     assert isinstance(result.kpi_bundle_orchestrate, KPIBundle)
@@ -102,9 +107,18 @@ def test_solve_returns_result_for_qho() -> None:
     assert isinstance(result.provenance.solver, SolverProvenance)
     assert isinstance(result.provenance.control, ControlProvenance)
     assert isinstance(result.provenance.orchestrate, OrchestrateProvenance)
-    assert result.provenance.solver.phase == "phase_3_solver_control_orchestrate"
-    assert result.provenance.control.phase == "phase_3_solver_control_orchestrate"
+    # Phase 5: solver + control provenances built by the gate carry the
+    # phase_5_verification_gate marker. orchestrate provenance is built
+    # inside orchestrate() (Phase 3 module) and retains its own marker
+    # since the orchestrate subsystem itself didn't change in Phase 5.
+    assert result.provenance.solver.phase == "phase_5_verification_gate"
+    assert result.provenance.control.phase == "phase_5_verification_gate"
     assert result.provenance.orchestrate.phase == "phase_3_solver_control_orchestrate"
+    # New Phase 5 verification provenance.
+    assert result.provenance.verification is not None
+    assert result.provenance.verification.phase == "phase_5_verification_gate"
+    assert result.provenance.verification.initial_rung == "R3_TWO_AXES"
+    assert result.provenance.verification.drift_state == "healthy"
     assert result.provenance.solver.request_id == "test-pipeline-qho"
     assert result.provenance.cloud_shots_recorded is False  # local simulator path
 

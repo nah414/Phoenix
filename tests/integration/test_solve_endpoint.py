@@ -52,7 +52,7 @@ def test_solve_endpoint_qho_returns_full_result_envelope() -> None:
     payload = response.json()
 
     assert payload["status"] == "completed"
-    assert payload["phase"] == "phase_3_solver_control_orchestrate"
+    assert payload["phase"] == "phase_5_verification_gate"
     assert payload["task_id"].startswith("req_")
     assert "reproducibility_asterisk" in payload
 
@@ -62,7 +62,9 @@ def test_solve_endpoint_qho_returns_full_result_envelope() -> None:
     # error_bar quadrature-combined from cross-precision (Phase 3 only
     # contributing axis); sigma tracks error_bar (Phase 3 placeholder).
     assert payload["error_bar"] > 0
-    assert payload["sigma"] == payload["error_bar"]
+    # Phase 5: sigma is sqrt(Var(distance_matrix)) per Section 6.2; no
+    # longer equals error_bar (quadrature combine).
+    assert payload["sigma"] >= 0.0
     assert payload["agreement_type"] in {"hedged_consensus", "unknown"}
 
     # Typed KPIBundle fields.
@@ -80,14 +82,16 @@ def test_solve_endpoint_qho_returns_full_result_envelope() -> None:
     assert prov["cloud_shots_recorded"] is False  # local-simulator path
 
     assert "solver" in prov
-    assert prov["solver"]["phase"] == "phase_3_solver_control_orchestrate"
+    # Phase 5: gate-built sub-provenances carry the verification_gate phase;
+    # orchestrate is built inside orchestrate() and retains its phase_3 marker.
+    assert prov["solver"]["phase"] == "phase_5_verification_gate"
     assert "/" in prov["solver"]["dispatched_solver"]
     assert prov["solver"]["n_grid_low"] == 200
     assert prov["solver"]["n_grid_high"] == 400
     assert prov["solver"]["axis_1_error_bar_contribution"] is not None
 
     assert "control" in prov
-    assert prov["control"]["phase"] == "phase_3_solver_control_orchestrate"
+    assert prov["control"]["phase"] == "phase_5_verification_gate"
     assert prov["control"]["dpd_n_blocks"] >= 1
     assert prov["control"]["axis_2_metric"] == "trace_distance"
 
