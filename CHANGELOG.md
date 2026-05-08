@@ -15,6 +15,144 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev4] — 2026-05-08
+
+Phase 4 shipped. Trinity Core's pipeline now routes through a real Router
+subsystem (Section 4) — the Phase 3 placeholder helper is retired. Six
+new modules under `phoenix/router/` plus three quantum provider stubs
+under `phoenix/providers/quantum/`. The seven-stage routing algorithm is
+fully wired; failover protocol with exponential-backoff quarantine; cost
+ceiling enforcement at Stage 2; defense-in-depth frontier-physics
+re-check at Stage 4; reproducibility-mode REPLAY pinning at Stage 5.
+
+### Locked scope decisions (2026-05-08)
+
+1. **Stub-only cloud adapters.** IBM/Braket/IonQ stubs ship as
+   Protocol-conforming classes that raise `OrchestrateProviderError` on
+   `submit`. No cloud SDKs added to `pyproject.toml`. Real
+   qiskit-ibm-runtime / amazon-braket-sdk / ionq wiring lands in a
+   focused later phase (likely Phase 9 with adapters / MCP) when
+   credential management gets tackled deliberately.
+2. **Drift drain defers to Phase 7.** Phase 4's intelligence layer uses
+   only Source A (static `HardwareParams` from vendored
+   `hardware_backends.py`). Sources B (live telemetry) and C (ledger
+   history) need Phase 7 backing to be useful.
+3. **Equivalence registry shipped.** `phoenix/router/equivalence_registry.py`
+   with conservative defaults per Section 4.5 (same `quantum_technology`
+   + fidelity within 10%). Section 11.2.1 stays open; v1.x adds
+   richer equivalence rules.
+
+### What landed (commits b1780d2 → eb20d36)
+
+- **`RoutingRequest` dataclass + `ReproducibilityMode` enum**
+  (`phoenix/router/data_model.py`): forward-compat input shape for
+  `Router.decide`. Phase 3 already shipped `RoutingDecision` +
+  `ProviderSelection`; Phase 4 adds `RoutingRequest` and the typed
+  `ReproducibilityMode` enum honoring DEFAULT and REPLAY (STRICT
+  Phase 7).
+- **Router error types** (`phoenix/router/errors.py`):
+  `NoEligibleProvidersError`, `CostCeilingExceeded`,
+  `ReplayProviderUnavailable`, `AllAlternatesExhausted` — each carrying
+  the structured context Phase 9's HTTP status mapping needs.
+- **Three quantum provider stubs**
+  (`phoenix/providers/quantum/{ibm_stub,braket_stub,ionq_stub}.py`):
+  IBM Eagle (superconducting), Braket Rigetti Aspen-M-3
+  (superconducting), IonQ Forte (trapped_ion). Constructor-overridable
+  `available` flag for testing the Stage 3 health filter.
+- **`ProviderRegistry`** (`phoenix/router/provider_registry.py`):
+  per-process state-of-the-world. `ProviderHealth` enum (HEALTHY /
+  DEGRADED / OFFLINE) + `ProviderEntry` mutable dataclass. Mark methods
+  for failover. `build_default_registry()` registers the 4 default
+  providers (LocalSim + 3 stubs).
+- **Pricing v1 data + loader** (`phoenix/router/pricing/pricing_v1.json`
+  + `phoenix/router/pricing.py`): static per-provider cost estimates with
+  `_metadata` (data_freshness_utc, stale_after_days=90 per Section 11.2.2
+  RESOLVED). `load_pricing`, `estimate_cost_usd`, `is_pricing_stale`.
+- **Intelligence layer Source A** (`phoenix/router/intelligence.py`):
+  `estimate_fidelity` derived from vendored `HardwareParams`
+  (gate_error_rate + two_qubit_error_rate via Phase 4 placeholder
+  circuit shape: 10 1q + 1 2q gates). `estimate_latency_ms` falls back
+  to client's reported value. `estimate_cost_usd` delegates to pricing.
+- **Equivalence registry** (`phoenix/router/equivalence_registry.py`):
+  conservative defaults per Section 4.5. `is_equivalent` and
+  `filter_equivalent_alternates` consumed by Stage 6's alternate
+  filtering and Step 8's failover walk.
+- **Router decision algorithm** (`phoenix/router/decision.py`):
+  `Router.decide(RoutingRequest) -> RoutingDecision` running all seven
+  stages (Section 4.4). Stage 1 modality whitelist; Stage 4 frontier
+  early raise; Stage 2 cost / latency / fidelity / excluded filters with
+  CostCeilingExceeded specialization; Stage 3 health filter; Stage 5
+  REPLAY pinning; Stage 6 weighted ranking with deterministic tie-break;
+  Stage 7 decision_provenance with per-stage rationale + ranking weights
+  + pricing staleness.
+- **Failover protocol** (`phoenix/router/failover.py`):
+  `FailoverProtocol` class with exponential-backoff quarantine.
+  `quarantine` (public; pipeline calls it at the orchestrate boundary),
+  `reset_failures` for ops, `attempt_with_failover` for self-contained
+  submit-level walks. Defaults: 5 min base, doubles per failure, capped
+  at 1 hour.
+- **Pipeline integration** (`phoenix/trinity/pipeline.py`): module-level
+  Router + FailoverProtocol singletons (lazy via
+  `_get_router`/`_get_failover`). `_build_routing_request` translates
+  `PhysicsTask` to `RoutingRequest`. `_orchestrate_with_failover` walks
+  `decision.primary` + `alternates` on failures, falls back to
+  `LocalClassicalSimulator` when `allow_simulator_fallback=True`.
+  `solve()`'s Layer 3 replaces the Phase 3 `_build_default_provider_selection`
+  helper with real Router routing.
+
+### Tests
+
+- 75 tests passing (was 50 at end of Phase 3; +25 from Phase 4).
+  - 4 new unit-test files: `test_provider_registry.py` (4 tests),
+    `test_router_decision.py` (7 tests covering all seven stages),
+    `test_failover.py` (6 tests including exponential-backoff math and
+    simulator fallback walk), `test_intelligence_pricing.py` (8 tests
+    combining pricing + intelligence + equivalence).
+  - Phase 0/1/2/3 baseline tests pass unchanged through the new
+    Router-routed pipeline path.
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Out of scope for Phase 4 (explicit deferrals)
+
+- Real cloud SDK wiring (qiskit-ibm-runtime, amazon-braket-sdk, ionq) --
+  focused later phase.
+- Sources B (live provider telemetry) + C (ledger history) for the
+  intelligence layer -- Phase 7 with state backend + Omega Ledger.
+- Drift buffer drain scheduler -- Phase 7.
+- Phase 9 HTTP status mapping for new Router error types
+  (`CostCeilingExceeded` -> 402, `ReplayProviderUnavailable` -> 410,
+  `AllAlternatesExhausted` -> 503) -- Phase 9 admin/MCP work.
+- Verification gate's secondary routing requests for Axis 3
+  (cross-provider wobble) -- Phase 5.
+- Cost ceiling per-actor-per-day budget enforcement -- Phase 7+ (needs
+  ledger backing for cumulative tracking).
+- `phoenix/router/pricing/pricing_v1.json` package_data config so the
+  JSON ships in the wheel -- Phase 11 release work.
+
+### Known placeholders (per plan risk register)
+
+All deferrals or known limitations, none blocking:
+
+- Stub adapters' `submit()` raises `OrchestrateProviderError`; failover
+  always falls through to `LocalClassicalSimulator` for any cloud-routed
+  task. Real cloud calls cost money and need credentials; deferred.
+- Phase 4 ranking circuit shape (10 1q + 1 2q gates) is a placeholder;
+  Phase 7 wires shot-aware estimates from real KPIBundles.
+- Pricing rates are placeholders; ops refresh via `phoenix admin
+  pricing-update` (Phase 8 endpoint).
+- Drift buffer is unbounded in Phase 4 (R6); Phase 4's Router doesn't
+  consume it -- Phase 7 will.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev3` ->
+  `1.0.0.dev4`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev4`,
+  `vendor_synced_at` refreshed).
+
+---
+
 ## [1.0.0.dev3] — 2026-05-08
 
 Phase 3 shipped. Trinity Core's Control and Orchestrate subsystems are
