@@ -15,6 +15,147 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev5] — 2026-05-08
+
+Phase 5 shipped. Trinity Core's verification gate is the load-bearing
+piece of v1's mandatory three-axis wobble: `VerificationGate.verify(task)`
+selects the initial rung from `max_error_bar`, runs Axes 1+2+3 at the
+selected depth, reactively promotes when measured disagreement exceeds
+half the remaining error budget (max 2 per task), composes the distance
+matrix per Section 6.2 DO-NOT-COLLAPSE, classifies the result via the
+extended `PhoenixDisagreementType`, and produces the final `Result`
+envelope with full `ProvenanceTrace` carrying the new
+`VerificationProvenance`.
+
+### Locked scope decisions (2026-05-08)
+
+1. **Static + reactive promotion.** Initial rung from
+   `select_initial_rung(max_error_bar)`; reactive promotion when
+   axis disagreement > half the remaining error budget (max 2 per
+   task per Section 6.4). Demotion telemetry-only. Cost-ceiling
+   refuses promotion -> `DEGRADED_BUDGET_BOUND`.
+2. **Stub drift state.** `read_drift_state()` returns `DriftState
+   (state="healthy")` in v1; the gate's fail-closed wiring (raises
+   `DriftStateUnavailable` per Section 6.8) is exercised against the
+   stub. Phase 7 swaps for real telemetry.
+3. **WebSocket events deferred to Phase 6.** Phase 5 records
+   verification.promoted/demoted as in-memory provenance fields;
+   Phase 6 wires the WebSocket endpoint that emits them per Section
+   5.3.
+4. **QHO-only Tier-1 real plumbing.** Eigenstate extraction from the
+   solver's high-grid `SolverResult.eigenstates` projects to a 2x2 ρ
+   in the lowest 2 energy eigenstates. Real 〈σ_z〉 observable in
+   `LocalClassicalSimulator` replaces the trace placeholder. For QHO
+   ground state both resolve to mathematically-identical-to-placeholder
+   results (the ground state IS the σ_z eigenstate); the data path is
+   real for non-QHO future inputs.
+
+### What landed (commits 653c7a9 → e9d9392)
+
+- **`rung_table`** (`phoenix/verification/rung_table.py`):
+  `select_initial_rung(max_error_bar) -> RungDepth` per Section 6.4
+  thresholds (>1e-2 -> R1, 1e-3..1e-2 -> R2, 1e-4..1e-3 -> R3,
+  1e-6..1e-4 -> R4, <=1e-6 -> R5). `next_rung` / `previous_rung`
+  walking helpers; `RUNG_WALL_CLOCK_MULTIPLIER` (1x / 1.7x / 3x /
+  5.5x / 10x); `estimate_additional_cost_multiplier` for the gate's
+  pre-promotion budget check.
+- **Drift state stub** (`phoenix/verification/drift_state.py`):
+  `DriftStateUnavailable` exception; `DriftState` dataclass;
+  `read_drift_state()` always returns `state="healthy"` in Phase 5.
+  Phase 7 wires real telemetry from the three drift detectors per
+  Section 1 Decision 17.
+- **Agreement classifier** (`phoenix/verification/agreement_classifier.py`):
+  `PhoenixDisagreementType` enum with 11 values (5 vendored mirrors +
+  6 Phoenix extensions per Section 6.2). `classify(axis_results, *,
+  max_error_bar, drift_state, budget_bound)` walks the Section 6.2
+  decision tree.
+- **`CrossProviderAxis`** (Axis 3) (`phoenix/verification/wobble_axis.py`
+  + `phoenix/trinity/orchestrate/cross_provider.py`): third concrete
+  `WobbleAxis` Protocol impl. R1/R2/R3 skipped; R4+ requires injected
+  primary + alternate `Result` envelopes (gate's responsibility per
+  Section 6.10); applies_to honors REPLAY mode per Section 6.3.
+  `compute_cross_provider_disagreement` metric is
+  `|value_primary - value_alternate|`.
+- **Real eigenstate plumbing** (`phoenix/trinity/solver/engine.py` +
+  `phoenix/trinity/control/engine.py`): `SolverRunResult` adds
+  `eigenstates` field (`np.ndarray | None`). `_initial_density_matrix`
+  derives ρ from the ground-state eigenvector projected to dim-x-dim
+  energy eigenstates basis when `solver_run_result` is provided;
+  falls back to |0><0| placeholder. `run_dpd` accepts and threads
+  `solver_run_result` kwarg; `CrossControlAxis` uses it.
+- **Real σ_z observable**
+  (`phoenix/providers/classical/local_simulator.py`):
+  `_build_observable(name, dim)` constructs canonical Pauli matrices.
+  Default `observable="sigma_z"`; payload can override with
+  "sigma_x" / "sigma_y" / "identity". The local sim computes
+  `Tr(rho * O)` instead of `Tr(rho)`.
+- **`VerificationGate`** (`phoenix/verification/gate.py`):
+  `verify(task) -> Result`. Reads drift_state (fail-closed via
+  `DriftStateUnavailable` per Section 6.8); selects initial rung; runs
+  Axis 1 + reactive promotion + Axis 2 (R3+) + reactive promotion;
+  primary orchestrate; alternate orchestrate at R4+ with
+  `excluded_providers`-set Router second call (Section 6.10); Axis 3
+  on the two Result envelopes; composes distance matrix +
+  wobble_score sigma + agreement_type via the classifier; builds full
+  `ProvenanceTrace` with `VerificationProvenance`.
+- **Pipeline integration**
+  (`phoenix/trinity/pipeline.py`): `solve(task)` reduced to
+  `_enforce_latency_tier(task); return _get_gate().verify(task)`.
+  Module-level `_GATE` singleton.
+- **VerificationProvenance** added to `phoenix/trinity/data_model.py`:
+  `initial_rung`, `final_rung`, `promotions`, `demotions`,
+  `drift_state`, `distance_matrix`, `wobble_score_sigma`,
+  `budget_bound`, `phase`. Lands on `ProvenanceTrace`.
+
+### Tests
+
+- 91 tests passing (was 75 at end of Phase 4; +16 from Phase 5).
+  - 3 new unit-test files: `test_rung_table.py` (4 tests),
+    `test_agreement_classifier.py` (7 tests), `test_verification_gate.py`
+    (5 tests).
+  - Phase 0/1/2/3/4 baseline tests pass through gate-routed pipeline
+    (Steps 6+7 adjusted Phase-3 phase markers and sigma assertions).
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Out of scope for Phase 5 (explicit deferrals)
+
+- Drift detector with real telemetry -- Phase 7.
+- WebSocket events for verification.promoted/demoted -- Phase 6
+  alongside state backend + queue.
+- R5 (replicated) replication semantics -- v1.x once per-task budget
+  tracking is wired.
+- Cost-ceiling per-actor-per-day cumulative tracking -- Phase 7+.
+- Real eigenstate plumbing for non-QHO regimes (Pauli, Dirac, etc.) --
+  v1.x (Phase 5 Tier-1 plumbing for QHO is enough to ship the gate).
+- User-specified observables via task grammar (currently bundle_builder
+  doesn't forward `task.metadata["observable"]` -> bundle) -- v1.x.
+
+### Honesty notes
+
+- For QHO ground state, both eigenstate-derived ρ and σ_z observable
+  resolve to results mathematically identical to the Phase 3
+  placeholders. The ground state IS the σ_z eigenstate in the energy
+  basis. Phase 5's win is the data path being real for v1.x non-QHO
+  inputs. Cross-control trace distance stays zero on QHO ground state
+  -- correct physics, not a bug.
+- Axis 3 at R4+ depends on the Router finding an alternate provider
+  whose `quantum_technology` is bundle-able. The Phase 4 cloud stubs
+  raise NotImplementedError from `bundle_builder` (only `"simulation"`
+  is wired); Phase 5's gate catches this and gracefully degrades to
+  primary-only result. Axis 3 produces meaningful disagreement when
+  Phase 4.5+ wires real cloud providers OR a second simulation
+  provider is registered.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev4` ->
+  `1.0.0.dev5`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev5`,
+  `vendor_synced_at` refreshed).
+
+---
+
 ## [1.0.0.dev4] — 2026-05-08
 
 Phase 4 shipped. Trinity Core's pipeline now routes through a real Router
