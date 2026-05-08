@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__version__ = "1.0.0.dev5"
+__version__ = "1.0.0.dev6"
 
 VENDOR_VERSION_FILE = Path(__file__).parent.parent.parent / "vendor" / "VENDOR_VERSION.txt"
 

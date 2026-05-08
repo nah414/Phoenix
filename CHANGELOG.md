@@ -15,6 +15,147 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev6] — 2026-05-08
+
+Phase 6a shipped (Phase 6 split into 6a + 6b per locked scope decision
+2026-05-08). Phase 6a is the API-side enforcement layer: safety gate
+(9-stage pipeline; Section 7.4 stages 0-6 functional); identity layer
+(Ed25519 keystore + bootstrap-actor mint); ActorPermissions registry
+(JSON-file backed); token-bucket rate limiter; kill switch with refuse-
+to-start posture; WebSocket /v1/ws/tasks/{task_id}/stream for verification-
+gate events; bearer-token auth via POST /v1/identity/ws-token. Phase 6b
+will land the infrastructure layer: SQLite/Postgres state backend, NATS
+JetStream queue, drift detector with three checkers,
+/v1/ws/calibration/drift endpoint.
+
+### Locked scope decisions (2026-05-08)
+
+1. **Split Phase 6 into 6a + 6b.** 6a = API-side enforcement; 6b =
+   infrastructure (state backend + NATS + drift detector). Each phase
+   ~10 steps; both fit the established build-guide rhythm.
+2. **State at 6a = JSON file + in-memory.** Kill switch +
+   ActorPermissions stored in JSON files at ~/.phoenix/runtime/;
+   rate-limit buckets in-memory. StateBackend Protocol shipped at 6a;
+   SQLite/Postgres concrete impls at 6b.
+3. **WebSocket: just /v1/ws/tasks/{task_id}/stream.** /v1/ws/calibration/drift
+   defers to 6b with the drift detector; /v1/ws/standing/* defers to v2
+   (already 503 in spec).
+4. **Actor required with bootstrap-actor fallback.** When no
+   Authorization header is present and the keystore is available,
+   auto-mint a bootstrap actor (`adam`, admin tier). Preserves dev-mode
+   UX while enforcing real Actor verification when a header is present.
+
+### What landed (commits 78a3ed0 → fdce9c6)
+
+- **Identity layer** (`phoenix/identity/{keystore,bootstrap}.py`):
+  Ed25519 master key at `~/.phoenix/runtime/master_key.bin` (0600 POSIX);
+  `mint_bootstrap_actor` signs via vendored `Actor.sign`;
+  `extract_or_bootstrap(authorization | None) -> (Actor, was_bootstrapped)`
+  parses `Phoenix-Actor <base64-json>` header or falls back to bootstrap.
+- **ActorPermissions** (`phoenix/safety/permissions.py`): 8-flag dataclass
+  per Section 7.3 (can_submit_tasks, can_replay_tasks, can_load_adapter,
+  can_unload_adapter, frontier_physics, can_override_human_review,
+  is_admin, rate_limit_tier). Bootstrap actors `adam`/`ash` get all-True
+  + admin tier; others get safe minimum. JSON-file registry with
+  threading.RLock.
+- **Rate limiter** (`phoenix/safety/rate_limiter.py`): token-bucket per
+  Section 7.5 + Decision 23. Tiers: default (cap 100 / refill 1/sec),
+  elevated (cap 1000 / refill 16/sec), admin (unlimited). Cost catalogue:
+  health=0, tasks_get=1, tasks_submit_r1..r5=5..25, tasks_replay=50,
+  adapters_post=10, ws_token=1. RateLimitExceeded carries
+  retry_after_seconds for HTTP 429 Retry-After header.
+- **Kill switch** (`phoenix/safety/kill_switch.py`): JSON file backend;
+  refuse-to-start posture per Section 11.5.1 RESOLVED. KillSwitchEngaged
+  exception carries engagement metadata for HTTP 503 detail.
+- **StateBackend Protocol** (`phoenix/state/backend_protocol.py`):
+  abstract surface for Phase 6b's SQLite/Postgres concrete impls. Phase
+  6a methods: get/set kill_switch_state. Phase 6b expands.
+- **Safety gate** (`phoenix/safety/{gate,errors}.py`): 9-stage pipeline.
+  verify_request runs Stage 0 (kill switch) -> Stages 1+2 (Actor name
+  shape, lowercase ASCII) -> Stage 3 (permissions lookup) -> Stage 4
+  (capability flag check) -> Stage 5 (rate limit deduct) -> Stage 6
+  (frontier-physics authority -- distinct from Phase 2 engine-boundary
+  capability check). Stages 7+8 placeholder (Phase 6b/7).
+- **Event broker** (`phoenix/api/event_broker.py`): in-memory per-task
+  buffer. TaskEvent dataclass (task_id, type, timestamp_unix, payload).
+  EventBroker.emit/get_events/clear with FIFO eviction at 1000-event
+  cap. Phase 6b NATS JetStream replaces.
+- **WebSocket bearer-token auth** (`phoenix/api/ws_auth.py`):
+  WSTokenStore.mint (43-char URL-safe random); consume validates
+  not-unknown + not-used + not-expired (60s window); single-use.
+- **Verification gate emits events** (`phoenix/verification/gate.py`):
+  task.started, task.solver.complete, task.control.complete,
+  task.orchestrate.progress, task.verification.promoted, task.complete
+  emitted into broker. WS clients see real-time progression.
+- **routes.py wiring** (`phoenix/api/routes.py`):
+  * submit_task gains `authorization: str | None = Header()` parameter.
+  * extract_or_bootstrap + verify_request before solve.
+  * Maps KillSwitchEngaged -> 503, AuthError/IdentityError -> 401,
+    PermissionDenied -> 403, RateLimitExceeded -> 429 with Retry-After,
+    FrontierPhysicsRefused -> 403 (gate-layer message).
+  * NEW POST /v1/identity/ws-token endpoint; NEW
+    @app.websocket("/v1/ws/tasks/{task_id}/stream") async handler.
+
+### Tests
+
+- 113 tests passing (was 91 at end of Phase 5; +22 from Phase 6a).
+  - 17 unit tests in `test_identity_safety.py`: identity, permissions,
+    rate limiter, kill switch, safety gate.
+  - 5 integration tests in `test_ws_endpoint.py`: ws-token mint,
+    WS missing/bad token rejection (1008), end-to-end event streaming.
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Bug fix found during testing
+
+- `phoenix/safety/permissions.py`: `PermissionsRegistry.set()` acquired
+  `threading.Lock` then called `_ensure_loaded()` which acquired the
+  same lock -> deadlock on non-reentrant Lock. Switched to
+  `threading.RLock`; same-thread re-acquire succeeds. Caught by hung
+  test_permissions_registry_round_trip.
+
+### Out of scope for Phase 6a (deferred to 6b / 7 / v1.x)
+
+- SQLite + Postgres concrete impls of StateBackend -- Phase 6b.
+- NATS JetStream queue -- Phase 6b.
+- Drift detector with three scheduled checkers + /v1/ws/calibration/drift
+  endpoint -- Phase 6b.
+- /v1/ws/standing/* endpoint (already 503 NotImplementedYet per spec)
+  -- v2.
+- task.failed event emission via gate-level exception handler -- Phase
+  6b.
+- /v1/identity/whoami + /v1/identity/permissions endpoints -- Phase 8
+  admin.
+- OS-keystore bindings (DPAPI / Keychain / libsecret) -- v1.x.
+- Per-actor-per-day cumulative cost-ceiling tracking -- Phase 7+.
+- Org enrollment ceremony with HKDF subkeys (Section 7.6) -- Phase 6b.
+- Replay-mode session pinning (Stage 7) -- Phase 7.
+- Audit-event writes to state backend (Stage 8) -- Phase 6b.
+
+### Honesty notes
+
+- Filesystem-backed master key is readable by any process running as the
+  same OS user (Section 7.2 honest threat model). v1.x adds DPAPI /
+  Keychain / libsecret bindings.
+- WebSocket bearer token uses ?token=... query parameter for
+  TestClient compatibility; Authorization: Bearer header path lands
+  with the Phase 9 production hardening pass.
+- WebSocket polling cadence is 100ms; max iteration cap 10 minutes per
+  connection. Phase 6b NATS replaces with push-based subscription.
+- Bootstrap-actor flow auto-mints `adam` (admin tier) when keystore
+  present and no header given. This is intentional dev-mode convenience
+  and is documented in `phoenix/identity/bootstrap.py`. Production
+  multi-tenant deployments use Phoenix Cloud's `HttpAuthExtractor`
+  cloud seam (Decision 35) to override.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev5` ->
+  `1.0.0.dev6`.
+- `vendor/VENDOR_VERSION.txt` regenerated.
+
+---
+
 ## [1.0.0.dev5] — 2026-05-08
 
 Phase 5 shipped. Trinity Core's verification gate is the load-bearing

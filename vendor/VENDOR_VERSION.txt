@@ -5,7 +5,7 @@
 # 2.5 + Decision 37). The replay path (Section 19-21) reads this file to
 # verify the running snapshot matches the ledger entry's recorded versions.
 
-phoenix_release: 1.0.0.dev5
-vendor_synced_at: 2026-05-08T20:52:03+00:00
+phoenix_release: 1.0.0.dev6
+vendor_synced_at: 2026-05-08T22:27:15+00:00
 dr_frank_and_eddy_commit: fa074e5ef103b11f415b882ac2ebc643ad20da3d
 calibration_profile_hash: 87ac47ff992519abeabef788c08564a3f4dbfff1be2bf540c365dbb887ef12ae
