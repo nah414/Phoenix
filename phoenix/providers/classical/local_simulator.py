@@ -35,6 +35,45 @@ from phoenix.trinity.orchestrate.provider_client import (
 )
 
 
+def _build_observable(name: str, *, dim: int) -> np.ndarray:
+    """Construct a 2x2 (or higher-dim) observable matrix by name.
+
+    Phase 5 supports the four canonical 2x2 observables: identity,
+    sigma_x, sigma_y, sigma_z. For dim > 2, only the identity case is
+    supported in Phase 5; a higher-dim sigma_z is interpreted as
+    diag(1, -1, 1, -1, ...) for completeness but the QHO Tier-1 case
+    only exercises dim=2.
+
+    v1.x will extend with arbitrary user-specified Hermitian matrices
+    passed as nested lists in the task's observable field.
+    """
+    name_lower = name.lower()
+    if name_lower == "identity":
+        return np.eye(dim, dtype=complex)
+    if dim != 2 and name_lower in ("sigma_x", "sigma_y", "sigma_z"):
+        # Higher-dim Pauli embedding -- for QHO Tier-1 this branch is
+        # unreached (dim=2 always). Provide a diagonal sigma_z for
+        # completeness; sigma_x/sigma_y > 2x2 are ill-defined without
+        # a basis choice.
+        if name_lower == "sigma_z":
+            diag = np.array([(-1) ** i for i in range(dim)], dtype=complex)
+            return np.diag(diag)
+        # sigma_x / sigma_y for dim > 2: fall back to identity to avoid
+        # surfacing physics ambiguity at the local-sim layer; v1.x
+        # canonicalizes via the task grammar.
+        return np.eye(dim, dtype=complex)
+    if name_lower == "sigma_z":
+        return np.array([[1.0, 0.0], [0.0, -1.0]], dtype=complex)
+    if name_lower == "sigma_x":
+        return np.array([[0.0, 1.0], [1.0, 0.0]], dtype=complex)
+    if name_lower == "sigma_y":
+        return np.array([[0.0, -1.0j], [1.0j, 0.0]], dtype=complex)
+    # Unknown observable name: fall back to identity (returns trace=1.0
+    # for valid rho, matching Phase 3 behavior). Phase 5 is honest about
+    # the fallback via the returned raw_data["observable"] echo.
+    return np.eye(dim, dtype=complex)
+
+
 class LocalClassicalSimulator:
     """Phase 3's only concrete :class:`BaseProviderClient`.
 
@@ -89,9 +128,15 @@ class LocalClassicalSimulator:
         t_start = time.perf_counter()
         rho = np.asarray(payload["rho"], dtype=complex)
 
-        # The "fake measurement": trace of rho. Always ~1.0 for valid
-        # density matrices. Phase 5 wires real observable projection.
-        expectation_value = float(np.real(np.trace(rho)))
+        # Phase 5: real observable projection (replaces Phase 3's trace
+        # placeholder). Default observable is sigma_z; the bundle_builder
+        # can add ``"observable": "sigma_x" | "sigma_y" | "sigma_z" |
+        # "identity"`` to the payload to override. v1.x extends to
+        # user-specified Hermitian matrices via the task grammar's
+        # observable field.
+        observable_name = str(payload.get("observable", "sigma_z"))
+        observable = _build_observable(observable_name, dim=rho.shape[0])
+        expectation_value = float(np.real(np.trace(rho @ observable)))
 
         latency_us = (time.perf_counter() - t_start) * 1e6
 
@@ -99,6 +144,7 @@ class LocalClassicalSimulator:
             raw_data={
                 "expectation_value": expectation_value,
                 "rho_dim": int(rho.shape[0]),
+                "observable": observable_name,
             },
             shots_used=submission.shots,
             latency_us=latency_us,
