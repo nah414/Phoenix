@@ -15,6 +15,651 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev6] — 2026-05-08
+
+Phase 6a shipped (Phase 6 split into 6a + 6b per locked scope decision
+2026-05-08). Phase 6a is the API-side enforcement layer: safety gate
+(9-stage pipeline; Section 7.4 stages 0-6 functional); identity layer
+(Ed25519 keystore + bootstrap-actor mint); ActorPermissions registry
+(JSON-file backed); token-bucket rate limiter; kill switch with refuse-
+to-start posture; WebSocket /v1/ws/tasks/{task_id}/stream for verification-
+gate events; bearer-token auth via POST /v1/identity/ws-token. Phase 6b
+will land the infrastructure layer: SQLite/Postgres state backend, NATS
+JetStream queue, drift detector with three checkers,
+/v1/ws/calibration/drift endpoint.
+
+### Locked scope decisions (2026-05-08)
+
+1. **Split Phase 6 into 6a + 6b.** 6a = API-side enforcement; 6b =
+   infrastructure (state backend + NATS + drift detector). Each phase
+   ~10 steps; both fit the established build-guide rhythm.
+2. **State at 6a = JSON file + in-memory.** Kill switch +
+   ActorPermissions stored in JSON files at ~/.phoenix/runtime/;
+   rate-limit buckets in-memory. StateBackend Protocol shipped at 6a;
+   SQLite/Postgres concrete impls at 6b.
+3. **WebSocket: just /v1/ws/tasks/{task_id}/stream.** /v1/ws/calibration/drift
+   defers to 6b with the drift detector; /v1/ws/standing/* defers to v2
+   (already 503 in spec).
+4. **Actor required with bootstrap-actor fallback.** When no
+   Authorization header is present and the keystore is available,
+   auto-mint a bootstrap actor (`adam`, admin tier). Preserves dev-mode
+   UX while enforcing real Actor verification when a header is present.
+
+### What landed (commits 78a3ed0 → fdce9c6)
+
+- **Identity layer** (`phoenix/identity/{keystore,bootstrap}.py`):
+  Ed25519 master key at `~/.phoenix/runtime/master_key.bin` (0600 POSIX);
+  `mint_bootstrap_actor` signs via vendored `Actor.sign`;
+  `extract_or_bootstrap(authorization | None) -> (Actor, was_bootstrapped)`
+  parses `Phoenix-Actor <base64-json>` header or falls back to bootstrap.
+- **ActorPermissions** (`phoenix/safety/permissions.py`): 8-flag dataclass
+  per Section 7.3 (can_submit_tasks, can_replay_tasks, can_load_adapter,
+  can_unload_adapter, frontier_physics, can_override_human_review,
+  is_admin, rate_limit_tier). Bootstrap actors `adam`/`ash` get all-True
+  + admin tier; others get safe minimum. JSON-file registry with
+  threading.RLock.
+- **Rate limiter** (`phoenix/safety/rate_limiter.py`): token-bucket per
+  Section 7.5 + Decision 23. Tiers: default (cap 100 / refill 1/sec),
+  elevated (cap 1000 / refill 16/sec), admin (unlimited). Cost catalogue:
+  health=0, tasks_get=1, tasks_submit_r1..r5=5..25, tasks_replay=50,
+  adapters_post=10, ws_token=1. RateLimitExceeded carries
+  retry_after_seconds for HTTP 429 Retry-After header.
+- **Kill switch** (`phoenix/safety/kill_switch.py`): JSON file backend;
+  refuse-to-start posture per Section 11.5.1 RESOLVED. KillSwitchEngaged
+  exception carries engagement metadata for HTTP 503 detail.
+- **StateBackend Protocol** (`phoenix/state/backend_protocol.py`):
+  abstract surface for Phase 6b's SQLite/Postgres concrete impls. Phase
+  6a methods: get/set kill_switch_state. Phase 6b expands.
+- **Safety gate** (`phoenix/safety/{gate,errors}.py`): 9-stage pipeline.
+  verify_request runs Stage 0 (kill switch) -> Stages 1+2 (Actor name
+  shape, lowercase ASCII) -> Stage 3 (permissions lookup) -> Stage 4
+  (capability flag check) -> Stage 5 (rate limit deduct) -> Stage 6
+  (frontier-physics authority -- distinct from Phase 2 engine-boundary
+  capability check). Stages 7+8 placeholder (Phase 6b/7).
+- **Event broker** (`phoenix/api/event_broker.py`): in-memory per-task
+  buffer. TaskEvent dataclass (task_id, type, timestamp_unix, payload).
+  EventBroker.emit/get_events/clear with FIFO eviction at 1000-event
+  cap. Phase 6b NATS JetStream replaces.
+- **WebSocket bearer-token auth** (`phoenix/api/ws_auth.py`):
+  WSTokenStore.mint (43-char URL-safe random); consume validates
+  not-unknown + not-used + not-expired (60s window); single-use.
+- **Verification gate emits events** (`phoenix/verification/gate.py`):
+  task.started, task.solver.complete, task.control.complete,
+  task.orchestrate.progress, task.verification.promoted, task.complete
+  emitted into broker. WS clients see real-time progression.
+- **routes.py wiring** (`phoenix/api/routes.py`):
+  * submit_task gains `authorization: str | None = Header()` parameter.
+  * extract_or_bootstrap + verify_request before solve.
+  * Maps KillSwitchEngaged -> 503, AuthError/IdentityError -> 401,
+    PermissionDenied -> 403, RateLimitExceeded -> 429 with Retry-After,
+    FrontierPhysicsRefused -> 403 (gate-layer message).
+  * NEW POST /v1/identity/ws-token endpoint; NEW
+    @app.websocket("/v1/ws/tasks/{task_id}/stream") async handler.
+
+### Tests
+
+- 113 tests passing (was 91 at end of Phase 5; +22 from Phase 6a).
+  - 17 unit tests in `test_identity_safety.py`: identity, permissions,
+    rate limiter, kill switch, safety gate.
+  - 5 integration tests in `test_ws_endpoint.py`: ws-token mint,
+    WS missing/bad token rejection (1008), end-to-end event streaming.
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Bug fix found during testing
+
+- `phoenix/safety/permissions.py`: `PermissionsRegistry.set()` acquired
+  `threading.Lock` then called `_ensure_loaded()` which acquired the
+  same lock -> deadlock on non-reentrant Lock. Switched to
+  `threading.RLock`; same-thread re-acquire succeeds. Caught by hung
+  test_permissions_registry_round_trip.
+
+### Out of scope for Phase 6a (deferred to 6b / 7 / v1.x)
+
+- SQLite + Postgres concrete impls of StateBackend -- Phase 6b.
+- NATS JetStream queue -- Phase 6b.
+- Drift detector with three scheduled checkers + /v1/ws/calibration/drift
+  endpoint -- Phase 6b.
+- /v1/ws/standing/* endpoint (already 503 NotImplementedYet per spec)
+  -- v2.
+- task.failed event emission via gate-level exception handler -- Phase
+  6b.
+- /v1/identity/whoami + /v1/identity/permissions endpoints -- Phase 8
+  admin.
+- OS-keystore bindings (DPAPI / Keychain / libsecret) -- v1.x.
+- Per-actor-per-day cumulative cost-ceiling tracking -- Phase 7+.
+- Org enrollment ceremony with HKDF subkeys (Section 7.6) -- Phase 6b.
+- Replay-mode session pinning (Stage 7) -- Phase 7.
+- Audit-event writes to state backend (Stage 8) -- Phase 6b.
+
+### Honesty notes
+
+- Filesystem-backed master key is readable by any process running as the
+  same OS user (Section 7.2 honest threat model). v1.x adds DPAPI /
+  Keychain / libsecret bindings.
+- WebSocket bearer token uses ?token=... query parameter for
+  TestClient compatibility; Authorization: Bearer header path lands
+  with the Phase 9 production hardening pass.
+- WebSocket polling cadence is 100ms; max iteration cap 10 minutes per
+  connection. Phase 6b NATS replaces with push-based subscription.
+- Bootstrap-actor flow auto-mints `adam` (admin tier) when keystore
+  present and no header given. This is intentional dev-mode convenience
+  and is documented in `phoenix/identity/bootstrap.py`. Production
+  multi-tenant deployments use Phoenix Cloud's `HttpAuthExtractor`
+  cloud seam (Decision 35) to override.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev5` ->
+  `1.0.0.dev6`.
+- `vendor/VENDOR_VERSION.txt` regenerated.
+
+---
+
+## [1.0.0.dev5] — 2026-05-08
+
+Phase 5 shipped. Trinity Core's verification gate is the load-bearing
+piece of v1's mandatory three-axis wobble: `VerificationGate.verify(task)`
+selects the initial rung from `max_error_bar`, runs Axes 1+2+3 at the
+selected depth, reactively promotes when measured disagreement exceeds
+half the remaining error budget (max 2 per task), composes the distance
+matrix per Section 6.2 DO-NOT-COLLAPSE, classifies the result via the
+extended `PhoenixDisagreementType`, and produces the final `Result`
+envelope with full `ProvenanceTrace` carrying the new
+`VerificationProvenance`.
+
+### Locked scope decisions (2026-05-08)
+
+1. **Static + reactive promotion.** Initial rung from
+   `select_initial_rung(max_error_bar)`; reactive promotion when
+   axis disagreement > half the remaining error budget (max 2 per
+   task per Section 6.4). Demotion telemetry-only. Cost-ceiling
+   refuses promotion -> `DEGRADED_BUDGET_BOUND`.
+2. **Stub drift state.** `read_drift_state()` returns `DriftState
+   (state="healthy")` in v1; the gate's fail-closed wiring (raises
+   `DriftStateUnavailable` per Section 6.8) is exercised against the
+   stub. Phase 7 swaps for real telemetry.
+3. **WebSocket events deferred to Phase 6.** Phase 5 records
+   verification.promoted/demoted as in-memory provenance fields;
+   Phase 6 wires the WebSocket endpoint that emits them per Section
+   5.3.
+4. **QHO-only Tier-1 real plumbing.** Eigenstate extraction from the
+   solver's high-grid `SolverResult.eigenstates` projects to a 2x2 ρ
+   in the lowest 2 energy eigenstates. Real 〈σ_z〉 observable in
+   `LocalClassicalSimulator` replaces the trace placeholder. For QHO
+   ground state both resolve to mathematically-identical-to-placeholder
+   results (the ground state IS the σ_z eigenstate); the data path is
+   real for non-QHO future inputs.
+
+### What landed (commits 653c7a9 → e9d9392)
+
+- **`rung_table`** (`phoenix/verification/rung_table.py`):
+  `select_initial_rung(max_error_bar) -> RungDepth` per Section 6.4
+  thresholds (>1e-2 -> R1, 1e-3..1e-2 -> R2, 1e-4..1e-3 -> R3,
+  1e-6..1e-4 -> R4, <=1e-6 -> R5). `next_rung` / `previous_rung`
+  walking helpers; `RUNG_WALL_CLOCK_MULTIPLIER` (1x / 1.7x / 3x /
+  5.5x / 10x); `estimate_additional_cost_multiplier` for the gate's
+  pre-promotion budget check.
+- **Drift state stub** (`phoenix/verification/drift_state.py`):
+  `DriftStateUnavailable` exception; `DriftState` dataclass;
+  `read_drift_state()` always returns `state="healthy"` in Phase 5.
+  Phase 7 wires real telemetry from the three drift detectors per
+  Section 1 Decision 17.
+- **Agreement classifier** (`phoenix/verification/agreement_classifier.py`):
+  `PhoenixDisagreementType` enum with 11 values (5 vendored mirrors +
+  6 Phoenix extensions per Section 6.2). `classify(axis_results, *,
+  max_error_bar, drift_state, budget_bound)` walks the Section 6.2
+  decision tree.
+- **`CrossProviderAxis`** (Axis 3) (`phoenix/verification/wobble_axis.py`
+  + `phoenix/trinity/orchestrate/cross_provider.py`): third concrete
+  `WobbleAxis` Protocol impl. R1/R2/R3 skipped; R4+ requires injected
+  primary + alternate `Result` envelopes (gate's responsibility per
+  Section 6.10); applies_to honors REPLAY mode per Section 6.3.
+  `compute_cross_provider_disagreement` metric is
+  `|value_primary - value_alternate|`.
+- **Real eigenstate plumbing** (`phoenix/trinity/solver/engine.py` +
+  `phoenix/trinity/control/engine.py`): `SolverRunResult` adds
+  `eigenstates` field (`np.ndarray | None`). `_initial_density_matrix`
+  derives ρ from the ground-state eigenvector projected to dim-x-dim
+  energy eigenstates basis when `solver_run_result` is provided;
+  falls back to |0><0| placeholder. `run_dpd` accepts and threads
+  `solver_run_result` kwarg; `CrossControlAxis` uses it.
+- **Real σ_z observable**
+  (`phoenix/providers/classical/local_simulator.py`):
+  `_build_observable(name, dim)` constructs canonical Pauli matrices.
+  Default `observable="sigma_z"`; payload can override with
+  "sigma_x" / "sigma_y" / "identity". The local sim computes
+  `Tr(rho * O)` instead of `Tr(rho)`.
+- **`VerificationGate`** (`phoenix/verification/gate.py`):
+  `verify(task) -> Result`. Reads drift_state (fail-closed via
+  `DriftStateUnavailable` per Section 6.8); selects initial rung; runs
+  Axis 1 + reactive promotion + Axis 2 (R3+) + reactive promotion;
+  primary orchestrate; alternate orchestrate at R4+ with
+  `excluded_providers`-set Router second call (Section 6.10); Axis 3
+  on the two Result envelopes; composes distance matrix +
+  wobble_score sigma + agreement_type via the classifier; builds full
+  `ProvenanceTrace` with `VerificationProvenance`.
+- **Pipeline integration**
+  (`phoenix/trinity/pipeline.py`): `solve(task)` reduced to
+  `_enforce_latency_tier(task); return _get_gate().verify(task)`.
+  Module-level `_GATE` singleton.
+- **VerificationProvenance** added to `phoenix/trinity/data_model.py`:
+  `initial_rung`, `final_rung`, `promotions`, `demotions`,
+  `drift_state`, `distance_matrix`, `wobble_score_sigma`,
+  `budget_bound`, `phase`. Lands on `ProvenanceTrace`.
+
+### Tests
+
+- 91 tests passing (was 75 at end of Phase 4; +16 from Phase 5).
+  - 3 new unit-test files: `test_rung_table.py` (4 tests),
+    `test_agreement_classifier.py` (7 tests), `test_verification_gate.py`
+    (5 tests).
+  - Phase 0/1/2/3/4 baseline tests pass through gate-routed pipeline
+    (Steps 6+7 adjusted Phase-3 phase markers and sigma assertions).
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Out of scope for Phase 5 (explicit deferrals)
+
+- Drift detector with real telemetry -- Phase 7.
+- WebSocket events for verification.promoted/demoted -- Phase 6
+  alongside state backend + queue.
+- R5 (replicated) replication semantics -- v1.x once per-task budget
+  tracking is wired.
+- Cost-ceiling per-actor-per-day cumulative tracking -- Phase 7+.
+- Real eigenstate plumbing for non-QHO regimes (Pauli, Dirac, etc.) --
+  v1.x (Phase 5 Tier-1 plumbing for QHO is enough to ship the gate).
+- User-specified observables via task grammar (currently bundle_builder
+  doesn't forward `task.metadata["observable"]` -> bundle) -- v1.x.
+
+### Honesty notes
+
+- For QHO ground state, both eigenstate-derived ρ and σ_z observable
+  resolve to results mathematically identical to the Phase 3
+  placeholders. The ground state IS the σ_z eigenstate in the energy
+  basis. Phase 5's win is the data path being real for v1.x non-QHO
+  inputs. Cross-control trace distance stays zero on QHO ground state
+  -- correct physics, not a bug.
+- Axis 3 at R4+ depends on the Router finding an alternate provider
+  whose `quantum_technology` is bundle-able. The Phase 4 cloud stubs
+  raise NotImplementedError from `bundle_builder` (only `"simulation"`
+  is wired); Phase 5's gate catches this and gracefully degrades to
+  primary-only result. Axis 3 produces meaningful disagreement when
+  Phase 4.5+ wires real cloud providers OR a second simulation
+  provider is registered.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev4` ->
+  `1.0.0.dev5`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev5`,
+  `vendor_synced_at` refreshed).
+
+---
+
+## [1.0.0.dev4] — 2026-05-08
+
+Phase 4 shipped. Trinity Core's pipeline now routes through a real Router
+subsystem (Section 4) — the Phase 3 placeholder helper is retired. Six
+new modules under `phoenix/router/` plus three quantum provider stubs
+under `phoenix/providers/quantum/`. The seven-stage routing algorithm is
+fully wired; failover protocol with exponential-backoff quarantine; cost
+ceiling enforcement at Stage 2; defense-in-depth frontier-physics
+re-check at Stage 4; reproducibility-mode REPLAY pinning at Stage 5.
+
+### Locked scope decisions (2026-05-08)
+
+1. **Stub-only cloud adapters.** IBM/Braket/IonQ stubs ship as
+   Protocol-conforming classes that raise `OrchestrateProviderError` on
+   `submit`. No cloud SDKs added to `pyproject.toml`. Real
+   qiskit-ibm-runtime / amazon-braket-sdk / ionq wiring lands in a
+   focused later phase (likely Phase 9 with adapters / MCP) when
+   credential management gets tackled deliberately.
+2. **Drift drain defers to Phase 7.** Phase 4's intelligence layer uses
+   only Source A (static `HardwareParams` from vendored
+   `hardware_backends.py`). Sources B (live telemetry) and C (ledger
+   history) need Phase 7 backing to be useful.
+3. **Equivalence registry shipped.** `phoenix/router/equivalence_registry.py`
+   with conservative defaults per Section 4.5 (same `quantum_technology`
+   + fidelity within 10%). Section 11.2.1 stays open; v1.x adds
+   richer equivalence rules.
+
+### What landed (commits b1780d2 → eb20d36)
+
+- **`RoutingRequest` dataclass + `ReproducibilityMode` enum**
+  (`phoenix/router/data_model.py`): forward-compat input shape for
+  `Router.decide`. Phase 3 already shipped `RoutingDecision` +
+  `ProviderSelection`; Phase 4 adds `RoutingRequest` and the typed
+  `ReproducibilityMode` enum honoring DEFAULT and REPLAY (STRICT
+  Phase 7).
+- **Router error types** (`phoenix/router/errors.py`):
+  `NoEligibleProvidersError`, `CostCeilingExceeded`,
+  `ReplayProviderUnavailable`, `AllAlternatesExhausted` — each carrying
+  the structured context Phase 9's HTTP status mapping needs.
+- **Three quantum provider stubs**
+  (`phoenix/providers/quantum/{ibm_stub,braket_stub,ionq_stub}.py`):
+  IBM Eagle (superconducting), Braket Rigetti Aspen-M-3
+  (superconducting), IonQ Forte (trapped_ion). Constructor-overridable
+  `available` flag for testing the Stage 3 health filter.
+- **`ProviderRegistry`** (`phoenix/router/provider_registry.py`):
+  per-process state-of-the-world. `ProviderHealth` enum (HEALTHY /
+  DEGRADED / OFFLINE) + `ProviderEntry` mutable dataclass. Mark methods
+  for failover. `build_default_registry()` registers the 4 default
+  providers (LocalSim + 3 stubs).
+- **Pricing v1 data + loader** (`phoenix/router/pricing/pricing_v1.json`
+  + `phoenix/router/pricing.py`): static per-provider cost estimates with
+  `_metadata` (data_freshness_utc, stale_after_days=90 per Section 11.2.2
+  RESOLVED). `load_pricing`, `estimate_cost_usd`, `is_pricing_stale`.
+- **Intelligence layer Source A** (`phoenix/router/intelligence.py`):
+  `estimate_fidelity` derived from vendored `HardwareParams`
+  (gate_error_rate + two_qubit_error_rate via Phase 4 placeholder
+  circuit shape: 10 1q + 1 2q gates). `estimate_latency_ms` falls back
+  to client's reported value. `estimate_cost_usd` delegates to pricing.
+- **Equivalence registry** (`phoenix/router/equivalence_registry.py`):
+  conservative defaults per Section 4.5. `is_equivalent` and
+  `filter_equivalent_alternates` consumed by Stage 6's alternate
+  filtering and Step 8's failover walk.
+- **Router decision algorithm** (`phoenix/router/decision.py`):
+  `Router.decide(RoutingRequest) -> RoutingDecision` running all seven
+  stages (Section 4.4). Stage 1 modality whitelist; Stage 4 frontier
+  early raise; Stage 2 cost / latency / fidelity / excluded filters with
+  CostCeilingExceeded specialization; Stage 3 health filter; Stage 5
+  REPLAY pinning; Stage 6 weighted ranking with deterministic tie-break;
+  Stage 7 decision_provenance with per-stage rationale + ranking weights
+  + pricing staleness.
+- **Failover protocol** (`phoenix/router/failover.py`):
+  `FailoverProtocol` class with exponential-backoff quarantine.
+  `quarantine` (public; pipeline calls it at the orchestrate boundary),
+  `reset_failures` for ops, `attempt_with_failover` for self-contained
+  submit-level walks. Defaults: 5 min base, doubles per failure, capped
+  at 1 hour.
+- **Pipeline integration** (`phoenix/trinity/pipeline.py`): module-level
+  Router + FailoverProtocol singletons (lazy via
+  `_get_router`/`_get_failover`). `_build_routing_request` translates
+  `PhysicsTask` to `RoutingRequest`. `_orchestrate_with_failover` walks
+  `decision.primary` + `alternates` on failures, falls back to
+  `LocalClassicalSimulator` when `allow_simulator_fallback=True`.
+  `solve()`'s Layer 3 replaces the Phase 3 `_build_default_provider_selection`
+  helper with real Router routing.
+
+### Tests
+
+- 75 tests passing (was 50 at end of Phase 3; +25 from Phase 4).
+  - 4 new unit-test files: `test_provider_registry.py` (4 tests),
+    `test_router_decision.py` (7 tests covering all seven stages),
+    `test_failover.py` (6 tests including exponential-backoff math and
+    simulator fallback walk), `test_intelligence_pricing.py` (8 tests
+    combining pricing + intelligence + equivalence).
+  - Phase 0/1/2/3 baseline tests pass unchanged through the new
+    Router-routed pipeline path.
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Out of scope for Phase 4 (explicit deferrals)
+
+- Real cloud SDK wiring (qiskit-ibm-runtime, amazon-braket-sdk, ionq) --
+  focused later phase.
+- Sources B (live provider telemetry) + C (ledger history) for the
+  intelligence layer -- Phase 7 with state backend + Omega Ledger.
+- Drift buffer drain scheduler -- Phase 7.
+- Phase 9 HTTP status mapping for new Router error types
+  (`CostCeilingExceeded` -> 402, `ReplayProviderUnavailable` -> 410,
+  `AllAlternatesExhausted` -> 503) -- Phase 9 admin/MCP work.
+- Verification gate's secondary routing requests for Axis 3
+  (cross-provider wobble) -- Phase 5.
+- Cost ceiling per-actor-per-day budget enforcement -- Phase 7+ (needs
+  ledger backing for cumulative tracking).
+- `phoenix/router/pricing/pricing_v1.json` package_data config so the
+  JSON ships in the wheel -- Phase 11 release work.
+
+### Known placeholders (per plan risk register)
+
+All deferrals or known limitations, none blocking:
+
+- Stub adapters' `submit()` raises `OrchestrateProviderError`; failover
+  always falls through to `LocalClassicalSimulator` for any cloud-routed
+  task. Real cloud calls cost money and need credentials; deferred.
+- Phase 4 ranking circuit shape (10 1q + 1 2q gates) is a placeholder;
+  Phase 7 wires shot-aware estimates from real KPIBundles.
+- Pricing rates are placeholders; ops refresh via `phoenix admin
+  pricing-update` (Phase 8 endpoint).
+- Drift buffer is unbounded in Phase 4 (R6); Phase 4's Router doesn't
+  consume it -- Phase 7 will.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev3` ->
+  `1.0.0.dev4`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev4`,
+  `vendor_synced_at` refreshed).
+
+---
+
+## [1.0.0.dev3] — 2026-05-08
+
+Phase 3 shipped. Trinity Core's Control and Orchestrate subsystems are
+now wired through the pipeline end-to-end. `POST /v1/tasks` returns the
+architecturally-correct `Result` envelope (top-level value, error_bar,
+sigma, agreement_type, kpi_bundle_orchestrate, three-layer ProvenanceTrace
+with cloud_shots_recorded mirror per Section 1 Decision 20). The
+`phase_2_solver_only` honesty marker is retired; everything reads
+`phase_3_solver_control_orchestrate`. Six of seven Orchestrate modules
+ship in Phase 3; `cross_provider.py` and `CrossProviderAxis` (Axis 3)
+defer to Phase 5 alongside the verification gate's rung table.
+
+### Locked scope decisions (2026-05-08, executed)
+
+1. Axis 3 fully deferred to Phase 5. No `cross_provider.py`, no
+   `CrossProviderAxis` class in Phase 3. Aligns with the orchestrate/README
+   timeline.
+2. `LocalClassicalSimulator` is the only Phase 3 `BaseProviderClient` impl,
+   landing at `phoenix/providers/classical/local_simulator.py`. Phase 4
+   adds cloud quantum adapters as siblings.
+3. Default verification depth = `R3_TWO_AXES`. The pipeline runs Axis 1 +
+   Axis 2 by default. Phase 5's rung-table promotion logic is not in scope.
+4. Typed `KPIBundle` introduced; `data_model.py` field types tightened from
+   `dict[str, Any]` to `KPIBundle` per Section 2.5.
+
+### What landed (commits 3c910d8 → eb20d36)
+
+- **Typed `KPIBundle`** (`phoenix/trinity/orchestrate/kpi_bundle.py`):
+  Phoenix-native frozen dataclass with `fidelity`, `latency_us`,
+  `backaction`, `shots_used`, `shot_budget`, `status` per Section 2.5.
+  `KPIStatus` enum: `OK` / `WARN` / `FAIL`.
+- **Data model tightening** (`phoenix/trinity/data_model.py`):
+  `VerifiedAnswer.dpd_result` (`Any` → `DPDResult`),
+  `VerifiedAnswer.kpi_bundle_control` and `Result.kpi_bundle_orchestrate`
+  (`dict[str, Any]` → `KPIBundle`), `ProvenanceTrace.control` and
+  `.orchestrate` (`Any` → typed). New `ControlProvenance` and
+  `OrchestrateProvenance` dataclasses.
+- **Control engine adapter** (`phoenix/trinity/control/engine.py`):
+  `run_dpd(candidate, *, probe_strength=0.1,
+  hardware_modality="superconducting") -> ControlRunResult`. Wraps the
+  vendored `DPDScheduler.execute()` against a `|0⟩⟨0|` placeholder
+  density matrix (Phase 5 wires the real eigenstate). SAFETY: raises
+  `ControlVerificationError` on `trace_preservation` drift > 1e-3 or
+  positivity violation.
+- **Cross-control wobble (Axis 2)** (`phoenix/trinity/control/cross_probe.py`
+  + `phoenix/verification/wobble_axis.py`): trace-distance metric
+  `T(ρ₁, ρ₂) = (1/2) Σ |λᵢ(ρ₁ - ρ₂)|` per the plan's R1 risk decision.
+  `CrossControlAxis` registers as the second concrete `WobbleAxis`
+  Protocol impl. R3+ runs eps=0.1 + eps=0.5 sweep; the weak-probe leg
+  doubles as the canonical run for the pipeline (PERF win ~1-2 s saved).
+  Optional `prior_high_grid_result` constructor injection lets the
+  pipeline skip a redundant solver call.
+- **Orchestrate scaffolding** (4 new modules under
+  `phoenix/trinity/orchestrate/`): `provider_client.py` (BaseProviderClient
+  Protocol + ProviderSubmission/RawResult dataclasses + ProviderError
+  hierarchy), `bundle_builder.py` (pure translator with deterministic
+  16-char SHA-256 bundle hash), `result_extractor.py` (raw result + KPI
+  composer), `drift_feedback.py` (in-memory DriftSignal buffer for
+  Phase 4's Router intelligence layer to drain).
+- **Router data model** (`phoenix/router/data_model.py`):
+  `RoutingDecision` + `ProviderSelection` typed dataclasses;
+  forward-compat with Phase 4's Router producer.
+- **LocalClassicalSimulator** (`phoenix/providers/classical/local_simulator.py`):
+  the only Phase 3 concrete `BaseProviderClient`. Synchronous trace
+  expectation against the verified ρ; `cloud_shots_recorded=False`.
+- **Orchestrate engine** (`phoenix/trinity/orchestrate/engine.py`):
+  top-level `orchestrate(verified, selection, ...)` that sequences
+  bundle_builder → provider_client.submit → result_extractor →
+  drift_feedback and produces `(Result, OrchestrateProvenance)`.
+  Quadrature combiner per Section 11.1.1 placeholder; agreement_type
+  mapping per the vendored `DisagreementType` enum (HEDGED_CONSENSUS /
+  UNKNOWN; Phase 5 extends).
+- **Three-layer pipeline** (`phoenix/trinity/pipeline.py`):
+  `solve(task) -> Result` (return type promoted from `CandidateAnswer`).
+  Default depth `R2_CROSS_PRECISION` → `R3_TWO_AXES`. Layer 1 runs Axis
+  1 (cross-precision); Layer 2 runs Axis 2 (cross-control) with
+  prior_high_grid_result injection; Layer 3 dispatches Orchestrate via
+  default `_build_default_provider_selection(task)` pointing at
+  `LocalClassicalSimulator`. Provenance composition stitches all three
+  sub-traces into `ProvenanceTrace` with `cloud_shots_recorded` mirror.
+- **POST /v1/tasks promotion** (`phoenix/api/routes.py`): response shape
+  changes from `candidate_answer`-wrapped to top-level `value`,
+  `error_bar`, `sigma`, `agreement_type`, `kpi_bundle_orchestrate`,
+  flattened `provenance` with solver/control/orchestrate sub-blocks.
+  HTTP 422 added for `ControlVerificationError`; HTTP 502 added for
+  `OrchestrateProviderError`.
+
+### Tests
+
+- 50 tests passing (was 34 at end of Phase 2; +16 from Phase 3).
+  - 5 new unit-test files: `test_kpi_bundle.py` (3 tests),
+    `test_control_engine.py` (3 tests including a synthetic-injection
+    `ControlVerificationError` exercise), `test_cross_control_axis.py`
+    (4 tests including the prior_high_grid_result PERF path),
+    `test_local_simulator.py` (3 tests including unknown bundle_kind
+    refusal), `test_orchestrate_engine.py` (3 tests including a
+    BrokenProvider stub for failure propagation).
+  - Phase 2 `test_pipeline.py` and `test_solve_endpoint.py` adjusted in
+    Steps 8+9 to assert the new Result envelope shape.
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all
+  4 pass.
+
+### Out of scope for Phase 3 (explicit deferrals)
+
+- Cross-provider wobble (Axis 3) and `cross_provider.py` -- Phase 5
+  alongside the verification gate's rung-table orchestrator.
+- Real eigenstate plumbing (replaces the `|0⟩⟨0|` placeholder; surfaces
+  non-zero Axis 2 trace distance signal) -- Phase 5.
+- Real observable extraction at the local simulator (replaces the trace
+  expectation placeholder) -- Phase 5.
+- Cloud quantum providers (IBM Eagle / Braket / IonQ) and the Router
+  producer -- Phase 4.
+- Adaptive rung selection driven by `max_error_bar` -- Phase 5.
+- Tasks list / get / replay / approve_promotion / cancel endpoints --
+  Phase 3+ once the ledger backs them.
+- WebSocket events (Section 5.3) -- Phase 5+ with the gate.
+- Actor verification at the front door -- Phase 6.
+
+### Open tensions touching Phase 3 (per plan risk register)
+
+All deferrals or known-placeholders, none blocking:
+
+- **R1 (cross-control metric):** Phase 3 ships trace distance; metric name
+  in `CrossControlDisagreement.metric` and `AxisResult.metadata` so Phase
+  5's gate composer can introspect or override.
+- **R2 (DPD initial ρ placeholder):** `|0⟩⟨0|` in dim=2; Phase 5 wires
+  multi-state ρ from the high-grid `SolverRunResult`.
+- **R4 (quadrature combiner):** Section 11.1.1 OPEN; Phase 3 ships the v0
+  placeholder, per-axis bars recorded in provenance for v1.1 covariance
+  refinement.
+- **R5 (agreement_type mapping):** Phase 3 maps
+  "all axes agree within tolerance" → `HEDGED_CONSENSUS`; Phase 5's
+  `agreement_classifier` extends the vendored enum with the
+  architecture-spec values.
+- **R6 (drift buffer unbounded):** Phase 4's Router intelligence layer
+  will drain on schedule; Phase 4 may add ring-buffer semantics.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev2` ->
+  `1.0.0.dev3`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev3`,
+  `vendor_synced_at` refreshed, `dr_frank_and_eddy_commit` unchanged).
+
+---
+
+## [1.0.0.dev2] — 2026-05-08
+
+Phase 2 shipped. Trinity Core's Solver subsystem is wired through the front
+door end-to-end. `POST /v1/tasks` accepts a `SolveRequest`, dispatches via
+the vendored `HamiltonianClassifier`, runs cross-precision wobble (Axis 1)
+at `RungDepth.R2_CROSS_PRECISION`, and returns a `CandidateAnswer` with
+the `phase: phase_2_solver_only` honesty marker. Phase 3 promotes the
+return type to a full `Result` envelope once Control + Orchestrate land.
+
+### What landed (commits ba1100d → this release)
+
+- **Trinity Core data model** (`phoenix/trinity/data_model.py`): seven
+  frozen dataclasses -- `ToleranceSpec`, `SolverProvenance`,
+  `ProvenanceTrace`, `PhysicsTask`, `CandidateAnswer`, `VerifiedAnswer`,
+  `Result` -- plus their supporting types. `agreement_type:
+  DisagreementType` per the 2026-05-08 drift correction (vendored class
+  name, not the v1.0 spec drift `AgreementType`).
+- **Latency tier dial** (`phoenix/_internal/latency.py`): `LatencyTier`
+  enum with `BATCH_REALTIME` / `STREAMING_REALTIME` /
+  `PERCEPTION_REALTIME` plus `LatencyTierNotImplemented` typed exception.
+  v1 routes only `BATCH_REALTIME`; the other two are
+  defined-but-not-routable per the v1.1 follow-up locked 2026-05-08.
+- **`WobbleAxis` Protocol** (`phoenix/verification/wobble_axis.py`): the
+  Protocol contract that parameterizes Phase 5's verification gate, plus
+  `RungDepth` enum, `AxisResult` dataclass, and the first concrete impl
+  `CrossPrecisionAxis`. Perception extension's three axes at Phase 20 plug
+  in as additional `WobbleAxis` impls without forking the gate.
+- **Solver engine adapter** (`phoenix/trinity/solver/engine.py`): wraps the
+  vendored `EquationSolver` registry into Phoenix's `PhysicsTask` ->
+  dispatched-solver flow. `pick_solver()` honors `regime_hint` override
+  on `PhysicsTask.metadata`; `run_solver()` runs at a specified grid
+  resolution and returns a typed `SolverRunResult`. Frontier-physics
+  regime gate raises `FrontierPhysicsRefused` for Wheeler-DeWitt /
+  Gravitational Decoherence / Semiclassical Gravity without
+  `frontier_physics=True` permission (architecture Decision 7).
+- **Cross-precision wobble logic** (`phoenix/trinity/solver/cross_precision.py`):
+  pure-function `compute_cross_precision_disagreement(low, high)` that
+  preserves the full pairwise distance row alongside the scalar per
+  Section 6.2's DO-NOT-COLLAPSE invariant.
+- **Trinity Core pipeline** (`phoenix/trinity/pipeline.py`): `solve(task)
+  -> CandidateAnswer` orchestrates the Solver-only path. Latency-tier
+  gate refuses non-routable tiers with typed exceptions naming the
+  release that ships support. Reuses Step 4's high-grid `SolverRunResult`
+  (stashed in `AxisResult.metadata["high_grid_result"]`) to extract the
+  canonical value -- saves one solver invocation per solve.
+- **Front-door endpoint** (`phoenix/api/routes.py`): `POST /v1/tasks`
+  accepts `SolveRequest`, returns Solver-only response with
+  `reproducibility_asterisk`. Status code mapping: 200 success, 400 bad
+  latency_tier or no eligible solver, 403 frontier-physics refused, 501
+  latency tier defined-but-not-routable.
+
+### Tests
+
+- 34 tests passing (was 19 at end of Phase 1; +15 from Phase 2).
+  - Phase 2 unit tests: 3 (CrossPrecisionAxis) + 5 (pipeline) = 8.
+  - Phase 2 integration tests: 7 (POST /v1/tasks).
+- Pre-commit hooks: ruff, ruff-format, mypy strict, pytest smoke -- all 4 pass.
+
+### Out of scope for Phase 2 (explicit deferrals)
+
+- Cross-control wobble (Axis 2) and cross-provider wobble (Axis 3) full
+  impls land in Phase 3 (axis classes) + Phase 5 (gate orchestration).
+- Verification gate's full rung table (R1-R5) and adaptive promotion
+  logic land in Phase 5.
+- Tasks list / get / replay / approve_promotion / cancel endpoints land
+  in Phase 3+ once the ledger backs them.
+- WebSocket events (Section 5.3) land with the verification gate at Phase 5+.
+- Actor-verification at the front door lands in Phase 6.
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev1` ->
+  `1.0.0.dev2`.
+- `vendor/VENDOR_VERSION.txt` regenerated (`phoenix_release: 1.0.0.dev2`,
+  `vendor_synced_at: 2026-05-08T18:05:38+00:00`, `dr_frank_and_eddy_commit`
+  unchanged at `fa074e5e...`).
+
+---
+
 ## [Architecture v1.1 follow-up] — 2026-05-08
 
 Documentation-only follow-up to the 2026-05-07 v1.1 revision. Phoenix-the-package stays at `1.0.0.dev1`; no implementation impact. Captures five architectural decisions Adam approved on 2026-05-08 that future-proof v1 for the perception extension without writing perception code, plus three spec-vs-source drift corrections.

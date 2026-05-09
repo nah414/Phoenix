@@ -1,0 +1,40 @@
+{
+  "_metadata": {
+    "schema_version": "v1",
+    "phoenix_release": "1.0.0.dev4",
+    "data_freshness_utc": "2026-05-08T00:00:00Z",
+    "stale_after_days": 90,
+    "_comment": "Per Section 4.7 + Section 11.2.2 (RESOLVED: soft warn on staleness > 90 days). Phase 4 ships placeholder values; ops refresh via 'phoenix admin pricing-update' (Phase 8 admin endpoint). Phase 4's Router consumes this file at module load."
+  },
+  "providers": {
+    "phoenix.local_simulator": {
+      "model": "free",
+      "_comment": "Local simulator -- no provider cost.",
+      "estimate_per_solve_usd": 0.0
+    },
+    "ibm_quantum": {
+      "model": "per_qpu_second",
+      "rate_usd_per_qpu_second": 1.60,
+      "estimate_seconds_per_solve": 0.5,
+      "estimate_per_solve_usd": 0.80,
+      "_comment": "Placeholder rate based on IBM Quantum's open-plan QPU-second pricing as of 2026 Q2; verify at https://quantum-computing.ibm.com/services/pricing before hitting real cloud. Phase 4 stub raises NotImplementedError so this is informational."
+    },
+    "aws_braket": {
+      "model": "per_shot_plus_task_fee",
+      "rate_usd_per_shot": 0.00035,
+      "task_fee_usd": 0.30,
+      "estimate_shots_per_solve": 1024,
+      "estimate_per_solve_usd": 0.66,
+      "_comment": "Placeholder for Rigetti Aspen-M-3 via Braket; ~$0.00035/shot + $0.30/task at default 1024 shots. Verify at https://aws.amazon.com/braket/pricing/ before hitting real cloud. Phase 4 stub raises NotImplementedError."
+    },
+    "ionq": {
+      "model": "per_gate_plus_per_shot",
+      "rate_usd_per_gate": 0.0003,
+      "rate_usd_per_shot": 0.01,
+      "estimate_gates_per_solve": 100,
+      "estimate_shots_per_solve": 1024,
+      "estimate_per_solve_usd": 10.27,
+      "_comment": "Placeholder for IonQ Forte direct pricing; mid-circuit-measurement-aware billing. Verify at https://ionq.com/pricing before hitting real cloud. Phase 4 stub raises NotImplementedError."
+    }
+  }
+}
