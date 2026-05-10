@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,8 +39,9 @@ from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
 from phoenix.safety.errors import AuthError, PermissionDenied
 from phoenix.safety.gate import verify_request
-from phoenix.safety.kill_switch import KillSwitchEngaged
+from phoenix.safety.kill_switch import KillSwitchEngaged, set_store_backend
 from phoenix.safety.rate_limiter import RateLimitExceeded
+from phoenix.state import get_state_backend, reset_state_backend
 from phoenix.trinity.control.engine import ControlVerificationError
 from phoenix.trinity.data_model import PhysicsTask, ToleranceSpec
 from phoenix.trinity.orchestrate.kpi_bundle import KPIStatus
@@ -50,6 +53,29 @@ from phoenix.trinity.solver.engine import (
 )
 from phoenix.verification.rung_table import select_initial_rung
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Phoenix daemon lifecycle (Phase 6b Step 4 startup wiring).
+
+    On startup, construct the configured :class:`StateBackend` from
+    :func:`phoenix.state.get_state_backend` and wire it into the
+    kill-switch write-through path. On shutdown, clear the wiring and
+    close the backend.
+
+    Per Decision 31, the backend choice is made once at startup and
+    not switchable at runtime. The lifespan boundary is where that
+    choice lands.
+    """
+    backend = get_state_backend()
+    set_store_backend(backend)
+    try:
+        yield
+    finally:
+        set_store_backend(None)
+        reset_state_backend()
+
+
 app = FastAPI(
     title="Phoenix",
     description=(
@@ -60,6 +86,7 @@ app = FastAPI(
     openapi_url="/v1/openapi.json",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 
@@ -280,7 +307,7 @@ def submit_task(
         raise HTTPException(
             status_code=403,
             detail=(
-                f"permission denied: actor={exc.actor_name!r} lacks " f"{exc.missing_capability!r}"
+                f"permission denied: actor={exc.actor_name!r} lacks {exc.missing_capability!r}"
             ),
         ) from exc
     except RateLimitExceeded as exc:
@@ -309,9 +336,7 @@ def submit_task(
         valid = [t.value for t in LatencyTier]
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"unknown latency_tier {req.tolerance.latency_tier!r}; " f"valid values: {valid}"
-            ),
+            detail=(f"unknown latency_tier {req.tolerance.latency_tier!r}; valid values: {valid}"),
         ) from exc
 
     ctx = PhysicsContext(
