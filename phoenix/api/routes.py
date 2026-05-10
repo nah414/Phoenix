@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
 from phoenix._internal.version import __version__, read_vendor_version
+from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
@@ -51,29 +52,46 @@ from phoenix.trinity.solver.engine import (
     FrontierPhysicsRefused,
     NoEligibleSolverError,
 )
+from phoenix.verification.drift_detector import get_detector, reset_detector
 from phoenix.verification.rung_table import select_initial_rung
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Phoenix daemon lifecycle (Phase 6b Step 4 startup wiring).
+    """Phoenix daemon lifecycle (Phase 6b Steps 4 + 8 startup wiring).
 
-    On startup, construct the configured :class:`StateBackend` from
-    :func:`phoenix.state.get_state_backend` and wire it into the
-    kill-switch write-through path. On shutdown, clear the wiring and
-    close the backend.
+    On startup:
+
+    - **Step 4**: construct the configured :class:`StateBackend` from
+      :func:`phoenix.state.get_state_backend` and wire it into the
+      kill-switch write-through path.
+    - **Step 8**: get the :class:`DriftDetector` singleton and
+      register the drift-alert emitter callback that bridges drift
+      cycles into the event broker -- the
+      ``/v1/ws/calibration/drift`` endpoint reads from that broker
+      channel.
+
+    On shutdown: clear the wiring and close the backend, then reset
+    the detector singleton (which stops its scheduler if started).
 
     Per Decision 31, the backend choice is made once at startup and
-    not switchable at runtime. The lifespan boundary is where that
-    choice lands.
+    not switchable at runtime. Per Decision 17 the drift detector's
+    scheduler stays **idle** by default -- the launcher script or an
+    explicit ops command starts it; the bridge wired here just makes
+    sure that when cycles DO happen, alerts reach the WS endpoint.
     """
     backend = get_state_backend()
     set_store_backend(backend)
+    # Step 8: drift detector -> event broker bridge.
+    detector = get_detector()
+    broker = get_broker()
+    install_drift_alert_emitter(detector, broker)
     try:
         yield
     finally:
         set_store_backend(None)
         reset_state_backend()
+        reset_detector()
 
 
 app = FastAPI(
@@ -534,4 +552,78 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
     except WebSocketDisconnect:
         # Client disconnected; nothing to clean up (broker buffer
         # remains for any future reconnect).
+        return
+
+
+# ---------------------------------------------------------------------------
+# Phase 6b Step 8: /v1/ws/calibration/drift -- ops-dashboard drift alerts
+
+
+@app.websocket("/v1/ws/calibration/drift")
+async def calibration_drift_stream(
+    websocket: WebSocket,
+    token: str | None = None,
+) -> None:
+    """Stream drift-alert events to ops dashboards.
+
+    Per architecture v1 Section 5.3 line 995: emits a ``drift.alert``
+    event each time the :class:`DriftDetector` reports a state
+    transition (healthy <-> warning <-> high_confidence_warning).
+    The detector's cadence is 6h by default (Decision 17), so events
+    are sparse; the WS poll cadence (250ms) is set for ops-dashboard
+    responsiveness when alerts DO fire, not throughput.
+
+    **Authentication** matches ``/v1/ws/tasks/.../stream``: client
+    mints a bearer token via ``POST /v1/identity/ws-token`` (which
+    accepts the bootstrap-actor fallback per Phase 6a Decision 4 +
+    Phase 6b open-item 7 locked 2026-05-10), passes it as the
+    ``token`` query parameter, token is consumed on connect
+    (single-use, 60s window).
+
+    **Event format**: serialized :class:`TaskEvent` JSON where
+    ``task_id`` is the constant ``"phoenix.drift.alerts"`` channel
+    name, ``type`` is ``"drift.alert"``, and ``payload`` carries
+    ``{"from_state", "to_state", "firing_detectors",
+    "detector_summaries"}``.
+
+    **Backlog replay** on connect: the WS handler starts at cursor 0
+    so a client reconnecting mid-day sees all alerts the in-memory
+    broker still has buffered (capped at 1000 events). The NATS
+    broker mode honors the per-locked-OPEN-4 10-minute MAX_AGE on
+    the durable drift-alerts stream.
+
+    Close codes:
+
+    - 1000 (normal): poll-loop timeout reached (~8 hours).
+    - 1008 (policy violation): token missing / invalid / expired /
+      already consumed.
+    """
+    if not token:
+        await websocket.close(code=1008, reason="missing token query parameter")
+        return
+    try:
+        get_ws_token_store().consume(token)
+    except WSTokenError as exc:
+        await websocket.close(code=1008, reason=str(exc))
+        return
+
+    await websocket.accept()
+    broker = get_broker()
+    cursor = 0
+    poll_seconds = 0.25
+    # ~8h loop bound; clients should auto-reconnect for longer sessions.
+    # Per Decision 17 drift cycles are minutes-scale work but state
+    # transitions are sparse, so this just bounds runaway connections.
+    max_iterations = int(8 * 60 * 60 / poll_seconds)
+    try:
+        for _ in range(max_iterations):
+            new_events = broker.get_events(DRIFT_ALERTS_CHANNEL, since_index=cursor)
+            for event in new_events:
+                await websocket.send_json(to_dict(event))
+                cursor += 1
+            await asyncio.sleep(poll_seconds)
+        await websocket.close(code=1000, reason="stream poll timeout")
+    except WebSocketDisconnect:
+        # Client disconnected; broker buffer remains for any future
+        # reconnect (subject to the buffer cap / NATS retention).
         return
