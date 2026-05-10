@@ -20,7 +20,7 @@ def test_health_returns_200_and_expected_shape() -> None:
 
     # Required fields per Phase 0 contract.
     assert body["status"] == "ok"
-    assert body["phoenix_version"] == "1.0.0.dev6"
+    assert body["phoenix_version"] == "1.0.0.dev7"
     assert body["calibration_status"] == "not_loaded"  # Phase 0 placeholder
     assert "checked_at_utc" in body
     assert "vendor_manifest" in body
@@ -44,6 +44,6 @@ def test_openapi_schema_served() -> None:
     assert response.status_code == 200
     schema = response.json()
     assert schema["openapi"].startswith("3.")
-    assert schema["info"]["version"] == "1.0.0.dev6"
+    assert schema["info"]["version"] == "1.0.0.dev7"
     # /v1/health is registered.
     assert "/v1/health" in schema["paths"]
