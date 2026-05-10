@@ -86,7 +86,7 @@ exclude = ["vendor/", "build/", "dist/"]
 # tell mypy not to complain when Phoenix code imports `synthesis.*`, `wobble.*`,
 # `grammar.*`, or `actor.*`. The vendored files themselves are excluded above.
 [[tool.mypy.overrides]]
-module = ["synthesis.*", "wobble.*", "grammar.*", "actor.*"]
+module = ["synthesis.*", "wobble.*", "grammar.*", "actor.*", "ml.*"]
 ignore_missing_imports = true
 
 # Phase 6b Step 3 -- psycopg + psycopg_pool ship in the `postgres` optional

@@ -1,0 +1,620 @@
+"""Tests for phoenix.verification.drift_detector + drift_state (Phase 6b Step 7).
+
+Coverage:
+
+- Each of the three checkers (Tier-1 analytical, ML statistical,
+  cross-version) returns the expected :class:`CheckerResult` shape.
+- :class:`DriftDetector` aggregation rule: 0 firing -> healthy, 1
+  firing -> warning, 2+ firing -> high_confidence_warning.
+- Crashed checker counts as drift (fail-closed).
+- Snapshot persistence to a mocked :class:`StateBackend`.
+- Snapshot rehydration from the backend on construction.
+- :meth:`DriftDetector.register_drift_callback` fires callbacks
+  synchronously after persistence.
+- :func:`read_drift_state` (rewired in Step 7) returns
+  :class:`DriftState` for healthy / warning / high-confidence
+  snapshots.
+- :class:`DriftStateUnavailable` raised when no snapshot exists or
+  the snapshot is stale (> 2 * cadence).
+- ``$PHOENIX_DRIFT_CADENCE_HOURS`` env var configures cadence; bad
+  values fall back to 6h.
+- Singleton lifecycle: :func:`get_detector` / :func:`reset_detector`.
+
+**Crucially, no test runs the real Tier-1 battery.** Each checker
+exercise injects a mocked runner / provider so the vendored solvers
+aren't invoked. The DriftDetector scheduler is also never started
+-- explicit :meth:`run_cycle` calls drive the orchestration tests.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+# Import phoenix to trigger sys.path injection for vendored modules
+# (needed before any vendored import like `from ml.drift_ensemble ...`).
+import phoenix  # noqa: F401
+
+from phoenix.verification.drift_detector import (
+    CheckerResult,
+    CrossVersionChecker,
+    DriftDetector,
+    DriftSnapshot,
+    MLStatisticalChecker,
+    Tier1AnalyticalChecker,
+    _resolve_cadence_seconds,
+    _snapshot_from_record,
+    _snapshot_to_record,
+    get_detector,
+    reset_detector,
+)
+from phoenix.verification.drift_state import (
+    DriftState,
+    DriftStateUnavailable,
+    read_drift_state,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_detector_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure each test starts with a clean detector singleton + a
+    known env-var baseline."""
+    reset_detector()
+    monkeypatch.delenv("PHOENIX_DRIFT_CADENCE_HOURS", raising=False)
+    monkeypatch.delenv("PHOENIX_SKIP_STARTUP_DRIFT_CYCLE", raising=False)
+    yield
+    reset_detector()
+
+
+# ---------------------------------------------------------------------------
+# Tier1AnalyticalChecker
+
+
+class TestTier1AnalyticalChecker:
+    def test_all_passing(self) -> None:
+        def fake_runner() -> dict[str, tuple[bool, str]]:
+            return {
+                "HO-1": (True, "ok"),
+                "ISW-1": (True, "ok"),
+                "H1S-1": (True, "ok"),
+                "RABI-1": (True, "ok"),
+                "SCG-1": (True, "ok"),
+            }
+
+        checker = Tier1AnalyticalChecker(runner=fake_runner)
+        result = checker.run()
+        assert result.drifting is False
+        assert "all 5" in result.summary
+        assert checker.last_results() == {
+            "HO-1": True,
+            "ISW-1": True,
+            "H1S-1": True,
+            "RABI-1": True,
+            "SCG-1": True,
+        }
+
+    def test_one_failure_marks_drifting(self) -> None:
+        def fake_runner() -> dict[str, tuple[bool, str]]:
+            return {
+                "HO-1": (True, "ok"),
+                "ISW-1": (False, "ratio out of tolerance"),
+                "H1S-1": (True, "ok"),
+                "RABI-1": (True, "ok"),
+                "SCG-1": (True, "ok"),
+            }
+
+        checker = Tier1AnalyticalChecker(runner=fake_runner)
+        result = checker.run()
+        assert result.drifting is True
+        assert "ISW-1" in result.summary
+        assert "1/5" in result.summary
+        assert checker.last_results()["ISW-1"] is False
+
+    def test_last_results_empty_before_first_run(self) -> None:
+        checker = Tier1AnalyticalChecker(runner=lambda: {})
+        assert checker.last_results() == {}
+
+
+# ---------------------------------------------------------------------------
+# MLStatisticalChecker
+
+
+class TestMLStatisticalChecker:
+    def test_no_provider_returns_skipped(self) -> None:
+        checker = MLStatisticalChecker(feature_provider=None)
+        result = checker.run()
+        assert result.drifting is False
+        assert result.metadata.get("skipped") is True
+        assert result.metadata.get("reason") == "no_provider"
+
+    def test_empty_features_returns_skipped(self) -> None:
+        import numpy as np
+
+        checker = MLStatisticalChecker(feature_provider=lambda: np.array([]))
+        result = checker.run()
+        assert result.drifting is False
+        assert result.metadata.get("reason") == "empty_features"
+
+    def test_provider_raises_counts_as_drift(self) -> None:
+        def boom() -> Any:
+            raise RuntimeError("synthetic feature provider failure")
+
+        checker = MLStatisticalChecker(feature_provider=boom)
+        result = checker.run()
+        assert result.drifting is True
+        assert "synthetic" in result.summary
+
+    def test_real_predict_scale_separated_stationary(self) -> None:
+        """With small random features the vendored DriftEnsemble
+        reports stationary -> drifting=False."""
+        import numpy as np
+
+        rng = np.random.default_rng(42)
+        features = rng.standard_normal((4, 16, 3))
+        checker = MLStatisticalChecker(
+            feature_provider=lambda: features,
+            drift_snr_threshold=10.0,  # well above the snr that random data produces
+        )
+        result = checker.run()
+        # With a high threshold the stationary signal stays below; not drifting.
+        assert result.drifting is False
+        assert "drift_snr" in result.summary
+
+    def test_real_predict_scale_separated_drifting(self) -> None:
+        """A feature buffer with a deliberate IR/UV asymmetry trips the
+        drift threshold."""
+        import numpy as np
+
+        n_samples, t_steps, n_features = 4, 16, 3
+        features = np.zeros((n_samples, t_steps, n_features))
+        # First half: ~0; second half: large constant shift. Drift_snr
+        # should be high.
+        features[:, t_steps // 2 :, :] = 10.0
+        checker = MLStatisticalChecker(
+            feature_provider=lambda: features,
+            drift_snr_threshold=0.5,
+        )
+        result = checker.run()
+        assert result.drifting is True
+
+
+# ---------------------------------------------------------------------------
+# CrossVersionChecker
+
+
+class TestCrossVersionChecker:
+    def test_no_current_results_skipped(self, tmp_path: Path) -> None:
+        checker = CrossVersionChecker(
+            current_version="1.0.0.dev7",
+            current_results_provider=lambda: {},
+            history_dir=tmp_path,
+        )
+        result = checker.run()
+        assert result.drifting is False
+        assert result.metadata.get("reason") == "no_current"
+
+    def test_no_prior_writes_current(self, tmp_path: Path) -> None:
+        current = {"HO-1": True, "ISW-1": True}
+        checker = CrossVersionChecker(
+            current_version="1.0.0.dev7",
+            current_results_provider=lambda: current,
+            history_dir=tmp_path,
+        )
+        result = checker.run()
+        assert result.drifting is False
+        assert result.metadata.get("reason") == "no_prior"
+        # Current results persisted for the next version.
+        recorded = tmp_path / "1.0.0.dev7.json"
+        assert recorded.exists()
+
+    def test_no_regression_reports_healthy(self, tmp_path: Path) -> None:
+        # Pre-populate prior version with all passing.
+        prior = tmp_path / "1.0.0.dev6.json"
+        prior.write_text(
+            '{"HO-1": true, "ISW-1": true}',
+            encoding="utf-8",
+        )
+        # Current matches: no regressions.
+        current = {"HO-1": True, "ISW-1": True}
+        checker = CrossVersionChecker(
+            current_version="1.0.0.dev7",
+            current_results_provider=lambda: current,
+            history_dir=tmp_path,
+        )
+        result = checker.run()
+        assert result.drifting is False
+        assert result.metadata["prior_version"] == "1.0.0.dev6"
+        assert result.metadata["regressions"] == []
+
+    def test_regression_marks_drift(self, tmp_path: Path) -> None:
+        prior = tmp_path / "1.0.0.dev6.json"
+        prior.write_text(
+            '{"HO-1": true, "ISW-1": true}',
+            encoding="utf-8",
+        )
+        # ISW-1 regressed.
+        current = {"HO-1": True, "ISW-1": False}
+        checker = CrossVersionChecker(
+            current_version="1.0.0.dev7",
+            current_results_provider=lambda: current,
+            history_dir=tmp_path,
+        )
+        result = checker.run()
+        assert result.drifting is True
+        assert "ISW-1" in result.summary
+        assert "ISW-1" in result.metadata["regressions"]
+
+    def test_already_failing_benchmark_is_not_regression(self, tmp_path: Path) -> None:
+        """A benchmark that already failed in the prior version isn't
+        a regression when it fails again."""
+        prior = tmp_path / "1.0.0.dev6.json"
+        prior.write_text(
+            '{"HO-1": true, "ISW-1": false}',
+            encoding="utf-8",
+        )
+        current = {"HO-1": True, "ISW-1": False}
+        checker = CrossVersionChecker(
+            current_version="1.0.0.dev7",
+            current_results_provider=lambda: current,
+            history_dir=tmp_path,
+        )
+        result = checker.run()
+        assert result.drifting is False
+        assert result.metadata["regressions"] == []
+
+
+# ---------------------------------------------------------------------------
+# DriftDetector orchestration
+
+
+class _ConstantChecker:
+    """Tiny fake checker for orchestration tests."""
+
+    def __init__(self, name: str, drifting: bool, summary: str = "") -> None:
+        self.name = name
+        self._result = CheckerResult(
+            name=name, drifting=drifting, summary=summary or f"{name}: {drifting}"
+        )
+
+    def run(self) -> CheckerResult:
+        return self._result
+
+
+class _CrashingChecker:
+    name = "crashing"
+
+    def run(self) -> CheckerResult:
+        raise RuntimeError("synthetic crash")
+
+
+class _RecordingBackend:
+    """Minimal StateBackend stub recording put_drift_state_snapshot calls."""
+
+    def __init__(self, initial: dict[str, Any] | None = None) -> None:
+        self.snapshots: list[dict[str, Any]] = []
+        self._initial = initial
+
+    def get_drift_state_snapshot(self) -> dict[str, Any] | None:
+        return self._initial
+
+    def put_drift_state_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.snapshots.append(dict(snapshot))
+
+
+class TestDriftDetectorAggregation:
+    def test_no_firing_is_healthy(self) -> None:
+        detector = DriftDetector(
+            checkers=[
+                _ConstantChecker("a", False),
+                _ConstantChecker("b", False),
+                _ConstantChecker("c", False),
+            ]
+        )
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "healthy"
+        assert snapshot.firing_detectors == []
+
+    def test_one_firing_is_warning(self) -> None:
+        detector = DriftDetector(
+            checkers=[
+                _ConstantChecker("tier1_analytical", True),
+                _ConstantChecker("ml_statistical", False),
+                _ConstantChecker("cross_version", False),
+            ]
+        )
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "warning"
+        assert snapshot.firing_detectors == ["tier1_analytical"]
+
+    def test_two_firing_is_high_confidence(self) -> None:
+        detector = DriftDetector(
+            checkers=[
+                _ConstantChecker("tier1_analytical", True),
+                _ConstantChecker("ml_statistical", True),
+                _ConstantChecker("cross_version", False),
+            ]
+        )
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "high_confidence_warning"
+        assert set(snapshot.firing_detectors) == {"tier1_analytical", "ml_statistical"}
+
+    def test_three_firing_is_high_confidence(self) -> None:
+        detector = DriftDetector(
+            checkers=[
+                _ConstantChecker("a", True),
+                _ConstantChecker("b", True),
+                _ConstantChecker("c", True),
+            ]
+        )
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "high_confidence_warning"
+
+    def test_crashed_checker_counts_as_drift(self) -> None:
+        detector = DriftDetector(
+            checkers=[
+                _ConstantChecker("a", False),
+                _CrashingChecker(),
+            ]
+        )
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "warning"
+        assert "crashing" in snapshot.firing_detectors
+        # The crashed checker's summary names the exception type.
+        assert "RuntimeError" in snapshot.detector_summaries["crashing"]
+
+
+class TestDriftDetectorSnapshotPersistence:
+    def test_snapshot_persisted_to_backend(self) -> None:
+        backend = _RecordingBackend()
+        detector = DriftDetector(
+            state_backend=backend,
+            checkers=[_ConstantChecker("a", False)],
+        )
+        detector.run_cycle()
+        assert len(backend.snapshots) == 1
+        record = backend.snapshots[0]
+        assert record["state"] == "healthy"
+        assert "cycle_unix" in record
+
+    def test_backend_failure_does_not_raise(self) -> None:
+        class FailingBackend:
+            def get_drift_state_snapshot(self) -> None:
+                return None
+
+            def put_drift_state_snapshot(self, _snapshot: Any) -> None:
+                raise RuntimeError("backend down")
+
+        detector = DriftDetector(
+            state_backend=FailingBackend(),
+            checkers=[_ConstantChecker("a", False)],
+        )
+        # Must not propagate.
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "healthy"
+
+    def test_snapshot_rehydrated_on_construction(self) -> None:
+        prior = {
+            "cycle_unix": 1234567890.0,
+            "state": "warning",
+            "firing_detectors": ["tier1_analytical"],
+            "detector_summaries": {"tier1_analytical": "ISW-1 failed"},
+        }
+        backend = _RecordingBackend(initial=prior)
+        detector = DriftDetector(
+            state_backend=backend,
+            checkers=[_ConstantChecker("a", False)],
+        )
+        snap = detector.last_snapshot()
+        assert snap is not None
+        assert snap.state == "warning"
+        assert snap.firing_detectors == ["tier1_analytical"]
+        assert snap.cycle_unix == 1234567890.0
+
+
+class TestDriftDetectorCallbacks:
+    def test_register_and_fire(self) -> None:
+        received: list[DriftSnapshot] = []
+        detector = DriftDetector(checkers=[_ConstantChecker("a", False)])
+        detector.register_drift_callback(received.append)
+        snapshot = detector.run_cycle()
+        assert len(received) == 1
+        assert received[0] is snapshot
+
+    def test_multiple_callbacks_fire_in_order(self) -> None:
+        calls: list[str] = []
+        detector = DriftDetector(checkers=[_ConstantChecker("a", False)])
+        detector.register_drift_callback(lambda _snap: calls.append("first"))
+        detector.register_drift_callback(lambda _snap: calls.append("second"))
+        detector.run_cycle()
+        assert calls == ["first", "second"]
+
+    def test_callback_exception_does_not_block_next(self) -> None:
+        calls: list[str] = []
+
+        def crashy(_snap: DriftSnapshot) -> None:
+            calls.append("crashy")
+            raise RuntimeError("nope")
+
+        def ok(_snap: DriftSnapshot) -> None:
+            calls.append("ok")
+
+        detector = DriftDetector(checkers=[_ConstantChecker("a", False)])
+        detector.register_drift_callback(crashy)
+        detector.register_drift_callback(ok)
+        detector.run_cycle()
+        assert calls == ["crashy", "ok"]
+
+
+# ---------------------------------------------------------------------------
+# Cadence env-var resolution
+
+
+def test_default_cadence_is_6h() -> None:
+    assert _resolve_cadence_seconds() == 6 * 60 * 60
+
+
+def test_cadence_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_CADENCE_HOURS", "12")
+    assert _resolve_cadence_seconds() == 12 * 60 * 60
+
+
+def test_fractional_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_CADENCE_HOURS", "0.5")
+    assert _resolve_cadence_seconds() == int(0.5 * 3600)
+
+
+def test_invalid_cadence_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_CADENCE_HOURS", "not-a-number")
+    assert _resolve_cadence_seconds() == 6 * 60 * 60
+
+
+def test_non_positive_cadence_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_CADENCE_HOURS", "-1")
+    assert _resolve_cadence_seconds() == 6 * 60 * 60
+
+
+# ---------------------------------------------------------------------------
+# Singleton lifecycle
+
+
+def test_get_detector_returns_singleton() -> None:
+    first = get_detector()
+    second = get_detector()
+    assert first is second
+
+
+def test_reset_detector_clears_singleton() -> None:
+    first = get_detector()
+    reset_detector()
+    second = get_detector()
+    assert first is not second
+
+
+# ---------------------------------------------------------------------------
+# drift_state.read_drift_state -- the wired contract
+
+
+def test_read_drift_state_defaults_to_healthy_when_no_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold start: fresh detector, no cycle run, no backend snapshot.
+
+    The verification gate must be able to proceed during daemon
+    startup before the first drift cycle. Phase 6b Step 7 preserves
+    this Phase 5 stub contract; the fail-closed rule kicks in only
+    once the detector has produced (and then lost) a snapshot.
+    """
+    # Construct an isolated detector with no backend so no rehydration.
+    detector = DriftDetector(checkers=[_ConstantChecker("a", False)])
+
+    import phoenix.verification.drift_detector as dd_mod
+
+    monkeypatch.setattr(dd_mod, "_DETECTOR", detector)
+
+    state = read_drift_state()
+    assert state.is_healthy is True
+    assert state.is_warning is False
+
+
+def test_read_drift_state_returns_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
+    detector = DriftDetector(checkers=[_ConstantChecker("a", False)])
+    detector.run_cycle()
+
+    import phoenix.verification.drift_detector as dd_mod
+
+    monkeypatch.setattr(dd_mod, "_DETECTOR", detector)
+
+    state = read_drift_state()
+    assert isinstance(state, DriftState)
+    assert state.is_healthy is True
+    assert state.is_warning is False
+    assert state.is_high_confidence_warning is False
+
+
+def test_read_drift_state_returns_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    detector = DriftDetector(
+        checkers=[
+            _ConstantChecker("tier1_analytical", True),
+            _ConstantChecker("ml_statistical", False),
+        ]
+    )
+    detector.run_cycle()
+
+    import phoenix.verification.drift_detector as dd_mod
+
+    monkeypatch.setattr(dd_mod, "_DETECTOR", detector)
+
+    state = read_drift_state()
+    assert state.is_warning is True
+    assert state.is_high_confidence_warning is False
+    assert "tier1_analytical" in (state.detector_summaries or {})
+
+
+def test_read_drift_state_high_confidence_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detector = DriftDetector(
+        checkers=[
+            _ConstantChecker("tier1_analytical", True),
+            _ConstantChecker("ml_statistical", True),
+        ]
+    )
+    detector.run_cycle()
+
+    import phoenix.verification.drift_detector as dd_mod
+
+    monkeypatch.setattr(dd_mod, "_DETECTOR", detector)
+
+    state = read_drift_state()
+    assert state.is_warning is True
+    assert state.is_high_confidence_warning is True
+
+
+def test_read_drift_state_stale_snapshot_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A snapshot older than 2 * cadence triggers DriftStateUnavailable."""
+    import time
+
+    detector = DriftDetector(
+        cadence_seconds=60,  # 60s cadence -> stale at >120s
+        checkers=[_ConstantChecker("a", False)],
+    )
+    # Inject a stale snapshot by running a cycle, then rewinding its
+    # cycle_unix beyond the stale threshold.
+    detector.run_cycle()
+    stale = DriftSnapshot(
+        cycle_unix=time.time() - 200,  # 200s old > 2 * 60s stale threshold
+        state="healthy",
+        firing_detectors=[],
+        detector_summaries={},
+    )
+    detector._last_snapshot = stale  # type: ignore[attr-defined]
+
+    import phoenix.verification.drift_detector as dd_mod
+
+    monkeypatch.setattr(dd_mod, "_DETECTOR", detector)
+
+    with pytest.raises(DriftStateUnavailable, match="stale"):
+        read_drift_state()
+
+
+# ---------------------------------------------------------------------------
+# Snapshot record round-trip
+
+
+def test_snapshot_record_round_trip() -> None:
+    original = DriftSnapshot(
+        cycle_unix=1717400000.0,
+        state="warning",
+        firing_detectors=["tier1_analytical"],
+        detector_summaries={"tier1_analytical": "ISW-1 ratio off"},
+    )
+    record = _snapshot_to_record(original)
+    restored = _snapshot_from_record(record)
+    assert restored.cycle_unix == original.cycle_unix
+    assert restored.state == original.state
+    assert restored.firing_detectors == original.firing_detectors
+    assert restored.detector_summaries == original.detector_summaries
