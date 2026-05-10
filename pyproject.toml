@@ -40,6 +40,18 @@ postgres = [
     "psycopg[binary]>=3.1,<4.0",
     "psycopg-pool>=3.2,<4.0",
 ]
+# Phase 6b Step 5 -- NATS JetStream queue + event broker. Opt-in for
+# installs that want durable queueing or cross-process pub/sub.
+# Install via:
+#     pip install phoenix-middleware[nats]
+# Locked open-item 3 (2026-05-10): the `nats-server` binary itself is
+# user-installed for 1.0.0.dev7 (winget / brew); bundling deferred to
+# 1.0.0 release-artifact pipeline. Locked open-item 4 (2026-05-10):
+# JetStream consumer modes are mixed per use case -- task ingress
+# durable, per-task events ephemeral, drift alerts durable+short-TTL.
+nats = [
+    "nats-py>=2.6,<3.0",
+]
 
 [project.scripts]
 phoenix = "phoenix.cli.entry:main"
@@ -84,4 +96,13 @@ ignore_missing_imports = true
 # attempted without the extra installed.
 [[tool.mypy.overrides]]
 module = ["psycopg", "psycopg.*", "psycopg_pool", "psycopg_pool.*"]
+ignore_missing_imports = true
+
+# Phase 6b Step 5 -- nats-py ships in the `nats` optional extra. Same
+# pattern as psycopg above: phoenix/queue/nats_client.py uses TYPE_CHECKING
+# guards + lazy runtime imports so SQLite-only installs without the
+# `nats` extra import cleanly and only fail at connection time with a
+# clear "[nats]" extra hint.
+[[tool.mypy.overrides]]
+module = ["nats", "nats.*"]
 ignore_missing_imports = true
