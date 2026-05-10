@@ -29,6 +29,17 @@ dev = [
     "mypy>=1.8,<2.0",
     "pre-commit>=3.6,<4.0",
 ]
+# Phase 6b Step 3 -- Postgres state backend. Opt-in; SQLite is the
+# default and requires no extra. Install via:
+#     pip install phoenix-middleware[postgres]
+# Locked open-item 2 (2026-05-10): sync psycopg3 wrapped in
+# asyncio.to_thread at the call sites, symmetric with the SQLite
+# stdlib sqlite3 path. ConnectionPool handles concurrent worker
+# threads in the pooled-async pattern.
+postgres = [
+    "psycopg[binary]>=3.1,<4.0",
+    "psycopg-pool>=3.2,<4.0",
+]
 
 [project.scripts]
 phoenix = "phoenix.cli.entry:main"
@@ -64,4 +75,13 @@ exclude = ["vendor/", "build/", "dist/"]
 # `grammar.*`, or `actor.*`. The vendored files themselves are excluded above.
 [[tool.mypy.overrides]]
 module = ["synthesis.*", "wobble.*", "grammar.*", "actor.*"]
+ignore_missing_imports = true
+
+# Phase 6b Step 3 -- psycopg + psycopg_pool ship in the `postgres` optional
+# extra and may not be installed on SQLite-only Phoenix installs. Tell mypy
+# not to error when phoenix/state/postgres_backend.py references them; the
+# module's runtime path raises a clear ImportError if construction is
+# attempted without the extra installed.
+[[tool.mypy.overrides]]
+module = ["psycopg", "psycopg.*", "psycopg_pool", "psycopg_pool.*"]
 ignore_missing_imports = true
