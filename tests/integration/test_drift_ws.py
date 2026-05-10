@@ -233,6 +233,65 @@ class TestCalibrationDriftWSEndpoint:
             return
         raise AssertionError("expected WebSocketDisconnect with code 1008")
 
+    def test_expired_token_closes_1008(self) -> None:
+        """Per architecture §5.3 + Section 5.5: tokens expire after
+        the 60s validity window. The handler rejects expired tokens
+        with the same 1008 close code as missing/bad ones."""
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from phoenix.api.routes import app
+        from phoenix.api.ws_auth import get_store as get_ws_token_store
+
+        client = TestClient(app)
+        with client:
+            token_resp = client.post("/v1/identity/ws-token")
+            assert token_resp.status_code == 200
+            token = token_resp.json()["token"]
+
+            # Mutate the issued_at_unix backward to simulate the 60s
+            # validity window elapsing (avoids actually sleeping 60+
+            # seconds in the test).
+            store = get_ws_token_store()
+            with store._lock:  # type: ignore[attr-defined]
+                record = store._tokens[token]  # type: ignore[attr-defined]
+                record.issued_at_unix = record.issued_at_unix - 120
+
+            try:
+                with client.websocket_connect(f"/v1/ws/calibration/drift?token={token}"):
+                    pass
+            except WebSocketDisconnect as exc:
+                assert exc.code == 1008
+                return
+            raise AssertionError("expected WebSocketDisconnect with code 1008")
+
+    def test_reused_token_closes_1008(self) -> None:
+        """Single-use semantics per architecture §5.3: a token consumed
+        once cannot be reused on a second WS handshake."""
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from phoenix.api.routes import app
+        from phoenix.api.ws_auth import get_store as get_ws_token_store
+
+        client = TestClient(app)
+        with client:
+            token_resp = client.post("/v1/identity/ws-token")
+            assert token_resp.status_code == 200
+            token = token_resp.json()["token"]
+
+            # Consume the token explicitly (simulates a prior successful
+            # WS handshake), then try to use it again.
+            get_ws_token_store().consume(token)
+
+            try:
+                with client.websocket_connect(f"/v1/ws/calibration/drift?token={token}"):
+                    pass
+            except WebSocketDisconnect as exc:
+                assert exc.code == 1008
+                return
+            raise AssertionError("expected WebSocketDisconnect with code 1008")
+
     def test_valid_token_receives_pre_buffered_drift_alert(self) -> None:
         """Inject a drift alert into the broker before connecting;
         the WS handler must replay it from cursor=0 on connect."""
