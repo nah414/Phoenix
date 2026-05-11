@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev7"
-description = "Production-grade quantum-accuracy middleware (Phase 6b -- Infrastructure: State Backends + NATS + Drift Detector)"
+version = "1.0.0.dev8"
+description = "Production-grade quantum-accuracy middleware (Phase 7 -- Audit log + Omega Ledger + replay + drift->router feedback)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]

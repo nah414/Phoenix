@@ -590,6 +590,137 @@ def submit_task(
 
 
 # ---------------------------------------------------------------------------
+# Phase 7 Step 10: GET /v1/audit/events + GET /v1/audit/ledger/verify
+#
+# Per architecture v1 Section 5.2: read-only audit endpoints. Both
+# require any authenticated actor (no special capability); rate-limited
+# at the standard "tasks_get" cost. Phase 8's /v1/admin/ledger/integrity-
+# report layers an admin-only fuller report on top.
+
+
+@app.get("/v1/audit/events")
+def get_audit_events(
+    request: Request,
+    since_unix: float = 0.0,
+    limit: int = 100,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """List audit events with ``timestamp_unix >= since_unix``,
+    ordered ascending, up to ``limit`` rows.
+
+    Per architecture v1 Section 5.2: reads from the StateBackend's
+    ``audit_events`` table (Phase 6b shape). Authentication via the
+    safety gate; no special capability required beyond a recognized
+    Actor. Cost = 1 token per request (action_key=``tasks_get``).
+
+    Query params:
+      - ``since_unix`` (float, default 0): only events at or after
+        this unix timestamp.
+      - ``limit`` (int, default 100, max 1000): cap on rows returned.
+
+    Status codes:
+      - 200: success; body is ``{"events": [...], "count": N}``.
+      - 401: missing / bad Actor signature.
+      - 429: rate-limited.
+      - 503: kill switch engaged.
+    """
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_get",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    capped_limit = max(1, min(int(limit), 1000))
+    rows = get_state_backend().list_audit_events(
+        since_unix=float(since_unix),
+        limit=capped_limit,
+    )
+    return {"events": rows, "count": len(rows)}
+
+
+@app.get("/v1/audit/ledger/verify")
+def verify_ledger(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Verify the Omega Ledger hashchain integrity.
+
+    Returns BOTH integrity reports:
+
+    - ``sql_structural`` -- the SQL window-function walk from
+      :meth:`StateBackend.verify_ledger_integrity`. Catches structural
+      breaks (deleted rows, parent_hash rewritten in the chain) using
+      a single ``LAG``-CTE query.
+    - ``python_crypto`` -- the Python crypto walk from
+      :meth:`OmegaLedger.verify_chain`. Recomputes SHA-256 per row;
+      catches cryptographic tampering of ``payload_json`` that the
+      SQL check can't see.
+
+    A clean chain has ``valid=True`` on both checks. Mismatches name
+    the first broken entry_id + a human-readable reason for ops triage.
+
+    Status codes:
+      - 200: success (whether or not the chain is valid -- the body
+        carries the report).
+      - 401 / 429 / 503: same safety-gate handling as
+        :func:`get_audit_events`.
+    """
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_get",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    # Lazy import: phoenix.ledger imports vendor.omega which resolves
+    # via the sys.path injection in phoenix/__init__.py at first call.
+    from phoenix.ledger import get_ledger
+
+    sql_report = get_state_backend().verify_ledger_integrity()
+    python_report = get_ledger().verify_chain()
+    return {
+        "sql_structural": sql_report,
+        "python_crypto": {
+            "valid": python_report.valid,
+            "entries_checked": python_report.entries_checked,
+            "first_broken_entry_id": python_report.first_broken_entry_id,
+            "reason": python_report.reason,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Phase 7 Step 8: POST /v1/tasks/{task_id}/replay
 
 
