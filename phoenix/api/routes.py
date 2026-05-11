@@ -179,6 +179,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Phase 8 Step 1: mount the admin :class:`APIRouter` under /v1/admin
+# per locked OPEN-1 (2026-05-11). All admin routes are tagged "Admin"
+# in the OpenAPI schema so the privileged surface is trivially
+# separable from the user-facing routes.
+from phoenix.admin import admin_router  # noqa: E402
+
+app.include_router(admin_router)
+
 
 # ---------------------------------------------------------------------------
 # Phase 7 Step 2: HTTP audit middleware -- emit api.request.* events for

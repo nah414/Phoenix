@@ -58,6 +58,14 @@ _COST_CATALOGUE: dict[str, int] = {
     "tasks_replay": 50,
     "adapters_post": 10,
     "ws_token": 1,
+    # Phase 8: admin endpoints. Read calls are 1 (matches tasks_get);
+    # mutation calls (kill switch, quarantine/restore, override,
+    # calibration run, adapter force-revalidate) are 5 -- not free,
+    # so a malicious admin token can't engage/release the kill switch
+    # in a tight loop and exhaust the audit chain.
+    "admin.ping": 0,
+    "admin.read": 1,
+    "admin.mutate": 5,
 }
 
 
