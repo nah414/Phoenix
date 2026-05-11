@@ -264,6 +264,12 @@ class ProvenanceTrace:
     orchestrate: OrchestrateProvenance | None = None
     verification: VerificationProvenance | None = None
     cloud_shots_recorded: bool = False
+    # Phase 7 Step 6: omega_ledger_entry_id correlates the user-visible
+    # provenance trace with the durable ledger row. None when the
+    # verification gate's ledger composition failed (StateBackend
+    # unavailable, etc.) -- the user still gets their answer; only
+    # the audit trail is degraded.
+    omega_ledger_entry_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

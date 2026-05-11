@@ -1,4 +1,4 @@
-"""Phase 7 Step 4 -- Omega Ledger integration tests.
+"""Phase 7 Step 4 + Step 6 -- Omega Ledger integration tests.
 
 Covers:
 
@@ -9,7 +9,9 @@ Covers:
   the correct genesis anchor + chain links.
 - :meth:`OmegaLedger.verify_chain` reports ``valid=True`` on a clean
   chain and ``valid=False`` (with the offending entry_id named) when
-  a row is tampered.
+  a row is tampered cryptographically (payload_json modified after the
+  fact) -- complements
+  :meth:`StateBackend.verify_ledger_integrity`'s SQL structural check.
 - :meth:`OmegaLedger.read_entry` round-trips a typed payload through
   storage and back to an identical :class:`LedgerEntry`.
 - The 4 typed-payload converters
@@ -20,13 +22,17 @@ Covers:
   with the right ``entry_kind`` discriminator + ``actor_id``.
 - :func:`get_ledger` is a singleton; :func:`reset_ledger` clears it.
 
-Tests use ``db_path=":memory:"`` for the per-test fresh ledger so
-the real ``~/.phoenix/runtime/ledger.db`` is never touched.
+Step 6 refactor: tests now construct an :class:`OmegaLedger` backed by
+a fresh :class:`SQLiteStateBackend` against a tmp directory rather
+than the vendored SQLite glue. The Step 4 vendored-SQLite path was
+scaffolding; Step 6 makes the StateBackend the durable home and
+keeps OmegaLedger as a hash-math + chain-walk facade over it.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -48,6 +54,21 @@ from phoenix.ledger import (
     reset_ledger,
     solve_to_ledger_entry,
 )
+from phoenix.state.sqlite_backend import SQLiteStateBackend
+
+
+@pytest.fixture
+def fresh_backend(tmp_path: Path) -> Iterator[SQLiteStateBackend]:
+    """Construct a fresh per-test :class:`SQLiteStateBackend`.
+
+    Each test gets its own SQLite file under ``tmp_path`` so the
+    ledger chain starts at GENESIS and rows from one test never
+    leak into another. The backend's :meth:`close` is called in
+    teardown.
+    """
+    backend = SQLiteStateBackend(db_path=tmp_path / "state.db")
+    yield backend
+    backend.close()
 
 
 # ---------------------------------------------------------------------------
@@ -115,50 +136,38 @@ class TestCanonicalJSON:
 
 
 class TestAppendEntry:
-    def test_first_entry_anchors_at_genesis(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            solve = _make_solve(0)
-            entry = solve_to_ledger_entry(solve, actor_id="adam")
-            link = ledger.append_entry(entry)
-            assert isinstance(link, LedgerLink)
-            assert link.parent_hash == "GENESIS"
-            # entry_hash is 64-char hex (SHA-256).
-            assert len(link.entry_hash) == 64
-            assert all(c in "0123456789abcdef" for c in link.entry_hash)
-        finally:
-            ledger.close()
+    def test_first_entry_anchors_at_genesis(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        solve = _make_solve(0)
+        entry = solve_to_ledger_entry(solve, actor_id="adam")
+        link = ledger.append_entry(entry)
+        assert isinstance(link, LedgerLink)
+        assert link.parent_hash == "GENESIS"
+        # entry_hash is 64-char hex (SHA-256).
+        assert len(link.entry_hash) == 64
+        assert all(c in "0123456789abcdef" for c in link.entry_hash)
+        # The Phoenix-side entry_id from solve_to_ledger_entry flows through.
+        assert link.entry_id == entry.entry_id
 
-    def test_second_entry_chains_to_first(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            link1 = ledger.append_entry(solve_to_ledger_entry(_make_solve(0), actor_id="adam"))
-            link2 = ledger.append_entry(solve_to_ledger_entry(_make_solve(1), actor_id="adam"))
-            # link2's parent_hash is exactly link1's entry_hash.
-            assert link2.parent_hash == link1.entry_hash
-            assert link2.entry_hash != link1.entry_hash
+    def test_second_entry_chains_to_first(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        link1 = ledger.append_entry(solve_to_ledger_entry(_make_solve(0), actor_id="adam"))
+        link2 = ledger.append_entry(solve_to_ledger_entry(_make_solve(1), actor_id="adam"))
+        # link2's parent_hash is exactly link1's entry_hash.
+        assert link2.parent_hash == link1.entry_hash
+        assert link2.entry_hash != link1.entry_hash
 
-        finally:
-            ledger.close()
+    def test_count_tracks_appends(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        assert ledger.count() == 0
+        for i in range(5):
+            ledger.append_entry(solve_to_ledger_entry(_make_solve(i), actor_id="adam"))
+        assert ledger.count() == 5
 
-    def test_count_tracks_appends(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            assert ledger.count() == 0
-            for i in range(5):
-                ledger.append_entry(solve_to_ledger_entry(_make_solve(i), actor_id="adam"))
-            assert ledger.count() == 5
-        finally:
-            ledger.close()
-
-    def test_close_blocks_further_appends(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        ledger.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            ledger.append_entry(solve_to_ledger_entry(_make_solve(0), actor_id="adam"))
-
-    def test_close_is_idempotent(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
+    def test_close_is_idempotent(self, fresh_backend: SQLiteStateBackend) -> None:
+        """OmegaLedger.close is a no-op (StateBackend owns its lifecycle)
+        but must be safely callable multiple times."""
+        ledger = OmegaLedger(state_backend=fresh_backend)
         ledger.close()
         ledger.close()  # must not raise
 
@@ -168,97 +177,88 @@ class TestAppendEntry:
 
 
 class TestReadEntry:
-    def test_read_entry_returns_full_record(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            solve = _make_solve(0, result_value=1.234)
-            entry = solve_to_ledger_entry(solve, actor_id="ash")
-            link = ledger.append_entry(entry)
-            # Note: the vendored seal mints its own UUID, so the
-            # entry_id we get back is the vendored module's, not the
-            # client-side one we put inside payload.
-            stored = ledger.read_entry(link.entry_id)
-            assert stored is not None
-            assert stored.entry_id == link.entry_id
-            assert stored.entry_kind == "solve"
-            assert stored.actor_id == "ash"
-            assert stored.parent_hash == link.parent_hash
-            assert stored.entry_hash == link.entry_hash
-            assert stored.payload["task_id"] == "req_0"
-            assert stored.payload["result_value"] == pytest.approx(1.234)
-        finally:
-            ledger.close()
+    def test_read_entry_returns_full_record(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        solve = _make_solve(0, result_value=1.234)
+        entry = solve_to_ledger_entry(solve, actor_id="ash")
+        link = ledger.append_entry(entry)
+        stored = ledger.read_entry(link.entry_id)
+        assert stored is not None
+        assert stored.entry_id == link.entry_id == entry.entry_id
+        assert stored.entry_kind == "solve"
+        assert stored.actor_id == "ash"
+        assert stored.parent_hash == link.parent_hash
+        assert stored.entry_hash == link.entry_hash
+        assert stored.payload["task_id"] == "req_0"
+        assert stored.payload["result_value"] == pytest.approx(1.234)
 
-    def test_read_entry_returns_none_for_missing_id(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            assert ledger.read_entry("no-such-id") is None
-        finally:
-            ledger.close()
+    def test_read_entry_returns_none_for_missing_id(
+        self, fresh_backend: SQLiteStateBackend
+    ) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        assert ledger.read_entry("no-such-id") is None
 
 
 # ---------------------------------------------------------------------------
-# verify_chain
+# verify_chain (Python crypto walk -- catches payload tampering)
 
 
 class TestVerifyChain:
-    def test_empty_chain_is_valid(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            report = ledger.verify_chain()
-            assert isinstance(report, ChainVerificationReport)
-            assert report.valid is True
-            assert report.entries_checked == 0
-            assert report.first_broken_entry_id is None
-        finally:
-            ledger.close()
+    def test_empty_chain_is_valid(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        report = ledger.verify_chain()
+        assert isinstance(report, ChainVerificationReport)
+        assert report.valid is True
+        assert report.entries_checked == 0
+        assert report.first_broken_entry_id is None
 
-    def test_clean_chain_verifies(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            for i in range(3):
-                ledger.append_entry(solve_to_ledger_entry(_make_solve(i), actor_id="adam"))
-            report = ledger.verify_chain()
-            assert report.valid is True
-            assert report.entries_checked == 3
-        finally:
-            ledger.close()
+    def test_clean_chain_verifies(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        for i in range(3):
+            ledger.append_entry(solve_to_ledger_entry(_make_solve(i), actor_id="adam"))
+        report = ledger.verify_chain()
+        assert report.valid is True
+        assert report.entries_checked == 3
 
-    def test_tampering_breaks_chain(self, tmp_path: Path) -> None:
-        """Modify a stored payload directly; verify_chain detects."""
-        db_path = str(tmp_path / "ledger.db")
-        ledger = OmegaLedger(db_path=db_path)
+    def test_payload_tampering_breaks_chain(self, tmp_path: Path) -> None:
+        """Modify a stored payload_json directly via SQL; verify_chain
+        detects the cryptographic mismatch (which the SQL structural
+        check would miss because the parent_hash chain stays intact)."""
+        backend = SQLiteStateBackend(db_path=tmp_path / "state.db")
         try:
+            ledger = OmegaLedger(state_backend=backend)
             links = [
                 ledger.append_entry(solve_to_ledger_entry(_make_solve(i), actor_id="adam"))
                 for i in range(3)
             ]
         finally:
-            ledger.close()
+            backend.close()
 
-        # Tamper with entry 1's contract_json directly.
+        # Tamper with entry 1's payload_json directly.
         target_id = links[1].entry_id
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(str(tmp_path / "state.db")) as conn:
             conn.execute(
-                "UPDATE omega_entries SET contract_json = ? WHERE entry_id = ?",
+                "UPDATE ledger_entries SET payload_json = ? WHERE entry_id = ?",
                 ('{"task_id":"FORGED","request_id":"FORGED"}', target_id),
             )
             conn.commit()
 
-        # Re-open and verify -- chain should be broken at entry 1.
-        ledger2 = OmegaLedger(db_path=db_path)
+        # Re-open and verify -- the entry_hash no longer matches the
+        # recomputed SHA-256.
+        backend2 = SQLiteStateBackend(db_path=tmp_path / "state.db")
         try:
+            ledger2 = OmegaLedger(state_backend=backend2)
             report = ledger2.verify_chain()
             assert report.valid is False
             assert report.first_broken_entry_id == target_id
             assert report.reason is not None
-            assert "hash mismatch" in report.reason
+            assert "entry_hash mismatch" in report.reason
         finally:
-            ledger2.close()
+            backend2.close()
 
 
 # ---------------------------------------------------------------------------
-# Typed-payload converters
+# Typed-payload converters (unchanged from Step 4)
 
 
 class TestTypedConverters:
@@ -268,7 +268,6 @@ class TestTypedConverters:
         assert entry.entry_kind == "solve"
         assert entry.actor_id == "ash"
         assert entry.payload["task_id"] == "req_0"
-        # Default empty provenance/manifest blocks.
         assert entry.payload["verification_provenance"] == {}
         assert entry.payload["vendor_manifest"] == {}
 
@@ -281,7 +280,6 @@ class TestTypedConverters:
         )
         entry = override_to_ledger_entry(override)
         assert entry.entry_kind == "override_by_operator"
-        # operator_id flows up to the ledger entry's actor_id.
         assert entry.actor_id == "adam"
         assert entry.payload["affected_task_id"] == "req_abc"
 
@@ -317,7 +315,6 @@ class TestTypedConverters:
         )
         entry = enrollment_to_ledger_entry(enrollment)
         assert entry.entry_kind == "enrollment"
-        # actor_id is the ADMIN enrolling, not the new actor.
         assert entry.actor_id == "adam"
         assert entry.payload["enrolled_actor_name"] == "alice"
 
@@ -327,40 +324,60 @@ class TestTypedConverters:
 
 
 class TestMixedKinds:
-    def test_chain_works_across_all_four_kinds(self) -> None:
-        ledger = OmegaLedger(db_path=":memory:")
-        try:
-            ledger.append_entry(solve_to_ledger_entry(_make_solve(0), actor_id="adam"))
-            ledger.append_entry(
-                kill_switch_to_ledger_entry(
-                    KillSwitchEntry(transition="engaged", by="ash", reason="test")
+    def test_chain_works_across_all_four_kinds(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        ledger.append_entry(solve_to_ledger_entry(_make_solve(0), actor_id="adam"))
+        ledger.append_entry(
+            kill_switch_to_ledger_entry(
+                KillSwitchEntry(transition="engaged", by="ash", reason="test")
+            )
+        )
+        ledger.append_entry(
+            override_to_ledger_entry(
+                OverrideByOperatorEntry(
+                    operator_id="adam",
+                    affected_task_id="req_0",
+                    override_disposition="ship-as-degraded",
+                    reason="judgment call",
                 )
             )
-            ledger.append_entry(
-                override_to_ledger_entry(
-                    OverrideByOperatorEntry(
-                        operator_id="adam",
-                        affected_task_id="req_0",
-                        override_disposition="ship-as-degraded",
-                        reason="judgment call",
-                    )
+        )
+        ledger.append_entry(
+            enrollment_to_ledger_entry(
+                EnrollmentEntry(
+                    enrolled_actor_name="bob",
+                    enrolled_by="adam",
+                    permissions={"can_submit_tasks": True},
                 )
             )
-            ledger.append_entry(
-                enrollment_to_ledger_entry(
-                    EnrollmentEntry(
-                        enrolled_actor_name="bob",
-                        enrolled_by="adam",
-                        permissions={"can_submit_tasks": True},
-                    )
-                )
-            )
-            assert ledger.count() == 4
-            report = ledger.verify_chain()
-            assert report.valid is True
-            assert report.entries_checked == 4
-        finally:
-            ledger.close()
+        )
+        assert ledger.count() == 4
+        report = ledger.verify_chain()
+        assert report.valid is True
+        assert report.entries_checked == 4
+
+
+# ---------------------------------------------------------------------------
+# StateBackend + OmegaLedger parity: both verifiers should agree
+
+
+class TestBackendLedgerParity:
+    """The SQL structural check (:meth:`verify_ledger_integrity`) and the
+    Python crypto walk (:meth:`verify_chain`) should both report
+    ``valid`` on a clean chain. They report different things on
+    tampering (SQL catches parent_hash chain breaks; Python catches
+    payload tampering) -- a complementary pair."""
+
+    def test_clean_chain_validates_in_both_layers(self, fresh_backend: SQLiteStateBackend) -> None:
+        ledger = OmegaLedger(state_backend=fresh_backend)
+        for i in range(3):
+            ledger.append_entry(solve_to_ledger_entry(_make_solve(i), actor_id="adam"))
+
+        sql_report = fresh_backend.verify_ledger_integrity()
+        py_report = ledger.verify_chain()
+        assert sql_report["valid"] is True
+        assert py_report.valid is True
+        assert sql_report["entries_checked"] == py_report.entries_checked == 3
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +390,12 @@ class TestSingleton:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("PHOENIX_LEDGER_DB", str(tmp_path / "ledger.db"))
+        # Point the state-backend factory at a tmp file so the singleton
+        # doesn't touch ~/.phoenix/runtime/state.db.
+        monkeypatch.setenv("PHOENIX_SQLITE_DB_PATH", str(tmp_path / "state.db"))
+        from phoenix.state import reset_state_backend
+
+        reset_state_backend()
         reset_ledger()
         try:
             first = get_ledger()
@@ -381,13 +403,17 @@ class TestSingleton:
             assert first is second
         finally:
             reset_ledger()
+            reset_state_backend()
 
     def test_reset_ledger_clears_singleton(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("PHOENIX_LEDGER_DB", str(tmp_path / "ledger.db"))
+        monkeypatch.setenv("PHOENIX_SQLITE_DB_PATH", str(tmp_path / "state.db"))
+        from phoenix.state import reset_state_backend
+
+        reset_state_backend()
         reset_ledger()
         try:
             first = get_ledger()
@@ -396,22 +422,7 @@ class TestSingleton:
             assert first is not second
         finally:
             reset_ledger()
-
-    def test_env_override_drives_db_path(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        custom = tmp_path / "custom_ledger.db"
-        monkeypatch.setenv("PHOENIX_LEDGER_DB", str(custom))
-        reset_ledger()
-        try:
-            ledger = get_ledger()
-            assert ledger.db_path == str(custom)
-            # The file got created on construction.
-            assert custom.exists()
-        finally:
-            reset_ledger()
+            reset_state_backend()
 
 
 # ---------------------------------------------------------------------------

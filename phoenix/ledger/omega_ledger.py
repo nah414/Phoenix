@@ -1,75 +1,53 @@
-"""Phoenix Omega Ledger adapter (Phase 7 Step 4).
+"""Phoenix Omega Ledger adapter (Phase 7 Step 4 + Step 6 refactor).
 
-Wraps the slim vendored hashchain primitive at
-:mod:`vendor.omega.ledger` with a Phoenix-shaped API:
+Wraps the vendored hashchain primitives (``_compute_entry_hash`` +
+``GENESIS_HASH`` from :mod:`vendor.omega.ledger`) with a Phoenix-shaped
+API:
 
 - :meth:`OmegaLedger.append_entry` takes a typed :class:`LedgerEntry`,
-  serializes its payload with canonical JSON, calls the vendored
-  ``seal``, and returns a :class:`LedgerLink` carrying the freshly-
-  set ``parent_hash`` + ``entry_hash``.
-- :meth:`OmegaLedger.verify_chain` returns a typed
-  :class:`ChainVerificationReport` instead of the vendored dict.
-- :meth:`OmegaLedger.read_entry` parses the stored row back into a
-  :class:`LedgerEntry` instance.
+  serializes its payload with canonical JSON, computes
+  ``SHA-256(parent_hash | entry_kind | payload_json)``, persists via
+  :meth:`StateBackend.append_ledger_entry`, and returns a typed
+  :class:`LedgerLink`.
+- :meth:`OmegaLedger.read_entry` looks up a single entry by ID.
+- :meth:`OmegaLedger.verify_chain` walks the chain in Python and
+  recomputes each row's SHA-256, returning a typed
+  :class:`ChainVerificationReport`. Slower than
+  :meth:`StateBackend.verify_ledger_integrity` (which uses SQL window
+  functions for the structural check) but catches cryptographic
+  tampering of ``payload_json`` that the SQL check can't see.
 
-The adapter does **not** add new persistence behavior beyond what
-the vendored module ships -- per the locked OPEN-3 (Option B):
-*"vendor the hashchain primitives + thin Phoenix adapter that
-handles the delta"*. The "delta" handled here is:
+**Step 6 refactor:** in Step 4 the adapter wrapped the vendored
+:class:`vendor.omega.ledger.OmegaLedger` class with its own SQLite
+file. Step 6 redirects persistence to the
+:class:`~phoenix.state.StateBackend` introduced in Step 5 -- the
+``ledger_entries`` table is now the single canonical home for the
+chain. This means Postgres-backed installs get replicated ledger
+storage for free, and Phoenix avoids the dual-write coherence
+problem (which entry_id wins when two stores diverge?).
 
-1. Typed-payload (de)serialization via the canonical JSON encoder
-   on :class:`LedgerEntry`.
-2. Translation of the vendored ``{valid, checked, first_broken,
-   reason}`` dict into the typed :class:`ChainVerificationReport`.
-3. Phoenix-shaped path defaulting (``~/.phoenix/runtime/ledger.db``
-   instead of ``C:/frank-data/omega/events.db``).
-
-The singleton pattern follows Phase 6b's
-:func:`phoenix.state.get_state_backend` / :func:`phoenix.audit.get_emitter`:
-:func:`get_ledger` lazily constructs on first call, :func:`reset_ledger`
-closes + clears for test isolation.
+The vendored module's hashchain primitives are still used verbatim
+(per the locked OPEN-3 Option B vendoring); only the SQLite glue
+was a Step 4 scaffolding choice that Step 6 supersedes.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-import os
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
+
+import phoenix  # noqa: F401  -- triggers sys.path injection for vendored modules
+from omega.ledger import GENESIS_HASH, _compute_entry_hash
 
 from phoenix.ledger.entry_types import LedgerEntry
 
-# Vendored substrate resolves via the sys.path injection done in
-# phoenix/__init__.py. The TYPE_CHECKING guard keeps mypy happy while
-# the runtime import happens lazily inside the class (matches Phase 1
-# vendor-import discipline).
 if TYPE_CHECKING:
-    from omega.ledger import OmegaLedger as _VendoredLedger
+    from phoenix.state.backend_protocol import StateBackend
 
 logger = logging.getLogger(__name__)
-
-
-# Default ledger DB path per architecture v1 Section 1 Decision 15.
-# The audit JSONL writer uses ~/.phoenix/runtime/audit/; the ledger
-# uses a SQLite file in the same runtime root for the same
-# "Phoenix daemon owns this state" pattern.
-_DEFAULT_LEDGER_DIR = Path.home() / ".phoenix" / "runtime"
-_DEFAULT_LEDGER_FILENAME = "ledger.db"
-PHOENIX_LEDGER_DB_ENV = "PHOENIX_LEDGER_DB"
-
-
-def _resolve_default_db_path() -> str:
-    """Compute the default ledger SQLite path.
-
-    Respects ``$PHOENIX_LEDGER_DB`` if set so tests + dev
-    environments can pin to a tmp directory without monkey-patching.
-    """
-    env_override = os.environ.get(PHOENIX_LEDGER_DB_ENV)
-    if env_override:
-        return env_override
-    return str(_DEFAULT_LEDGER_DIR / _DEFAULT_LEDGER_FILENAME)
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +60,13 @@ class LedgerLink:
 
     Fields:
 
-    - ``entry_id`` -- echo of the input entry's ID (UUID4).
+    - ``entry_id`` -- echo of the input entry's ID (UUID4 minted by the
+      caller in :func:`solve_to_ledger_entry` / similar factories).
     - ``parent_hash`` -- previous entry's ``entry_hash`` at the moment
       of append; ``"GENESIS"`` for the first entry.
     - ``entry_hash`` -- ``SHA-256(parent_hash | entry_kind | payload_json)``
-      computed by the vendored module.
+      computed via the vendored
+      :func:`vendor.omega.ledger._compute_entry_hash` primitive.
     - ``timestamp_unix`` -- when the entry was sealed (server clock).
 
     This is the value callers (the verification gate's post-solve
@@ -124,129 +104,233 @@ class ChainVerificationReport:
     reason: str | None
 
 
+# Upper bound for the chain walk in a single Python pass. Phoenix v1 is
+# single-install; even years of solves stay well under this. v1.x can
+# extend StateBackend with a streaming cursor for unbounded chains.
+_CHAIN_WALK_HARD_LIMIT = 1_000_000
+
+
 # ---------------------------------------------------------------------------
 # The adapter class itself.
 
 
 class OmegaLedger:
-    """Phoenix-shaped wrapper over the vendored hashchain primitive.
+    """Phoenix-shaped wrapper over the vendored hashchain primitives.
 
     Constructed via :func:`get_ledger` (singleton) or directly with
-    an explicit ``db_path`` (tests + ops one-shot tooling).
+    an explicit ``state_backend`` (tests + ops one-shot tooling).
 
-    Thread-safety: the underlying vendored module already holds a
-    threading lock across read-prev-hash + compute-hash + insert, so
-    concurrent appends from multiple solver threads are serialized
-    correctly. The adapter adds no further locking.
+    Thread-safety: an internal :class:`threading.Lock` serializes
+    ``append_entry`` so concurrent solver threads don't race the
+    read-prev-hash-compute-insert sequence. The StateBackend's own
+    locking layered underneath handles the SQL transaction.
     """
 
-    def __init__(self, *, db_path: str | None = None) -> None:
-        # Lazy import: vendored ``omega.ledger`` resolves via the
-        # sys.path injection in phoenix/__init__.py. Importing at
-        # module load time would fail on fresh clones before Phase 1
-        # vendor sync.
-        import phoenix  # noqa: F401  -- triggers sys.path injection
+    def __init__(self, *, state_backend: StateBackend | None = None) -> None:
+        """Construct the adapter.
 
-        from omega.ledger import OmegaLedger as _VendoredLedger
+        ``state_backend`` is the durable persistence layer. When
+        ``None``, the singleton from
+        :func:`phoenix.state.get_state_backend` is used (the standard
+        production path). Tests inject their own throwaway backend
+        (typically :class:`SQLiteStateBackend` against a tmp directory).
+        """
+        self._explicit_backend: StateBackend | None = state_backend
+        self._lock = threading.Lock()
+        # Cache of the most recent entry_hash. None means "not yet read
+        # from the backend"; on first append we initialize from the
+        # current backend state. Subsequent appends update in place.
+        self._last_hash_cache: str | None = None
 
-        resolved_path = db_path if db_path is not None else _resolve_default_db_path()
-        self._db_path = resolved_path
-        self._vendored: _VendoredLedger = _VendoredLedger(db_path=resolved_path)
-        self._closed = False
+    def _backend(self) -> StateBackend:
+        """Resolve the StateBackend lazily.
 
-    @property
-    def db_path(self) -> str:
-        """The SQLite file backing this ledger."""
-        return self._db_path
+        Lazy resolution lets test fixtures construct an
+        :class:`OmegaLedger` *before* the production state backend
+        singleton is set up.
+        """
+        if self._explicit_backend is not None:
+            return self._explicit_backend
+        from phoenix.state import get_state_backend
+
+        return get_state_backend()
+
+    def _initialize_last_hash(self) -> None:
+        """Load the most recent entry's hash from the backend.
+
+        Called once per :class:`OmegaLedger` instance on first append.
+        After this the cache is updated in place on every append, so
+        subsequent appends don't re-query the backend.
+
+        For empty chains, the cache is set to :data:`GENESIS_HASH` --
+        the same anchor the vendored module uses for its first entry.
+        """
+        rows = self._backend().list_ledger_entries(
+            since_unix=0.0,
+            limit=_CHAIN_WALK_HARD_LIMIT,
+        )
+        if not rows:
+            self._last_hash_cache = GENESIS_HASH
+        else:
+            # list_ledger_entries returns rows in ASC timestamp order;
+            # the last row is the most recent.
+            self._last_hash_cache = str(rows[-1]["entry_hash"])
 
     def append_entry(self, entry: LedgerEntry) -> LedgerLink:
         """Append a :class:`LedgerEntry` to the chain.
 
-        The vendored module computes
-        ``SHA-256(prev_hash | entry_kind | payload_json)`` where
-        ``payload_json`` is :meth:`LedgerEntry.to_canonical_payload_json`
-        (deterministic JSON encoding with ``sort_keys=True``).
+        Computes ``SHA-256(parent_hash | entry_kind | payload_json)``
+        where ``payload_json`` is
+        :meth:`LedgerEntry.to_canonical_payload_json` (deterministic
+        encoding with ``sort_keys=True``).
 
-        Returns the :class:`LedgerLink` with the freshly-set
-        ``parent_hash`` + ``entry_hash``. The input ``entry``
-        object is unchanged (frozen dataclass); callers wanting the
-        full updated record should call :meth:`read_entry` with the
-        returned ``entry_id``.
+        Persists to the configured :class:`StateBackend` and returns
+        the typed :class:`LedgerLink`. The input ``entry`` is unchanged
+        (frozen dataclass); callers wanting the full updated record
+        should call :meth:`read_entry` with the returned ``entry_id``.
 
-        The vendored ``seal`` uses its own UUID for the row primary
-        key, so we pass ``entry.entry_kind`` as the ``fact`` argument
-        and pass the canonical payload JSON as ``contract_json``. The
-        ``entry.entry_id`` field is preserved by storing it inside
-        the canonical payload (Phoenix-side discipline; replay reads
-        it back from the payload).
+        The ``entry.entry_id`` field is preserved verbatim into the
+        StateBackend's row -- Phoenix mints UUIDs callers can correlate
+        with their request_id / task_id without going through the
+        ledger.
         """
-        if self._closed:
-            raise RuntimeError("OmegaLedger is closed; construct a new instance.")
-        payload_json = entry.to_canonical_payload_json()
-        result = self._vendored.seal(
-            fact=entry.entry_kind,
-            payload_json=payload_json,
-            sealed_by=entry.actor_id,
-        )
-        return LedgerLink(
-            entry_id=str(result["entry_id"]),
-            parent_hash=str(result["prev_hash"]),
-            entry_hash=str(result["entry_hash"]),
-            timestamp_unix=float(result["timestamp"]),
-        )
+        with self._lock:
+            if self._last_hash_cache is None:
+                self._initialize_last_hash()
+            parent_hash = self._last_hash_cache
+            assert parent_hash is not None  # _initialize_last_hash sets it
+
+            payload_json = entry.to_canonical_payload_json()
+            entry_hash = _compute_entry_hash(parent_hash, entry.entry_kind, payload_json)
+
+            self._backend().append_ledger_entry(
+                {
+                    "entry_id": entry.entry_id,
+                    "entry_kind": entry.entry_kind,
+                    "timestamp_unix": entry.timestamp_unix,
+                    "actor_id": entry.actor_id,
+                    "parent_hash": parent_hash,
+                    "entry_hash": entry_hash,
+                    "payload_json": payload_json,
+                }
+            )
+
+            link = LedgerLink(
+                entry_id=entry.entry_id,
+                parent_hash=parent_hash,
+                entry_hash=entry_hash,
+                timestamp_unix=entry.timestamp_unix,
+            )
+            self._last_hash_cache = entry_hash
+            return link
 
     def read_entry(self, entry_id: str) -> LedgerEntry | None:
         """Read a single ledger entry by ID; return None if not found.
 
-        The vendored row carries ``contract_json`` (the canonical
-        payload). We parse it back into a dict and rebuild the
-        :class:`LedgerEntry` with the stored ``parent_hash`` +
-        ``entry_hash`` fields populated.
+        Phase 7 v1: implemented as a linear scan over
+        :meth:`StateBackend.list_ledger_entries`. The chain is small
+        enough (~thousands of solves per day) that this is acceptable.
+        v1.x adds a primary-key lookup method to the Protocol when the
+        chain grows past the linear-scan budget.
         """
-        import json as _json
-
-        row = self._vendored.get_entry(entry_id)
-        if row is None:
-            return None
-        return LedgerEntry(
-            entry_id=str(row["entry_id"]),
-            entry_kind=str(row["fact"]),
-            timestamp_unix=float(row["timestamp"]),
-            actor_id=str(row["sealed_by"]),
-            parent_hash=str(row["prev_hash"]),
-            entry_hash=str(row["entry_hash"]),
-            payload=_json.loads(row["contract_json"]),
+        rows = self._backend().list_ledger_entries(
+            since_unix=0.0,
+            limit=_CHAIN_WALK_HARD_LIMIT,
         )
+        for row in rows:
+            if row["entry_id"] == entry_id:
+                return LedgerEntry(
+                    entry_id=str(row["entry_id"]),
+                    entry_kind=str(row["entry_kind"]),
+                    timestamp_unix=float(row["timestamp_unix"]),
+                    actor_id=str(row["actor_id"]),
+                    parent_hash=str(row["parent_hash"]),
+                    entry_hash=str(row["entry_hash"]),
+                    payload=json.loads(row["payload_json"]),
+                )
+        return None
 
     def verify_chain(self, *, limit: int | None = None) -> ChainVerificationReport:
         """Walk the hashchain and return a typed verification report.
 
-        The ``limit`` kwarg caps how many rows the walk visits --
-        useful for periodic integrity checks that don't want to
-        re-hash the full chain every cycle. ``None`` (default) walks
-        all rows.
+        Recomputes ``SHA-256`` for each entry and compares against the
+        stored ``entry_hash``. Catches both structural breaks
+        (parent_hash chain rewritten) AND cryptographic tampering
+        (``payload_json`` modified after the fact). The latter is what
+        :meth:`StateBackend.verify_ledger_integrity` can't catch with
+        SQL alone -- both layers complement each other.
+
+        The ``limit`` kwarg caps how many rows the walk visits;
+        ``None`` (default) walks all rows.
         """
-        raw = self._vendored.verify_chain(limit=limit)
+        rows = self._backend().list_ledger_entries(
+            since_unix=0.0,
+            limit=limit if limit is not None else _CHAIN_WALK_HARD_LIMIT,
+        )
+        if not rows:
+            return ChainVerificationReport(
+                valid=True,
+                entries_checked=0,
+                first_broken_entry_id=None,
+                reason=None,
+            )
+
+        expected_prev = GENESIS_HASH
+        for idx, row in enumerate(rows):
+            stored_parent = str(row["parent_hash"])
+            stored_hash = str(row["entry_hash"])
+            entry_kind = str(row["entry_kind"])
+            payload_json = str(row["payload_json"])
+
+            if stored_parent != expected_prev:
+                return ChainVerificationReport(
+                    valid=False,
+                    entries_checked=idx,
+                    first_broken_entry_id=str(row["entry_id"]),
+                    reason=(
+                        f"parent_hash mismatch: expected {expected_prev[:16]}... "
+                        f"got {stored_parent[:16]}..."
+                    ),
+                )
+
+            recomputed = _compute_entry_hash(stored_parent, entry_kind, payload_json)
+            if recomputed != stored_hash:
+                return ChainVerificationReport(
+                    valid=False,
+                    entries_checked=idx,
+                    first_broken_entry_id=str(row["entry_id"]),
+                    reason=(
+                        f"entry_hash mismatch: expected {recomputed[:16]}... "
+                        f"got {stored_hash[:16]}..."
+                    ),
+                )
+
+            expected_prev = stored_hash
+
         return ChainVerificationReport(
-            valid=bool(raw["valid"]),
-            entries_checked=int(raw["checked"]),
-            first_broken_entry_id=raw["first_broken"],
-            reason=raw.get("reason"),
+            valid=True,
+            entries_checked=len(rows),
+            first_broken_entry_id=None,
+            reason=None,
         )
 
     def count(self) -> int:
         """Total number of sealed entries currently in the ledger."""
-        return int(self._vendored.count())
+        return len(
+            self._backend().list_ledger_entries(
+                since_unix=0.0,
+                limit=_CHAIN_WALK_HARD_LIMIT,
+            )
+        )
 
     def close(self) -> None:
-        """Close the underlying SQLite connection. Idempotent."""
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._vendored.close()
-        except Exception:
-            logger.exception("OmegaLedger close failed")
+        """No-op: the StateBackend owns its connection lifecycle.
+
+        Kept for API compatibility with Step 4's interface; the
+        backend's :meth:`StateBackend.close` is called via
+        :func:`reset_state_backend` at daemon shutdown.
+        """
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +343,8 @@ _LEDGER_LOCK = threading.Lock()
 def get_ledger() -> OmegaLedger:
     """Return the singleton :class:`OmegaLedger`.
 
-    Constructed lazily on first call. The DB path comes from
-    ``$PHOENIX_LEDGER_DB`` if set, otherwise
-    ``~/.phoenix/runtime/ledger.db``.
+    Constructed lazily on first call against the default
+    :class:`StateBackend` singleton (``phoenix.state.get_state_backend``).
     """
     global _LEDGER
     with _LEDGER_LOCK:
@@ -285,7 +368,6 @@ def reset_ledger() -> None:
 
 
 __all__ = [
-    "PHOENIX_LEDGER_DB_ENV",
     "ChainVerificationReport",
     "LedgerLink",
     "OmegaLedger",

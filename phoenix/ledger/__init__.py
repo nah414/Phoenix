@@ -38,6 +38,7 @@ from phoenix.ledger.omega_ledger import (
     get_ledger,
     reset_ledger,
 )
+from phoenix.ledger.solve_composer import compose_and_append_solve_entry
 
 __all__ = [
     "ChainVerificationReport",
@@ -48,6 +49,7 @@ __all__ = [
     "OmegaLedger",
     "OverrideByOperatorEntry",
     "SolveEntry",
+    "compose_and_append_solve_entry",
     "enrollment_to_ledger_entry",
     "get_ledger",
     "kill_switch_to_ledger_entry",

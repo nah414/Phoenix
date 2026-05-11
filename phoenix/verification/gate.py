@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from phoenix.api.event_broker import get_broker
 from phoenix.audit import AuditEvent, get_emitter
+from phoenix.ledger import compose_and_append_solve_entry
 from phoenix.router.data_model import RoutingRequest
 from phoenix.router.errors import NoEligibleProvidersError
 from phoenix.trinity.control.engine import run_dpd
@@ -445,6 +446,47 @@ class VerificationGate:
             phase="phase_5_verification_gate",
         )
 
+        # Phase 5 keeps Result.agreement_type as the vendored DisagreementType
+        # for backward-compat at the data model boundary; the Phoenix-native
+        # PhoenixDisagreementType is a sibling enum exposed via the
+        # VerificationProvenance for audit. Map back to the closest vendored
+        # value for the Result envelope.
+        # NOTE: Result is built BEFORE ProvenanceTrace because Phase 7
+        # Step 6 composes the ledger entry from the four canonical
+        # sources (verification_provenance, solver_provenance,
+        # control_provenance, orchestrate provenance, Result) and the
+        # composed entry_id is then stamped onto the ProvenanceTrace.
+        result_for_ledger = Result(
+            value=primary_result.value,
+            error_bar=error_bar,
+            sigma=sigma,
+            agreement_type=_to_vendored_disagreement(agreement_type),
+            kpi_bundle_orchestrate=primary_result.kpi_bundle_orchestrate,
+            provenance=ProvenanceTrace(request_id=task.request_id),  # placeholder
+        )
+
+        # Phase 7 Step 6: compose + append the SolveEntry to the ledger.
+        # Failure here MUST NOT block the user's solve response (audit-
+        # path failures degrade observability, not safety). We log the
+        # exception and continue with omega_ledger_entry_id=None.
+        omega_ledger_entry_id: str | None = None
+        try:
+            link = compose_and_append_solve_entry(
+                task=task,
+                result=result_for_ledger,
+                verification_provenance=verification_provenance,
+                solver_provenance=solver_provenance,
+                control_provenance=control_provenance,
+                orchestrate_provenance=primary_orch_prov,
+                rung_used=current_rung.name,
+            )
+            omega_ledger_entry_id = link.entry_id
+        except Exception:
+            log.exception(
+                "Ledger append failed for request_id=%s; user response unaffected",
+                task.request_id,
+            )
+
         trace = ProvenanceTrace(
             request_id=task.request_id,
             solver=solver_provenance,
@@ -452,13 +494,9 @@ class VerificationGate:
             orchestrate=primary_orch_prov,
             verification=verification_provenance,
             cloud_shots_recorded=primary_orch_prov.cloud_shots_recorded,
+            omega_ledger_entry_id=omega_ledger_entry_id,
         )
 
-        # Phase 5 keeps Result.agreement_type as the vendored DisagreementType
-        # for backward-compat at the data model boundary; the Phoenix-native
-        # PhoenixDisagreementType is a sibling enum exposed via the
-        # VerificationProvenance for audit. Map back to the closest vendored
-        # value for the Result envelope.
         result = Result(
             value=primary_result.value,
             error_bar=error_bar,
@@ -479,6 +517,7 @@ class VerificationGate:
             "phoenix_agreement_type": agreement_type.value,
             "final_rung": current_rung.name,
             "promotions": promotions,
+            "omega_ledger_entry_id": omega_ledger_entry_id,
         }
         broker.emit(task.request_id, "task.complete", complete_payload)
         _emit_verification_audit(task, "verification.gate.completed", complete_payload)

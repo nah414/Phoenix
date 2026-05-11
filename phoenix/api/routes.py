@@ -306,6 +306,10 @@ def _provenance_to_dict(provenance: Any) -> dict[str, Any]:
     out: dict[str, Any] = {
         "request_id": provenance.request_id,
         "cloud_shots_recorded": provenance.cloud_shots_recorded,
+        # Phase 7 Step 6: ledger entry correlation key.
+        # None when the verification gate's ledger composition failed
+        # (StateBackend unavailable, etc.).
+        "omega_ledger_entry_id": provenance.omega_ledger_entry_id,
     }
 
     if provenance.solver is not None:
