@@ -111,6 +111,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     otel_sink = OTelExporter.from_env()
     if otel_sink is not None:
         get_emitter().add_sink(otel_sink)
+
+    # Phase 7 Step 9: register the router intelligence's drift-feedback
+    # callback as the second register_drift_callback caller (the first
+    # was the verification gate in Phase 6b). Per-provider drift
+    # multipliers shape estimated_fidelity per §4.6 Source C.
+    from phoenix.router.intelligence import register_for_drift_updates
+
+    register_for_drift_updates()
     try:
         yield
     finally:
