@@ -249,6 +249,16 @@ def compose_and_append_solve_entry(
     # provenance noise.
     result_hash = _compute_result_hash(result_dict)
 
+    # Phase 7 Step 7: read the per-request reproducibility snapshot
+    # the pipeline stashed before delegating to the verification gate.
+    # ``default`` mode never sets one -- the snapshot stays an empty
+    # dict on the SolveEntry. ``strict`` and ``replay`` modes get
+    # the captured numpy RNG state + BLAS env vars + PYTHONHASHSEED.
+    from phoenix.trinity import reproducibility_context
+
+    captured = reproducibility_context.get_snapshot(task.request_id)
+    environment_snapshot_dict: dict[str, Any] = captured.to_dict() if captured is not None else {}
+
     solve_payload = SolveEntry(
         task_id=task.request_id,
         request_id=task.request_id,
@@ -263,6 +273,8 @@ def compose_and_append_solve_entry(
         trinity_core_trace=trinity_dict,
         calibration_profile_hash=calibration_profile_hash,
         vendor_manifest=vendor_manifest,
+        reproducibility_mode=task.tolerance.reproducibility_mode,
+        environment_snapshot=environment_snapshot_dict,
     )
 
     ledger_entry: LedgerEntry = solve_to_ledger_entry(

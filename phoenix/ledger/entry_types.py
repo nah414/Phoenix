@@ -145,6 +145,14 @@ class SolveEntry:
     trinity_core_trace: dict[str, Any] = field(default_factory=dict)
     calibration_profile_hash: str = ""
     vendor_manifest: dict[str, Any] = field(default_factory=dict)
+    # Phase 7 Step 7 -- reproducibility-mode environment snapshot.
+    # Empty dict for ``default`` mode; populated by
+    # :func:`phoenix._internal.reproducibility.capture_environment` for
+    # ``strict`` and ``replay`` modes. Replay reads this back and calls
+    # :func:`restore_environment` before re-running the deterministic
+    # portion of the pipeline.
+    reproducibility_mode: str = "default"
+    environment_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
