@@ -65,8 +65,16 @@ def _admin_ping(
         )
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
 
+    # Admin endpoints stay callable while the kill switch is engaged
+    # so ops can diagnose + manage the system mid-incident (matches the
+    # §8.4 "Phoenix is operable without paging the developer" principle).
     try:
-        verify_request(actor, action_key="admin.ping", request_id=request_id)
+        verify_request(
+            actor,
+            action_key="admin.ping",
+            request_id=request_id,
+            skip_kill_switch_check=True,
+        )
     except KillSwitchEngaged as exc:
         emit_admin_audit(
             actor=actor,

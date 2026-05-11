@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any
 from dataclasses import dataclass
 
 
@@ -192,6 +193,49 @@ class RateLimiter:
             if bucket is not None:
                 bucket.tokens = float(bucket.capacity)
                 bucket.last_refill_unix = time.monotonic()
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return a per-actor bucket-state snapshot for the admin budget
+        endpoint (Phase 8 Step 3).
+
+        Each row carries:
+
+        - ``actor_name`` (str)
+        - ``capacity`` (int) -- bucket's total token capacity
+        - ``tokens_remaining`` (float) -- current tokens (after refill
+          to the snapshot moment)
+        - ``refill_rate_per_second`` (float)
+        - ``last_refill_unix`` (float) -- monotonic clock value, useful
+          for relative age but not absolute wall-clock
+
+        Snapshot is taken under the lock so concurrent
+        ``check_and_consume`` calls don't see partial state. The
+        snapshot is a copy; mutating the returned dicts does not
+        affect the live buckets.
+        """
+        with self._lock:
+            now = time.monotonic()
+            snapshot: list[dict[str, Any]] = []
+            for actor_name, bucket in self._buckets.items():
+                # Refill projection (same math as :meth:`_refill`) so
+                # the snapshot reflects "tokens RIGHT NOW", not "tokens
+                # at last refill". We don't mutate the live bucket --
+                # the next real check_and_consume will refill cleanly.
+                elapsed = max(0.0, now - bucket.last_refill_unix)
+                projected_tokens = min(
+                    bucket.tokens + elapsed * bucket.refill_rate,
+                    float(bucket.capacity),
+                )
+                snapshot.append(
+                    {
+                        "actor_name": actor_name,
+                        "capacity": int(bucket.capacity),
+                        "tokens_remaining": float(projected_tokens),
+                        "refill_rate_per_second": float(bucket.refill_rate),
+                        "last_refill_monotonic": float(bucket.last_refill_unix),
+                    }
+                )
+            return snapshot
 
     def reset_all(self) -> None:
         """Reset all buckets. Phase 6a tests use this between cases."""

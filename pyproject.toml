@@ -18,6 +18,11 @@ dependencies = [
     "numpy>=1.26,<3.0",       # twelve solvers + DPD engine numerical core
     "scipy>=1.11,<2.0",       # eigensolvers, sparse linalg, ODE integrators
     "pyyaml>=6.0,<7.0",       # vendored grammar's YAML loader (physics_v1.yaml)
+    # Phase 8 Step 3 -- system-resource snapshot for /v1/admin/governor.
+    # Per locked OPEN-2 (2026-05-11): v1 minimum is psutil-only (CPU/RAM/
+    # disk/RSS). GPU/VRAM/NPU/thermal fields land later when the cloud-GPU
+    # adapter ships in Phase 9+.
+    "psutil>=5.9,<8.0",
 ]
 
 [project.optional-dependencies]
