@@ -23,13 +23,21 @@ phases:
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
@@ -37,6 +45,7 @@ from phoenix._internal.version import __version__, read_vendor_version
 from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
+from phoenix.audit import AuditEvent, get_emitter
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
 from phoenix.safety.errors import AuthError, PermissionDenied
 from phoenix.safety.gate import verify_request
@@ -94,6 +103,39 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         reset_detector()
 
 
+def _safe_audit_emit(
+    *,
+    layer: str,
+    event_type: str,
+    actor_id: str = "unknown",
+    parameters: dict[str, Any] | None = None,
+    result_hash: str = "",
+    request_id: str | None = None,
+) -> None:
+    """Fire-and-forget audit emit that never raises.
+
+    Step 2 wires audit emits across the API surface (middleware for
+    REST, inline for WS connect/close). Per the Phase 7 Step 1
+    contract, audit failures must never propagate into the request
+    handling path -- this helper enforces that invariant.
+    """
+    try:
+        get_emitter().emit(
+            AuditEvent(
+                timestamp_unix=time.time(),
+                actor_id=actor_id,
+                layer=layer,
+                event_type=event_type,
+                parameters=dict(parameters or {}),
+                result_hash=result_hash,
+                request_id=request_id,
+            )
+        )
+    except Exception:
+        # Last-resort: never let the audit emit take down the request.
+        pass
+
+
 app = FastAPI(
     title="Phoenix",
     description=(
@@ -106,6 +148,66 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Step 2: HTTP audit middleware -- emit api.request.* events for
+# every REST request (entry + completion + error). The middleware also
+# generates the canonical per-request UUID and stashes it on
+# ``request.state.request_id`` so handlers can pass it through to
+# ``verify_request`` for the safety-gate audit emit AND to the
+# ``PhysicsTask.request_id`` field for downstream verification-gate /
+# ledger correlation.
+#
+# WebSocket endpoints bypass HTTP middleware -- their inline emits are
+# in each ``@app.websocket(...)`` handler.
+
+
+@app.middleware("http")
+async def _audit_http_middleware(request: Request, call_next: Any) -> Any:
+    """Emit api.request.* audit events around every HTTP request."""
+    request_id = f"req_{uuid.uuid4().hex}"
+    request.state.request_id = request_id
+    method = request.method
+    path = str(request.url.path)
+    start_time = time.time()
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.request.start",
+        parameters={"method": method, "path": path},
+        request_id=request_id,
+    )
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.request.error",
+            parameters={
+                "method": method,
+                "path": path,
+                "error_type": type(exc).__name__,
+                "error_detail": str(exc),
+                "duration_ms": (time.time() - start_time) * 1000.0,
+            },
+            request_id=request_id,
+        )
+        raise
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.request.complete",
+        parameters={
+            "method": method,
+            "path": path,
+            "status_code": response.status_code,
+            "duration_ms": (time.time() - start_time) * 1000.0,
+        },
+        request_id=request_id,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +357,7 @@ def _kpi_bundle_to_dict(bundle: Any) -> dict[str, Any]:
 @app.post("/v1/tasks")
 def submit_task(
     req: SolveRequest,
+    request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Submit a physics task. Phase 3 returns the full :class:`Result` envelope.
@@ -288,6 +391,11 @@ def submit_task(
     # would break fresh clones before Phase 1 vendor sync.
     from synthesis.equations.base import PhysicsContext
 
+    # Phase 7 Step 2: use the request_id set by the HTTP middleware so
+    # downstream audit events (safety gate, verification gate, ledger
+    # entry) all share the same correlation key.
+    request_id: str = request.state.request_id
+
     # Phase 6a: Actor verification at the front door + safety gate.
     # Per locked scope (2026-05-08): Actor required with bootstrap-actor
     # fallback when the Authorization header is absent and the keystore
@@ -313,6 +421,7 @@ def submit_task(
             rung_for_cost=initial_rung.name,
             requested_regime=str(requested_regime).upper() if requested_regime else None,
             task_frontier_physics_flag=req.tolerance.frontier_physics,
+            request_id=request_id,
         )
     except KillSwitchEngaged as exc:
         raise HTTPException(
@@ -368,7 +477,7 @@ def submit_task(
         latency_tier=tier,
         frontier_physics=req.tolerance.frontier_physics,
     )
-    request_id = f"req_{uuid.uuid4().hex}"
+    # request_id already pulled from request.state.request_id above (Phase 7 Step 2).
     task = PhysicsTask(
         physics_context=ctx,
         tolerance=tolerance,
@@ -460,6 +569,7 @@ class WSTokenRequest(BaseModel):
 
 @app.post("/v1/identity/ws-token")
 def ws_token(
+    request: Request,
     _req: WSTokenRequest | None = None,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -472,6 +582,7 @@ def ws_token(
     endpoint by Section 7.5 cost catalogue but ``ws_token`` is keyed
     to 1 token).
     """
+    request_id: str = request.state.request_id  # Phase 7 Step 2
     try:
         actor, _ = extract_or_bootstrap(authorization)
     except IdentityError as exc:
@@ -481,6 +592,7 @@ def ws_token(
             actor,
             action_key="ws_token",
             requires_capability="can_submit_tasks",
+            request_id=request_id,
         )
     except KillSwitchEngaged as exc:
         raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
@@ -522,21 +634,57 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
     - 1000 (normal): task completed (task.complete event sent).
     - 1008 (policy violation): token invalid / expired / used.
     """
+    # Phase 7 Step 2: WS handlers bypass HTTP middleware, so mint a
+    # fresh per-connection request_id here for audit correlation.
+    request_id = f"req_{uuid.uuid4().hex}"
     if not token:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/tasks/{task_id}/stream",
+                "task_id": task_id,
+                "reason": "missing_token",
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason="missing token query parameter")
         return
     try:
-        get_ws_token_store().consume(token)
+        actor_name = get_ws_token_store().consume(token)
     except WSTokenError as exc:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/tasks/{task_id}/stream",
+                "task_id": task_id,
+                "reason": "invalid_token",
+                "error_detail": str(exc),
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason=str(exc))
         return
 
     await websocket.accept()
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.ws.connect_accepted",
+        actor_id=actor_name,
+        parameters={
+            "path": "/v1/ws/tasks/{task_id}/stream",
+            "task_id": task_id,
+        },
+        request_id=request_id,
+    )
     broker = get_broker()
     cursor = 0
     # Phase 6a poll-based stream: bounded loop so a long-disconnected
     # task doesn't keep the WS open forever. v1.x adjusts to push.
     max_iterations = 6000  # 6000 * 0.1s = 600s = 10 min timeout
+    close_code = 1000
+    close_reason = "stream poll timeout"
     try:
         for _ in range(max_iterations):
             new_events = broker.get_events(task_id, since_index=cursor)
@@ -544,15 +692,32 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
                 await websocket.send_json(to_dict(event))
                 cursor += 1
                 if event.type in ("task.complete", "task.failed"):
-                    await websocket.close(code=1000, reason="task finished")
+                    close_reason = "task finished"
+                    await websocket.close(code=1000, reason=close_reason)
                     return
             await asyncio.sleep(0.1)
         # Polling timeout reached without task.complete; close gracefully.
-        await websocket.close(code=1000, reason="stream poll timeout")
+        await websocket.close(code=close_code, reason=close_reason)
     except WebSocketDisconnect:
         # Client disconnected; nothing to clean up (broker buffer
         # remains for any future reconnect).
+        close_code = 1006
+        close_reason = "client disconnect"
         return
+    finally:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.closed",
+            actor_id=actor_name,
+            parameters={
+                "path": "/v1/ws/tasks/{task_id}/stream",
+                "task_id": task_id,
+                "close_code": close_code,
+                "close_reason": close_reason,
+                "events_streamed": cursor,
+            },
+            request_id=request_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -598,16 +763,45 @@ async def calibration_drift_stream(
     - 1008 (policy violation): token missing / invalid / expired /
       already consumed.
     """
+    # Phase 7 Step 2: WS handlers bypass HTTP middleware, so mint a
+    # fresh per-connection request_id here for audit correlation.
+    request_id = f"req_{uuid.uuid4().hex}"
     if not token:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/calibration/drift",
+                "reason": "missing_token",
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason="missing token query parameter")
         return
     try:
-        get_ws_token_store().consume(token)
+        actor_name = get_ws_token_store().consume(token)
     except WSTokenError as exc:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/calibration/drift",
+                "reason": "invalid_token",
+                "error_detail": str(exc),
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason=str(exc))
         return
 
     await websocket.accept()
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.ws.connect_accepted",
+        actor_id=actor_name,
+        parameters={"path": "/v1/ws/calibration/drift"},
+        request_id=request_id,
+    )
     broker = get_broker()
     cursor = 0
     poll_seconds = 0.25
@@ -615,6 +809,8 @@ async def calibration_drift_stream(
     # Per Decision 17 drift cycles are minutes-scale work but state
     # transitions are sparse, so this just bounds runaway connections.
     max_iterations = int(8 * 60 * 60 / poll_seconds)
+    close_code = 1000
+    close_reason = "stream poll timeout"
     try:
         for _ in range(max_iterations):
             new_events = broker.get_events(DRIFT_ALERTS_CHANNEL, since_index=cursor)
@@ -622,8 +818,23 @@ async def calibration_drift_stream(
                 await websocket.send_json(to_dict(event))
                 cursor += 1
             await asyncio.sleep(poll_seconds)
-        await websocket.close(code=1000, reason="stream poll timeout")
+        await websocket.close(code=close_code, reason=close_reason)
     except WebSocketDisconnect:
         # Client disconnected; broker buffer remains for any future
         # reconnect (subject to the buffer cap / NATS retention).
+        close_code = 1006
+        close_reason = "client disconnect"
         return
+    finally:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.closed",
+            actor_id=actor_name,
+            parameters={
+                "path": "/v1/ws/calibration/drift",
+                "close_code": close_code,
+                "close_reason": close_reason,
+                "events_streamed": cursor,
+            },
+            request_id=request_id,
+        )
