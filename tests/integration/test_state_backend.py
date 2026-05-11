@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from phoenix.state.migrations import phase6b_initial
+from phoenix.state.migrations import phase6b_initial, phase7_ledger
 from phoenix.state.sqlite_backend import SQLiteStateBackend
 
 
@@ -80,6 +80,9 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Any]:
         if kind == "postgres":
             try:
                 with b._require_pool().connection() as conn:  # type: ignore[attr-defined]
+                    # Revert in reverse migration order (newest first)
+                    # so foreign-key + schema_version cleanup stays tidy.
+                    phase7_ledger.revert(conn)
                     phase6b_initial.revert(conn)
             except Exception:
                 pass
@@ -150,6 +153,7 @@ def test_kill_switch_persists_across_simulated_restart(
         if kind == "postgres":
             try:
                 with b2._require_pool().connection() as conn:  # type: ignore[attr-defined]
+                    phase7_ledger.revert(conn)
                     phase6b_initial.revert(conn)
             except Exception:
                 pass
@@ -460,7 +464,174 @@ def test_migrations_idempotent_under_restart(
         if kind == "postgres":
             try:
                 with b2._require_pool().connection() as conn:  # type: ignore[attr-defined]
+                    phase7_ledger.revert(conn)
                     phase6b_initial.revert(conn)
             except Exception:
                 pass
         b2.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Step 5: ledger durable store parity
+
+
+def _make_ledger_entry(
+    *,
+    entry_id: str,
+    timestamp_unix: float,
+    parent_hash: str,
+    entry_hash: str,
+    actor_id: str = "adam",
+    entry_kind: str = "solve",
+    payload_json: str = "{}",
+) -> dict[str, Any]:
+    """Build a minimal ledger entry dict matching the StateBackend shape."""
+    return {
+        "entry_id": entry_id,
+        "entry_kind": entry_kind,
+        "timestamp_unix": timestamp_unix,
+        "actor_id": actor_id,
+        "parent_hash": parent_hash,
+        "entry_hash": entry_hash,
+        "payload_json": payload_json,
+    }
+
+
+def test_ledger_append_then_list_roundtrip(backend: Any) -> None:
+    """append_ledger_entry persists; list_ledger_entries reads back same shape."""
+    entry = _make_ledger_entry(
+        entry_id="e1",
+        timestamp_unix=1000.0,
+        parent_hash="GENESIS",
+        entry_hash="a" * 64,
+        actor_id="adam",
+        entry_kind="solve",
+        payload_json='{"task_id":"req_1"}',
+    )
+    backend.append_ledger_entry(entry)
+    rows = backend.list_ledger_entries(since_unix=0, limit=10)
+    assert len(rows) == 1
+    assert rows[0] == entry
+
+
+def test_ledger_list_orders_by_timestamp(backend: Any) -> None:
+    """list_ledger_entries returns rows in timestamp order, oldest first."""
+    backend.append_ledger_entry(
+        _make_ledger_entry(
+            entry_id="late",
+            timestamp_unix=2000.0,
+            parent_hash="b" * 64,
+            entry_hash="c" * 64,
+        )
+    )
+    backend.append_ledger_entry(
+        _make_ledger_entry(
+            entry_id="early",
+            timestamp_unix=1000.0,
+            parent_hash="GENESIS",
+            entry_hash="b" * 64,
+        )
+    )
+    rows = backend.list_ledger_entries(since_unix=0, limit=10)
+    assert len(rows) == 2
+    assert rows[0]["entry_id"] == "early"
+    assert rows[1]["entry_id"] == "late"
+
+
+def test_ledger_list_respects_since_unix(backend: Any) -> None:
+    """list_ledger_entries filters rows older than since_unix."""
+    backend.append_ledger_entry(
+        _make_ledger_entry(
+            entry_id="old",
+            timestamp_unix=100.0,
+            parent_hash="GENESIS",
+            entry_hash="d" * 64,
+        )
+    )
+    backend.append_ledger_entry(
+        _make_ledger_entry(
+            entry_id="new",
+            timestamp_unix=2000.0,
+            parent_hash="d" * 64,
+            entry_hash="e" * 64,
+        )
+    )
+    rows = backend.list_ledger_entries(since_unix=1000.0, limit=10)
+    assert len(rows) == 1
+    assert rows[0]["entry_id"] == "new"
+
+
+def test_ledger_list_respects_limit(backend: Any) -> None:
+    """list_ledger_entries caps at limit rows."""
+    prev_hash = "GENESIS"
+    for i in range(5):
+        entry_hash = f"{i:064x}"
+        backend.append_ledger_entry(
+            _make_ledger_entry(
+                entry_id=f"e_{i}",
+                timestamp_unix=1000.0 + i,
+                parent_hash=prev_hash,
+                entry_hash=entry_hash,
+            )
+        )
+        prev_hash = entry_hash
+    rows = backend.list_ledger_entries(since_unix=0, limit=3)
+    assert len(rows) == 3
+    assert [r["entry_id"] for r in rows] == ["e_0", "e_1", "e_2"]
+
+
+def test_ledger_verify_empty_chain_is_valid(backend: Any) -> None:
+    """A ledger with no entries verifies clean."""
+    report = backend.verify_ledger_integrity()
+    assert report["valid"] is True
+    assert report["entries_checked"] == 0
+    assert report["first_broken_entry_id"] is None
+
+
+def test_ledger_verify_clean_chain(backend: Any) -> None:
+    """A linear chain verifies clean (parent_hash chains correctly)."""
+    prev_hash = "GENESIS"
+    for i in range(3):
+        entry_hash = f"{i:064x}"
+        backend.append_ledger_entry(
+            _make_ledger_entry(
+                entry_id=f"e_{i}",
+                timestamp_unix=1000.0 + i,
+                parent_hash=prev_hash,
+                entry_hash=entry_hash,
+            )
+        )
+        prev_hash = entry_hash
+    report = backend.verify_ledger_integrity()
+    assert report["valid"] is True
+    assert report["entries_checked"] == 3
+    assert report["first_broken_entry_id"] is None
+
+
+def test_ledger_verify_catches_broken_link(backend: Any) -> None:
+    """A chain with a parent_hash mismatch fails verification."""
+    backend.append_ledger_entry(
+        _make_ledger_entry(
+            entry_id="e_0",
+            timestamp_unix=1000.0,
+            parent_hash="GENESIS",
+            entry_hash="0" * 64,
+        )
+    )
+    # entry_1's parent_hash should be entry_0's entry_hash ("0"*64),
+    # but we set it to a forged value -- structural break the SQL
+    # window function catches.
+    backend.append_ledger_entry(
+        _make_ledger_entry(
+            entry_id="e_1",
+            timestamp_unix=2000.0,
+            parent_hash="F" * 64,  # WRONG -- should be e_0's entry_hash
+            entry_hash="1" * 64,
+        )
+    )
+    report = backend.verify_ledger_integrity()
+    assert report["valid"] is False
+    assert report["entries_checked"] == 2
+    assert report["first_broken_entry_id"] == "e_1"
+    assert report["reason"] is not None
+    assert "parent_hash mismatch" in report["reason"]

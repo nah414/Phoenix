@@ -46,7 +46,9 @@ def test_migrations_apply_idempotently(db_path: Path) -> None:
     versions_second = runner.applied_versions(b2._conn)  # type: ignore[attr-defined,arg-type]
     b2.close()
 
-    assert versions_first == {1}
+    # Phase 6b shipped version 1; Phase 7 Step 5 adds version 2
+    # (ledger_entries table). The runner applies both on a fresh DB.
+    assert versions_first == {1, 2}
     assert versions_first == versions_second
 
 
