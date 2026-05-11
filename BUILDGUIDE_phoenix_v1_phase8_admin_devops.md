@@ -406,6 +406,57 @@ python -c "import phoenix; print(phoenix.__version__)"   # 1.0.0.dev9
 
 ---
 
+## Locked decisions (2026-05-11)
+
+The six open items surfaced during BUILDGUIDE authoring were all
+locked on 2026-05-11 after Adam reviewed the recommendations.
+Recorded here so future steps and future readers see why the
+implementation looks the way it does.
+
+1. **`[OPEN-1] LOCKED` — Admin endpoint mount path = `APIRouter` +
+   `include_router(admin_router, prefix="/v1/admin")`.** One FastAPI
+   app, one OpenAPI schema with `Admin`-tagged section, modular
+   code (each admin handler group registers its own APIRouter that
+   the parent collects). Idiomatic FastAPI.
+
+2. **`[OPEN-2] LOCKED` — `/v1/admin/governor` scope = psutil-based
+   v1 minimum.** CPU%, RAM%, disk%, process RSS. GPU / VRAM / NPU /
+   thermal fields return `None` until Phase 9+ when the cloud-GPU
+   adapter layer matures. Lighter dependency footprint; v1.x can
+   layer GPU telemetry.
+
+3. **`[OPEN-3] LOCKED` — HUMAN_REVIEW enqueue wired in Phase 8.**
+   The verification gate's `HUMAN_REVIEW` classification enqueues
+   a `pending_review_queue` row instead of returning inline. The
+   Step 5 override endpoint resolves real queue entries. The
+   architecture spec Section 7.7 anticipates the queue is real;
+   Phase 6b shipped the state-backend methods; Phase 8 makes them
+   live.
+
+4. **`[OPEN-4] LOCKED` — Router decision retention = in-process ring
+   buffer.** Default 1000 entries; configurable via
+   `$PHOENIX_ROUTER_DECISION_LOG_SIZE`. Survives daemon lifetime
+   only. Audit log already captures routing decisions via ledger
+   entries; the ring buffer is for "what just happened" ops
+   debugging without re-querying SQL. v1.x can promote to persisted
+   if a real need emerges.
+
+5. **`[OPEN-5] LOCKED` — Manual quarantine = audit-event only, no
+   ledger entry.** Provider state mutations are operational, not
+   audit-grade. Section 8.4 explicitly names kill switch and
+   HUMAN_REVIEW override as the only mutations that write ledger
+   entries. The audit emit captures operator identity + rationale
+   for the audit trail.
+
+6. **`[OPEN-6] LOCKED` — Adapter `POST /v1/admin/adapters/{id}/force-
+   revalidate` = 501 stub in Phase 8.** Endpoint registered in
+   OpenAPI; handler returns
+   `HTTPException(501, "LoRA adapter management lands in Phase 9")`.
+   Phase 9 fills the implementation. Advertising the surface early
+   lets v1 client integrators see the full admin shape.
+
+---
+
 ## Open items to lock before Step 1
 
 Six open items surfaced during BUILDGUIDE authoring. Lock with Adam
