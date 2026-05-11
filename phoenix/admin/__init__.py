@@ -23,6 +23,12 @@ from phoenix.admin.errors import (
 )
 from phoenix.admin.router import admin_router
 
+# Side-effect imports: each module registers its handlers onto
+# admin_router via the @admin_router.<verb>(...) decorator. Importing
+# them here ensures the routes are live the moment the parent
+# FastAPI app calls include_router(admin_router) (Phase 8 Step 1).
+from phoenix.admin import kill_switch as _kill_switch  # noqa: F401
+
 __all__ = [
     "AdapterNotLoaded",
     "AdminError",

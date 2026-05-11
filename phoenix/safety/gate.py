@@ -89,13 +89,18 @@ def verify_request(
     requested_regime: str | None = None,
     task_frontier_physics_flag: bool = False,
     request_id: str | None = None,
+    skip_kill_switch_check: bool = False,
 ) -> SafetyDecision:
     """Run the 9-stage pipeline over a request.
 
     Stage-by-stage:
 
     0. **Kill switch** -- :func:`KillSwitchStore.assert_disengaged`
-       raises :class:`KillSwitchEngaged` if engaged.
+       raises :class:`KillSwitchEngaged` if engaged. Skipped when
+       ``skip_kill_switch_check=True`` -- exclusively for Phase 8's
+       admin kill-switch endpoints, which must remain callable while
+       the switch is engaged (an admin can't release if release is
+       itself blocked).
     1. **Actor signature** -- the caller (routes.py) already extracted
        and verified the Actor via
        :func:`phoenix.identity.bootstrap.extract_or_bootstrap`. This
@@ -128,14 +133,22 @@ def verify_request(
     UUID; passed through to the audit event so admins can correlate
     safety-gate decisions with downstream verification-gate events
     and the eventual ledger entry.
+
+    The ``skip_kill_switch_check`` kwarg is Phase 8's narrow seam:
+    the admin kill-switch endpoints (engage/release/status) must
+    bypass Stage 0 so an admin can release the switch even while
+    it's engaged. Every other call site leaves the default ``False``
+    so the kill switch's load-bearing semantic holds.
     """
     cost: int = 0
     decision_label = "denied.unknown"
     error_detail: str | None = None
     actor_name_safe = _safe_actor_name(actor)
     try:
-        # Stage 0: kill switch.
-        get_kill_switch_store().assert_disengaged()
+        # Stage 0: kill switch (skipped for Phase 8 admin kill-switch
+        # endpoints -- see the docstring).
+        if not skip_kill_switch_check:
+            get_kill_switch_store().assert_disengaged()
 
         # Stage 1 + 2: Actor shape (signature already verified by caller).
         if not isinstance(actor.name, str) or not actor.name:
