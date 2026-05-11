@@ -582,6 +582,117 @@ def submit_task(
 
 
 # ---------------------------------------------------------------------------
+# Phase 7 Step 8: POST /v1/tasks/{task_id}/replay
+
+
+@app.post("/v1/tasks/{task_id}/replay")
+def replay_task(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Re-run a previously-sealed task and verify the result hash.
+
+    Per architecture v1 Section 5.2 line 956 + Section 1 Decisions
+    19-21: the replay path reads the ledger entry for ``task_id``,
+    restores the captured deterministic environment, re-runs the
+    pipeline, and compares the recomputed ``result_hash`` against
+    the recorded value.
+
+    Authorization: requires ``can_replay_tasks`` permission. Rate-
+    limited at ``replay`` cost.
+
+    Status code mapping:
+
+    - 200: replay succeeded; response carries the
+      :class:`ReplayReport` shape.
+    - 401: bad/missing actor signature.
+    - 403: actor lacks ``can_replay_tasks``.
+    - 404: no ledger entry has ``payload.task_id == task_id``.
+    - 409: entry is incomplete (no ``task_spec`` /
+      ``environment_snapshot``, or ``reproducibility_mode="default"``),
+      OR the original used cloud shots Phoenix v1 cannot re-fetch.
+    - 429: rate-limit exceeded.
+    - 500: replay completed but the recomputed result_hash diverged
+      from the recorded value (:class:`ReplayDivergence`).
+    - 503: kill switch engaged.
+    """
+    request_id: str = request.state.request_id
+
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_replay",
+            requires_capability="can_replay_tasks",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"permission denied: actor={exc.actor_name!r} lacks {exc.missing_capability!r}"
+            ),
+        ) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    # Lazy import: phoenix.ledger imports vendor.omega via sys.path
+    # injection that phoenix/__init__.py runs at module load. The
+    # FastAPI route is registered at import time, so we keep the
+    # heavy imports inside the handler.
+    from phoenix.ledger import (
+        LedgerEntryNotFound,
+        ReplayDivergence,
+        ReplayEntryIncomplete,
+        ReplayProviderUnavailable,
+        replay,
+    )
+
+    try:
+        report = replay(task_id)
+    except LedgerEntryNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ReplayEntryIncomplete, ReplayProviderUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ReplayDivergence as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "replay_divergence",
+                "message": str(exc),
+                "task_id": exc.task_id,
+                "original_entry_id": exc.original_entry_id,
+                "original_result_hash": exc.original_result_hash,
+                "replayed_result_hash": exc.replayed_result_hash,
+                "divergent_layer": exc.divergent_layer,
+            },
+        ) from exc
+
+    return {
+        "task_id": report.task_id,
+        "original_entry_id": report.original_entry_id,
+        "original_result_hash": report.original_result_hash,
+        "replayed_result_hash": report.replayed_result_hash,
+        "hashes_match": report.hashes_match,
+        "divergent_layer": report.divergent_layer,
+        "wall_clock_ms": report.wall_clock_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Phase 6a: identity + WebSocket endpoints
 
 

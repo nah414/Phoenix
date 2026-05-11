@@ -153,6 +153,14 @@ class SolveEntry:
     # portion of the pipeline.
     reproducibility_mode: str = "default"
     environment_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Phase 7 Step 8 -- original task input captured for replay
+    # reconstruction. Shape: ``{"physics_context": {...}, "tolerance":
+    # {...}, "metadata": {...}, "actor_name": "..."}``. The replay
+    # engine reads this back, builds a fresh PhysicsTask, and re-runs
+    # the deterministic pipeline. Empty dict on older entries (Step 6
+    # didn't capture task input); the replay path raises
+    # :class:`ReplayEntryIncomplete` rather than guessing.
+    task_spec: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,13 @@ def _store() -> dict[str, EnvSnapshot]:
     return _local.snapshots  # type: ignore[no-any-return]
 
 
+def _replay_set() -> set[str]:
+    """Return (or lazily initialize) this thread's replay-active set."""
+    if not hasattr(_local, "replay_active"):
+        _local.replay_active = set()
+    return _local.replay_active  # type: ignore[no-any-return]
+
+
 def set_snapshot(request_id: str, snap: EnvSnapshot) -> None:
     """Record an :class:`EnvSnapshot` for ``request_id`` on this thread.
 
@@ -80,17 +87,61 @@ def clear_snapshot(request_id: str) -> None:
 
 
 def clear_all() -> None:
-    """Drop every snapshot held by this thread.
+    """Drop every snapshot + replay flag held by this thread.
 
     Test isolation helper -- production code uses
     :func:`clear_snapshot` per request.
     """
     _store().clear()
+    _replay_set().clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Step 8 -- replay-active flag.
+#
+# The replay engine sets this for a request_id BEFORE invoking the
+# pipeline so that the verification gate's :func:`compose_and_append_solve_entry`
+# can detect "this solve is a replay, not a fresh user request" and
+# skip the ledger append. Without this, every replay would pollute
+# the chain with a duplicate entry, and a long-running replay test
+# would balloon the ledger.
+
+
+def set_replay_active(request_id: str) -> None:
+    """Mark this thread's solve for ``request_id`` as a replay.
+
+    Called by :func:`phoenix.ledger.replay_engine.replay` immediately
+    before invoking the pipeline. Pairs with :func:`clear_replay_active`
+    in a try/finally so the flag never leaks beyond the replay window.
+    """
+    _replay_set().add(request_id)
+
+
+def is_replay_active(request_id: str) -> bool:
+    """Return True if ``request_id`` is currently being replayed.
+
+    Read by the ledger composer to skip the durable append step
+    (replay verifies against the recorded hash; it doesn't extend
+    the chain).
+    """
+    return request_id in _replay_set()
+
+
+def clear_replay_active(request_id: str) -> None:
+    """Drop the replay-active marker for ``request_id``.
+
+    Called by :func:`phoenix.ledger.replay_engine.replay` in a
+    ``finally`` block to ensure the flag never leaks across requests.
+    """
+    _replay_set().discard(request_id)
 
 
 __all__ = [
     "clear_all",
+    "clear_replay_active",
     "clear_snapshot",
     "get_snapshot",
+    "is_replay_active",
+    "set_replay_active",
     "set_snapshot",
 ]

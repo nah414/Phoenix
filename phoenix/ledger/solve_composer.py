@@ -174,6 +174,53 @@ def _compute_result_hash(payload: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def compute_result_hash_for_result(result: Result) -> str:
+    """Public helper -- compute ``result_hash`` from a fresh :class:`Result`.
+
+    The replay engine (Phase 7 Step 8) uses this to re-derive the
+    canonical hash from the re-executed pipeline's :class:`Result`
+    and compare it against the recorded ``result_hash`` from the
+    original ledger entry. Reusing the same canonicalization keeps
+    the comparison symmetric -- if the hash math drifts between the
+    original solve and the replay, both call sites use the same
+    function so the bug surfaces immediately.
+    """
+    return _compute_result_hash(_result_to_dict(result))
+
+
+def _serialize_task_spec(task: PhysicsTask) -> dict[str, Any]:
+    """Capture the PhysicsTask input for replay reconstruction.
+
+    Per Phase 7 Step 8: the replay engine needs the original task
+    input (physics_context, tolerance, metadata) to rebuild a
+    PhysicsTask and re-run the deterministic pipeline. The actor
+    name is captured separately so the replay can issue from the
+    same identity.
+
+    The captured dict is JSON-safe (all values are str/int/float/
+    bool/list/dict).
+    """
+    ctx = task.physics_context
+    tol = task.tolerance
+    return {
+        "physics_context": {
+            "mass_kg": float(ctx.mass_kg),
+            "length_scale_m": float(ctx.length_scale_m),
+            "metadata": dict(ctx.metadata) if ctx.metadata else {},
+        },
+        "tolerance": {
+            "max_error_bar": float(tol.max_error_bar),
+            "reproducibility_mode": str(tol.reproducibility_mode),
+            "latency_tier": tol.latency_tier.value
+            if hasattr(tol.latency_tier, "value")
+            else str(tol.latency_tier),
+            "frontier_physics": bool(tol.frontier_physics),
+        },
+        "metadata": dict(task.metadata) if task.metadata else {},
+        "actor_name": getattr(getattr(task, "actor", None), "name", "") or "",
+    }
+
+
 def _read_vendor_manifest() -> dict[str, Any]:
     """Snapshot the current vendor-substrate manifest for replay verification.
 
@@ -259,6 +306,8 @@ def compose_and_append_solve_entry(
     captured = reproducibility_context.get_snapshot(task.request_id)
     environment_snapshot_dict: dict[str, Any] = captured.to_dict() if captured is not None else {}
 
+    task_spec_dict = _serialize_task_spec(task)
+
     solve_payload = SolveEntry(
         task_id=task.request_id,
         request_id=task.request_id,
@@ -275,6 +324,7 @@ def compose_and_append_solve_entry(
         vendor_manifest=vendor_manifest,
         reproducibility_mode=task.tolerance.reproducibility_mode,
         environment_snapshot=environment_snapshot_dict,
+        task_spec=task_spec_dict,
     )
 
     ledger_entry: LedgerEntry = solve_to_ledger_entry(
@@ -282,6 +332,29 @@ def compose_and_append_solve_entry(
         actor_id=actor_id,
         timestamp_unix=time.time(),
     )
+
+    # Phase 7 Step 8: when this solve is a replay verification (not a
+    # fresh user request), skip the durable append. The replay path
+    # only needs the computed result_hash from the freshly-built
+    # SolveEntry to compare against the recorded value -- adding a
+    # new ledger row per replay would balloon the chain. The replay
+    # engine sets the per-request flag immediately before invoking
+    # the pipeline; we read it here and short-circuit.
+    if reproducibility_context.is_replay_active(task.request_id):
+        # Return a no-persist LedgerLink so the gate's downstream code
+        # gets a stable shape but the chain is unchanged. parent_hash
+        # is unknown without a write; we conservatively report the
+        # current chain head so the gate's task.complete event still
+        # has a meaningful value.
+        from phoenix.ledger.omega_ledger import LedgerLink as _LedgerLink
+
+        return _LedgerLink(
+            entry_id=ledger_entry.entry_id,
+            parent_hash="",
+            entry_hash="",
+            timestamp_unix=ledger_entry.timestamp_unix,
+        )
+
     link = ledger.append_entry(ledger_entry)
 
     # Best-effort audit emit so the durable audit JSONL has a record

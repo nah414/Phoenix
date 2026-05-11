@@ -38,6 +38,15 @@ from phoenix.ledger.omega_ledger import (
     get_ledger,
     reset_ledger,
 )
+from phoenix.ledger.replay_engine import (
+    LedgerEntryNotFound,
+    ReplayDivergence,
+    ReplayEntryIncomplete,
+    ReplayError,
+    ReplayProviderUnavailable,
+    ReplayReport,
+    replay,
+)
 from phoenix.ledger.solve_composer import compose_and_append_solve_entry
 
 __all__ = [
@@ -45,15 +54,22 @@ __all__ = [
     "EnrollmentEntry",
     "KillSwitchEntry",
     "LedgerEntry",
+    "LedgerEntryNotFound",
     "LedgerLink",
     "OmegaLedger",
     "OverrideByOperatorEntry",
+    "ReplayDivergence",
+    "ReplayEntryIncomplete",
+    "ReplayError",
+    "ReplayProviderUnavailable",
+    "ReplayReport",
     "SolveEntry",
     "compose_and_append_solve_entry",
     "enrollment_to_ledger_entry",
     "get_ledger",
     "kill_switch_to_ledger_entry",
     "override_to_ledger_entry",
+    "replay",
     "reset_ledger",
     "solve_to_ledger_entry",
 ]
