@@ -15,6 +15,200 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev7] — 2026-05-10
+
+Phase 6b shipped — the infrastructure layer that pairs with Phase 6a's
+API-side enforcement. Phase 6b lands durable state backends (SQLite
+default + Postgres opt-in), NATS JetStream queueing infrastructure,
+the three-checker drift detector per Section 1 Decision 17, and the
+`/v1/ws/calibration/drift` WebSocket endpoint. Together with Phase 6a,
+Phoenix's runtime substrate is now audit-grade durable: every state
+change survives daemon restart, the queue is file-backed persistent,
+and drift telemetry is observable in real time.
+
+### Locked scope decisions (2026-05-10)
+
+The Phase 6b BUILDGUIDE drafted seven open items; all locked at
+session start before any code landed (no silent resolutions in the
+implementation):
+
+1. **Migration format = Python-callable.** Each migration is a `.py`
+   file with `apply(conn)` / `revert(conn)`. Trivial bodies are
+   `conn.executescript("""<SQL>""")` so SQL stays in plaintext; data
+   transforms (kill-switch JSON → SQLite import in migration #1) live
+   in Python.
+2. **Postgres client = sync `psycopg` wrapped in `asyncio.to_thread`.**
+   Same pattern as the SQLite path's `sqlite3` (stdlib sync) wrap.
+   Symmetry over the ~2x async perf `asyncpg` would buy on what is
+   fundamentally a cold persistence path.
+3. **NATS distribution = require user-installed for `1.0.0.dev7`.**
+   Documented `winget` / `brew` install hint in
+   `EmbeddedNATSNotFound`. Bundling deferred to `1.0.0` when the
+   Phase 10 release-artifact pipeline lands.
+4. **JetStream consumer modes = mixed per use case.**
+   - `phoenix.tasks.submit.*` — durable, no TTL.
+   - `phoenix.tasks.events.<task_id>` — ephemeral.
+   - `phoenix.drift.alerts` — durable, MAX_AGE=10m.
+5. **ML drift detector = vendor + thin Phoenix adapter.** Vendored
+   `vendor/ml/drift_ensemble.py` unchanged from `C:\frank-data\`;
+   `phoenix/verification/drift_detector.py::MLStatisticalChecker`
+   wraps it and exposes only the methods the orchestrator needs.
+6. **Drift forward path = `register_drift_callback(callback)`.**
+   Phase 6b registers only the verification gate's auto-promote
+   consumer; Phase 7 adds the router intelligence as a second caller
+   in one line.
+7. **Drift WS auth = bootstrap-actor parity with Phase 6a.** Same
+   fallback as `/v1/ws/tasks/.../stream`: the `ws-token` mint
+   endpoint owns the bootstrap fallback; the WS handler is identical.
+
+### What landed (commits d5e976d → a921144, 10 commits)
+
+- **Step 1 (`db78f43`) — `StateBackend` Protocol expansion.**
+  11 new method signatures added additively to
+  `phoenix/state/backend_protocol.py` covering solve cost ledger,
+  audit events, pending-review queue, drift snapshot, and
+  ActorPermissions shadow. Phase 6a contract unchanged.
+- **Step 2 (`2162c7e`) — SQLite backend + migration + kill-switch
+  write-through.** `phoenix/state/sqlite_backend.py` with WAL journal
+  mode + RLock; `phoenix/state/migrations/runner.py` +
+  `phase6b_initial.py` with 6-table schema (`kill_switch_state`,
+  `solve_cost_ledger`, `audit_events`, `pending_review_queue`,
+  `actor_permissions`, `drift_state_snapshot` + `schema_version`).
+  `kill_switch.py` gains optional `StateBackend` write-through with
+  fail-closed merge (`_fail_closed_merge` returns engaged if either
+  source is engaged).
+- **Step 3 (`4ae595a`) — Postgres backend + dialect dispatch.**
+  `phoenix/state/postgres_backend.py` with `ConnectionPool`
+  (min_size=1, max_size=10); migration runner dispatches SQLite vs
+  Postgres via `isinstance(conn, sqlite3.Connection)`; uses
+  `to_regclass('schema_version')` for Postgres existence-check to
+  avoid the transaction-abort trap. `[postgres]` optional extra +
+  mypy override.
+- **Step 4 (`0c62b3d`) — State backend factory + FastAPI lifespan
+  startup wiring.** `phoenix/state/factory.py` with env-var dispatch
+  (`$PHOENIX_STATE_BACKEND=sqlite|postgres`) + singleton.
+  `phoenix/api/routes.py` gains a `lifespan` context manager that
+  calls `get_state_backend()` + `set_store_backend()` on enter,
+  clears on exit. Per Decision 31, backend choice locked at startup.
+- **Step 5 (`ec8393e`) — NATS connection wrapper + embedded runner.**
+  `phoenix/queue/nats_client.py` with lazy `import nats`;
+  `phoenix/queue/embedded_runner.py` with binary discovery
+  (`$NATS_SERVER_PATH` → `shutil.which` → `EmbeddedNATSNotFound`),
+  Popen lifecycle, monitor-port readiness poll, SIGTERM → SIGKILL
+  drain. `scripts/launch_with_nats.bat` as Windows two-process demo.
+  Daemon does **not** auto-launch NATS — launcher script orchestrates.
+- **Step 6 (`4fa1ea1`) — NATS task queue + optional `NATSEventBroker`.**
+  `phoenix/queue/task_queue.py` with subject constants
+  (`SUBMIT_SUBJECT_PREFIX`, `EVENTS_SUBJECT_PREFIX`,
+  `DRIFT_ALERTS_SUBJECT`) + `TaskQueue` class declaring streams per
+  OPEN-4. `phoenix/api/event_broker.py` adds `BrokerProtocol` +
+  `NATSEventBroker` (sync API on daemon-thread asyncio loop;
+  fire-and-forget publish + wildcard subscriber feeding local buffer).
+  `get_broker()` env-var dispatch via `$PHOENIX_EVENT_BROKER=memory|nats`
+  with `memory` default.
+- **Step 7 (`dc5820f`) — Drift detector with 3 checkers +
+  `register_drift_callback` seam.** `phoenix/verification/drift_detector.py`
+  with `Tier1AnalyticalChecker` (5 inline benchmarks: HO-1, ISW-1,
+  H1S-1, RABI-1, SCG-1), `MLStatisticalChecker` (vendored
+  `predict_scale_separated`), `CrossVersionChecker` (per-version JSON
+  history at `~/.phoenix/runtime/calibration_history/`). Aggregation
+  per Decision 17 (0 firing → healthy; 1 firing → warning; 2+ →
+  high-confidence-warning). Cadence env-var
+  `$PHOENIX_DRIFT_CADENCE_HOURS`; snapshot persistence via
+  `put_drift_state_snapshot`; rehydration on construction.
+  `drift_state.py` rewired with cold-start = healthy + stale = fail-
+  closed semantics.
+- **Step 8 (`b8205e6`) — `/v1/ws/calibration/drift` endpoint +
+  drift-alert bridge.** `phoenix/api/drift_alerts.py` with
+  `_DriftAlertEmitter` (transition-detection callback) +
+  `install_drift_alert_emitter`. `routes.py` lifespan installs the
+  bridge; new `@app.websocket("/v1/ws/calibration/drift")` handler
+  mirrors `/v1/ws/tasks/.../stream`'s auth + 1008 close-code shape.
+- **Step 9 (`a921144`) — Parametrized parity tests + WS token edge
+  cases.** `tests/integration/test_state_backend.py` parametrized
+  SQLite + Postgres; `test_broker_parity.py` parametrized memory +
+  NATS; `test_drift_ws.py` adds expired-token + reused-token (single-
+  use) cases using arithmetic mutation of `issued_at_unix` to avoid
+  60-second sleeps.
+
+### Tests
+
+- 237 tests passing (was 113 at end of Phase 6a; +124 from Phase 6b).
+  - 28 parametrized state-backend tests (Step 9) covering kill-switch,
+    cost ledger, audit events, pending review, drift snapshot,
+    ActorPermissions, migration idempotency
+  - 14 SQLite-specific tests (Step 2)
+  - 9 Postgres-specific tests (Step 3, gated)
+  - 10 factory tests (Step 4)
+  - 8 NATS runner tests (Step 5)
+  - 13 task-queue tests (Step 6)
+  - 9 NATSEventBroker dispatch tests (Step 6)
+  - 16 broker parity tests (Step 9)
+  - 37 drift detector tests (Step 7)
+  - 13 drift WS tests (Step 8 + 9)
+- 29 skipped (all are env-var-gated): Postgres parametrizations need
+  `$PHOENIX_POSTGRES_TEST_DSN`, NATS parametrizations need
+  `$PHOENIX_NATS_TEST_ENABLED=1` + `nats-py` installed, real-NATS
+  lifecycle test similarly gated.
+- Pre-commit hooks: ruff, ruff-format, mypy --strict (81 source files
+  clean), pytest smoke (4/4) — all pass.
+
+### Bug fixes found during testing
+
+- **Step 4 test isolation**: `phoenix/safety/kill_switch._STORE`
+  module-level singleton leaked across tests because pytest's
+  `tmp_path` fixture persists between tests (for debug inspection),
+  meaning a test that set `ks._STORE` to a `tmp_path`-backed store
+  with engaged state would let the next test's `read_drift_state` see
+  that engaged state via the still-pointed `_path`. Fixed via
+  `monkeypatch.setattr(ks, "_STORE", None)` in the autouse fixture so
+  each test starts with a clean module-level singleton.
+- **Step 7 cold-start semantics**: initial implementation raised
+  `DriftStateUnavailable` whenever no snapshot existed, breaking 9
+  Phase 5 verification-gate tests that exercised the gate on cold
+  daemon boot (before any drift cycle had run). Corrected to "no
+  snapshot = healthy default" — matches the Phase 5 stub contract
+  the verification gate relied on. Stale snapshots (older than
+  `2 * cadence`) still fail closed per the Section 6.8 fail-closed
+  rule, which is for *telemetry failures*, not startup state.
+
+### Out of scope for Phase 6b (deferred to Phase 7 / Phase 8+ / v1.x)
+
+- **Audit log + OpenTelemetry export** (Phase 7 — Decision 16 + 22).
+  `append_audit_event` / `list_audit_events` Protocol methods exist
+  but call sites that emit events are Phase 7.
+- **Omega Ledger hashchained provenance store** (Phase 7 —
+  Decision 15 + 19-21).
+- **Drift signals feeding back into routing** (Phase 7 — Section
+  4.6's drift→fidelity rescoring). The `register_drift_callback`
+  seam is in place; Phase 7 adds the router intelligence as a
+  second registered caller.
+- **Admin dev-ops backdoor endpoints** `/v1/admin/calibration/...`
+  (Phase 8 — Section 8 generally).
+- **LoRA adapter sandbox, MCP server, CLI commands** (Phase 9).
+- **OpenTelemetry adapter concrete impl, cloud seams concrete impls,
+  standalone binary** (Phase 10).
+- **Final §10.7 acceptance + release** (Phase 11).
+- **Solver-output feature collection for `MLStatisticalChecker`** —
+  the `feature_provider` callback is in place; concrete wiring lands
+  in a later phase when the verification gate's KPI bundle is
+  augmented to capture per-solve features.
+- **Drift detector scheduler auto-start at daemon boot** — Phase 6b
+  ships the API (`DriftDetector.start_scheduler()`) but the FastAPI
+  lifespan does **not** call it. Launcher scripts opt in; this
+  protects test environments (a real Tier-1 cycle is seconds, but
+  ~5-7 minutes for the full statistical sweep per Decision 17 PERF
+  note) and lets ops decide when to start cycling.
+- **Phase 6a JSON file removal** — `~/.phoenix/runtime/kill_switch.json`
+  and the JSON-file `ActorPermissions` registry remain authoritative
+  through Phase 6b. The SQLite backend shadow-writes; Phase 7 promotes
+  the backend to source of truth and removes the JSON fallback.
+- **NATS binary bundling** — locked OPEN-3 defers to `v1.0.0` when the
+  Phase 10 release-artifact pipeline is built. For now,
+  `nats-server` is user-installed via `winget` / `brew`.
+
+---
+
 ## [1.0.0.dev6] — 2026-05-08
 
 Phase 6a shipped (Phase 6 split into 6a + 6b per locked scope decision

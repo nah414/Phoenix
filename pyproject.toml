@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev6"
-description = "Production-grade quantum-accuracy middleware (Phase 6a -- Safety Gate + Identity + WebSocket)"
+version = "1.0.0.dev7"
+description = "Production-grade quantum-accuracy middleware (Phase 6b -- Infrastructure: State Backends + NATS + Drift Detector)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
@@ -28,6 +28,29 @@ dev = [
     "ruff>=0.3,<0.10",
     "mypy>=1.8,<2.0",
     "pre-commit>=3.6,<4.0",
+]
+# Phase 6b Step 3 -- Postgres state backend. Opt-in; SQLite is the
+# default and requires no extra. Install via:
+#     pip install phoenix-middleware[postgres]
+# Locked open-item 2 (2026-05-10): sync psycopg3 wrapped in
+# asyncio.to_thread at the call sites, symmetric with the SQLite
+# stdlib sqlite3 path. ConnectionPool handles concurrent worker
+# threads in the pooled-async pattern.
+postgres = [
+    "psycopg[binary]>=3.1,<4.0",
+    "psycopg-pool>=3.2,<4.0",
+]
+# Phase 6b Step 5 -- NATS JetStream queue + event broker. Opt-in for
+# installs that want durable queueing or cross-process pub/sub.
+# Install via:
+#     pip install phoenix-middleware[nats]
+# Locked open-item 3 (2026-05-10): the `nats-server` binary itself is
+# user-installed for 1.0.0.dev7 (winget / brew); bundling deferred to
+# 1.0.0 release-artifact pipeline. Locked open-item 4 (2026-05-10):
+# JetStream consumer modes are mixed per use case -- task ingress
+# durable, per-task events ephemeral, drift alerts durable+short-TTL.
+nats = [
+    "nats-py>=2.6,<3.0",
 ]
 
 [project.scripts]
@@ -63,5 +86,23 @@ exclude = ["vendor/", "build/", "dist/"]
 # tell mypy not to complain when Phoenix code imports `synthesis.*`, `wobble.*`,
 # `grammar.*`, or `actor.*`. The vendored files themselves are excluded above.
 [[tool.mypy.overrides]]
-module = ["synthesis.*", "wobble.*", "grammar.*", "actor.*"]
+module = ["synthesis.*", "wobble.*", "grammar.*", "actor.*", "ml.*"]
+ignore_missing_imports = true
+
+# Phase 6b Step 3 -- psycopg + psycopg_pool ship in the `postgres` optional
+# extra and may not be installed on SQLite-only Phoenix installs. Tell mypy
+# not to error when phoenix/state/postgres_backend.py references them; the
+# module's runtime path raises a clear ImportError if construction is
+# attempted without the extra installed.
+[[tool.mypy.overrides]]
+module = ["psycopg", "psycopg.*", "psycopg_pool", "psycopg_pool.*"]
+ignore_missing_imports = true
+
+# Phase 6b Step 5 -- nats-py ships in the `nats` optional extra. Same
+# pattern as psycopg above: phoenix/queue/nats_client.py uses TYPE_CHECKING
+# guards + lazy runtime imports so SQLite-only installs without the
+# `nats` extra import cleanly and only fail at connection time with a
+# clear "[nats]" extra hint.
+[[tool.mypy.overrides]]
+module = ["nats", "nats.*"]
 ignore_missing_imports = true
