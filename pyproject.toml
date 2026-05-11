@@ -126,3 +126,14 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
+
+# Phase 7 Step 4 -- vendored Omega Ledger (slim profile, hashchain
+# primitives only per locked OPEN-3 Option B). Same pattern as
+# synthesis/wobble/grammar/actor: the vendored modules live at
+# vendor/omega/ and resolve via the sys.path injection in
+# phoenix/__init__.py. The vendored code has no type stubs;
+# phoenix/ledger/omega_ledger.py imports omega.ledger inside the
+# constructor (lazy + TYPE_CHECKING-guarded).
+[[tool.mypy.overrides]]
+module = ["omega", "omega.*"]
+ignore_missing_imports = true
