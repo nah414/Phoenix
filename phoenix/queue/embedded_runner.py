@@ -89,7 +89,7 @@ def _find_nats_server() -> str:
     if found is None:
         raise EmbeddedNATSNotFound(
             "nats-server binary not found on PATH. Install via:\n"
-            "  Windows: winget install nats-io.nats-server\n"
+            "  Windows: winget install NATSAuthors.NATSServer\n"
             "  macOS:   brew install nats-server\n"
             "  Linux:   see https://docs.nats.io/running-a-nats-service/introduction/installation\n"
             "Or set $NATS_SERVER_PATH to the binary location. Phase 6b "

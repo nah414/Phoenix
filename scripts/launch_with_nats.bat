@@ -7,7 +7,7 @@ REM This script demonstrates the two-process model: starts NATS with
 REM JetStream file-backed storage, then starts the Phoenix daemon.
 REM
 REM Prerequisites:
-REM   - nats-server installed (winget install nats-io.nats-server)
+REM   - nats-server installed (winget install NATSAuthors.NATSServer)
 REM   - Phoenix-middleware[nats] installed (pip install -e .[nats])
 REM
 REM Per locked open-item 3 (2026-05-10): the nats-server binary is
@@ -31,7 +31,7 @@ if not exist "%PHOENIX_HOME%\pyproject.toml" (
 where nats-server >nul 2>&1
 if errorlevel 1 (
     echo ERROR: nats-server not found on PATH.
-    echo Install via: winget install nats-io.nats-server
+    echo Install via: winget install NATSAuthors.NATSServer
     echo Or set NATS_SERVER_PATH to the binary location.
     exit /b 1
 )

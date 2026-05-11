@@ -376,7 +376,7 @@ and future readers see why the implementation looks the way it does.
 
 3. **NATS distribution = require user-installed for `1.0.0.dev7`** (Step 5).
    Documented one-line install in the launcher script
-   (`winget install nats-io.nats-server` / `brew install nats-server`). Bundle
+   (`winget install NATSAuthors.NATSServer` / `brew install nats-server`). Bundle
    is deferred to `1.0.0` when the Phase 10 release-artifact pipeline lands.
 
 4. **JetStream consumer mode = mixed per use case** (Step 6).
