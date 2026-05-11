@@ -67,20 +67,27 @@ from phoenix.verification.rung_table import select_initial_rung
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Phoenix daemon lifecycle (Phase 6b Steps 4 + 8 startup wiring).
+    """Phoenix daemon lifecycle (Phase 6b Steps 4 + 8 + Phase 7 Step 3 startup wiring).
 
     On startup:
 
-    - **Step 4**: construct the configured :class:`StateBackend` from
-      :func:`phoenix.state.get_state_backend` and wire it into the
+    - **Phase 6b Step 4**: construct the configured :class:`StateBackend`
+      from :func:`phoenix.state.get_state_backend` and wire it into the
       kill-switch write-through path.
-    - **Step 8**: get the :class:`DriftDetector` singleton and
+    - **Phase 6b Step 8**: get the :class:`DriftDetector` singleton and
       register the drift-alert emitter callback that bridges drift
       cycles into the event broker -- the
       ``/v1/ws/calibration/drift`` endpoint reads from that broker
       channel.
+    - **Phase 7 Step 3**: when ``$PHOENIX_OTEL_ENABLED=1`` is set,
+      construct an :class:`~phoenix.audit.otel_adapter.OTelExporter`
+      and register it as a second sink on the singleton audit
+      emitter. The JSONL sink (Step 1 default) remains active in
+      parallel. When the env flag is unset, the OTel SDK is never
+      imported -- safe on installs without the ``otel`` extra.
 
-    On shutdown: clear the wiring and close the backend, then reset
+    On shutdown: close the audit emitter (which flushes both sinks),
+    clear the kill-switch wiring and close the backend, then reset
     the detector singleton (which stops its scheduler if started).
 
     Per Decision 31, the backend choice is made once at startup and
@@ -95,9 +102,24 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     detector = get_detector()
     broker = get_broker()
     install_drift_alert_emitter(detector, broker)
+    # Phase 7 Step 3: register the OTel sink if $PHOENIX_OTEL_ENABLED=1.
+    # from_env() returns None when the flag is unset -- no opentelemetry
+    # import attempted. The sink stays attached for the daemon lifetime;
+    # reset_emitter() on shutdown drains + closes both JSONL and OTel.
+    from phoenix.audit.otel_adapter import OTelExporter
+
+    otel_sink = OTelExporter.from_env()
+    if otel_sink is not None:
+        get_emitter().add_sink(otel_sink)
     try:
         yield
     finally:
+        # reset_emitter flushes both the JSONL writer and the OTel
+        # processor (and shuts down the OTel LoggerProvider) per
+        # the AuditSink.close() contract.
+        from phoenix.audit import reset_emitter
+
+        reset_emitter()
         set_store_backend(None)
         reset_state_backend()
         reset_detector()

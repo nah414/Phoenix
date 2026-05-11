@@ -52,6 +52,17 @@ postgres = [
 nats = [
     "nats-py>=2.6,<3.0",
 ]
+# Phase 7 Step 3 -- OpenTelemetry export adapter for the audit log.
+# Opt-in; the native JSONL writer ships by default. Install via:
+#     pip install phoenix-middleware[otel]
+# Locked open-item 2 (2026-05-11): HTTP/protobuf default (gRPC available
+# in 1.x via a separate extra). Activated at runtime by
+# $PHOENIX_OTEL_ENABLED=1; the endpoint follows the standard OTel env
+# var $OTEL_EXPORTER_OTLP_ENDPOINT.
+otel = [
+    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
+]
 
 [project.scripts]
 phoenix = "phoenix.cli.entry:main"
@@ -105,4 +116,13 @@ ignore_missing_imports = true
 # clear "[nats]" extra hint.
 [[tool.mypy.overrides]]
 module = ["nats", "nats.*"]
+ignore_missing_imports = true
+
+# Phase 7 Step 3 -- opentelemetry ships in the `otel` optional extra.
+# phoenix/audit/otel_adapter.py uses TYPE_CHECKING guards + lazy runtime
+# imports inside the OTelExporter constructor so installs without the
+# `otel` extra import cleanly; OTelExporter.from_env() returns None when
+# the activation env var is unset, never reaching the import.
+[[tool.mypy.overrides]]
+module = ["opentelemetry", "opentelemetry.*"]
 ignore_missing_imports = true
