@@ -506,6 +506,25 @@ class VerificationGate:
             provenance=trace,
         )
 
+        # Phase 8 Step 5 (OPEN-3 LOCKED 2026-05-11): enqueue DEGRADED
+        # solves into the state backend's pending_review_queue so the
+        # admin /v1/admin/tasks-pending-review surface has real data.
+        # v1 ships the result to the user AS WELL -- the queue is
+        # informational, not gating. v1.x can promote to "hold for
+        # review" semantics when the human-in-loop product story
+        # solidifies. Wrapped in try/except so a state-backend
+        # failure here can't undo the solve (audit-path failures
+        # degrade observability, not safety; Phase 7 §7.1 pattern).
+        if agreement_type in (
+            PhoenixDisagreementType.DEGRADED,
+            PhoenixDisagreementType.DEGRADED_BUDGET_BOUND,
+        ):
+            _maybe_enqueue_pending_review(
+                task=task,
+                result=result,
+                phoenix_agreement_type=agreement_type,
+            )
+
         # Section 5.3: task.complete with summary fields the WS client
         # can use to render final status without re-fetching the full
         # ProvenanceTrace (which is large).
@@ -583,6 +602,70 @@ class VerificationGate:
         mean = sum(flat) / len(flat)
         var = sum((x - mean) ** 2 for x in flat) / len(flat)
         return math.sqrt(var)
+
+
+def _maybe_enqueue_pending_review(
+    *,
+    task: PhysicsTask,
+    result: Result,
+    phoenix_agreement_type: PhoenixDisagreementType,
+) -> None:
+    """Enqueue a DEGRADED solve into the pending-review queue.
+
+    Phase 8 Step 5 (OPEN-3 LOCKED 2026-05-11): the verification gate's
+    DEGRADED + DEGRADED_BUDGET_BOUND classifications enqueue a row in
+    :meth:`StateBackend.enqueue_pending_review` for admin visibility.
+    The user-visible result still ships immediately (the queue is
+    informational v1; v1.x can promote to held-for-review semantics).
+
+    Wrapped in try/except so a state-backend failure here cannot
+    take down the solve hot path. Audit-path failures degrade
+    observability, not safety -- Phase 7 §7.1 pattern.
+    """
+    try:
+        import uuid
+
+        from phoenix.state import get_state_backend
+
+        review_id = f"review_{uuid.uuid4().hex}"
+        actor = getattr(task, "actor", None)
+        actor_name = getattr(actor, "name", "unknown") if actor is not None else "unknown"
+
+        # Compact result snapshot for the queue row. Full provenance
+        # lives in the ledger entry; the queue row carries just the
+        # decision-relevant fields ops needs to triage.
+        result_snapshot: dict[str, Any] = {
+            "value": float(result.value),
+            "error_bar": float(result.error_bar),
+            "sigma": float(result.sigma),
+            "phoenix_agreement_type": phoenix_agreement_type.value,
+            "omega_ledger_entry_id": (
+                result.provenance.omega_ledger_entry_id if result.provenance is not None else None
+            ),
+        }
+
+        get_state_backend().enqueue_pending_review(
+            {
+                "review_id": review_id,
+                "task_id": task.request_id,
+                "actor_id": actor_name,
+                "result": result_snapshot,
+                "agreement_type": phoenix_agreement_type.value,
+                "queued_at_unix": time.time(),
+            }
+        )
+
+        # Audit emit so the durable log records the enqueue.
+        _emit_verification_audit(
+            task,
+            "verification.gate.pending_review_enqueued",
+            {
+                "review_id": review_id,
+                "phoenix_agreement_type": phoenix_agreement_type.value,
+            },
+        )
+    except Exception:
+        log.exception("Failed to enqueue pending-review for task_id=%s", task.request_id)
 
 
 def _emit_verification_audit(
