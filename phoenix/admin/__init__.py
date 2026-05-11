@@ -27,6 +27,7 @@ from phoenix.admin.router import admin_router
 # admin_router via the @admin_router.<verb>(...) decorator. Importing
 # them here ensures the routes are live the moment the parent
 # FastAPI app calls include_router(admin_router) (Phase 8 Step 1).
+from phoenix.admin import calibration as _calibration  # noqa: F401
 from phoenix.admin import health as _health  # noqa: F401
 from phoenix.admin import kill_switch as _kill_switch  # noqa: F401
 
