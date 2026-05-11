@@ -413,56 +413,59 @@ python -c "import phoenix; print(phoenix.__version__)"   # 1.0.0.dev8
 
 ---
 
-## Open items (proposed recommendations — to be locked before Step 1 starts)
+## Locked decisions (2026-05-11)
 
-Six architectural ambiguities surfaced during BUILDGUIDE authoring. My
-recommendations are below; lock pending Adam's structured-question review.
+The six `[OPEN]` items surfaced during BUILDGUIDE authoring were all
+locked on 2026-05-11 after a structured option review. Recorded here so
+future steps and future readers see why the implementation looks the
+way it does.
 
-1. **`[OPEN: 1]` Audit log JSONL rotation policy.** Step 1.
-   - Recommendation: **date-stamped daily files** (`events-YYYY-MM-DD.jsonl`),
-     rotated at midnight UTC, no size cap. Keep all files locally;
-     archival to long-term storage is Phoenix Cloud's commercial bundle
-     (Decision 35). Simpler than size-based rotation; predictable per-day
-     file boundary aligns with standard SIEM ingest cadence.
+1. **Audit JSONL rotation = date-stamped daily files** (Step 1).
+   `events-YYYY-MM-DD.jsonl`, rotated at midnight UTC, no size cap. Keep
+   all files locally; archival to long-term storage is Phoenix Cloud's
+   commercial bundle (Decision 35). Predictable per-day boundary aligns
+   with standard SIEM ingest cadence.
 
-2. **`[OPEN: 2]` OTel exporter protocol.** Step 3.
-   - Recommendation: **HTTP/protobuf** (`opentelemetry-exporter-otlp-proto-http`).
-     Works through corporate firewalls (port 4318 unprivileged); standard
-     OTel collector default. gRPC alternative is `proto-grpc` but adds
-     `grpcio` as a transitive dep with native compilation, which complicates
-     wheel-only installs.
+2. **OTel exporter protocol = HTTP/protobuf** (Step 3). The
+   ``opentelemetry-exporter-otlp-proto-http`` exporter shipping over
+   port 4318 unprivileged. Standard OTel collector default; works
+   through corporate firewalls. gRPC alternative would pull in
+   ``grpcio`` with native compile complexity.
 
-3. **`[OPEN: 3]` Omega Ledger vendoring approach.** Step 4.
-   - Recommendation: **vendor + thin Phoenix adapter**, same as Phase 6b
-     OPEN-5 for `ml/drift_ensemble.py`. At Step-4 start, read
-     `C:\frank-data\omega\ledger.py` and confirm vendorability. If too
-     tied to its host context, the adapter absorbs the delta.
+3. **Omega Ledger vendoring = vendor + thin Phoenix adapter** (Step 4).
+   Same pattern as Phase 6b OPEN-5 for ``ml/drift_ensemble.py``: vendor
+   ``C:\frank-data\omega\ledger.py`` unchanged into ``vendor/omega/``;
+   ``phoenix/ledger/omega_ledger.py`` is a thin adapter exposing only
+   the methods the verification gate + replay engine need. **At
+   Step-4 start, confirm vendorability** by reading the frank-data
+   source -- if too tied to its host context (hardcoded paths,
+   non-portable imports), the adapter absorbs the delta.
 
-4. **`[OPEN: 4]` Ledger storage placement.** Step 5.
-   - Recommendation: **new `ledger_entries` table**, separate from the
-     Phase 6b `audit_events` table. Reason: audit_events is the
-     structured-firehose (every gate decision, every request, ~thousands
-     per day); ledger_entries is only completed solves + admin overrides
-     + kill-switch flips (~dozens to hundreds per day, hashchain-worthy).
-     Mixing them would make hashchain verification a `WHERE entry_kind IN
-     (...)` filter on a huge table; separating keeps the chain walk fast.
+4. **Ledger storage = new `ledger_entries` table** (Step 5), separate
+   from the Phase 6b `audit_events` table. Audit_events is the
+   structured-firehose (every gate decision, ~thousands/day);
+   ledger_entries is solve + override + kill-switch + enrollment
+   (~dozens-hundreds/day, hashchain-worthy). Separation keeps the
+   chain walk fast (O(N_solves) instead of O(N_events)) and sets up
+   Phase 8's `/v1/admin/ledger/integrity-report` for sub-second
+   response times even after months of operation.
 
-5. **`[OPEN: 5]` Reproducibility default mode shipped at v1.** Step 7.
-   - Recommendation: **`default`** (current Phase 5 behavior preserved).
-     Users opt into `strict` / `replay` per request via
-     `task.tolerance.reproducibility_mode`. Reasons: backward compat
-     with Phase 5 callers; strict/replay are 15-30%/2x wall-clock more
-     expensive and shouldn't be the implicit cost on every solve.
+5. **Reproducibility default = `default` mode** (Step 7). Phase 5
+   callers untouched. Users opt into `strict` / `replay` per request
+   via `task.tolerance.reproducibility_mode`. `strict` adds 15-30%
+   wall-clock (BLAS forced single thread per Decision 20); `replay`
+   adds 2x (the pipeline runs twice). Default-cost users don't pay
+   for guarantees they aren't asking for.
 
-6. **`[OPEN: 6]` Replay engine env-restoration aggressiveness.** Step 7.
-   - Recommendation: **restore the standard quartet** — numpy random
-     state, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`
-     all forced to `1`. PLUS capture+restore `numpy.errstate` (floating-
-     point error handling). Skip FMA disable for v1 (FMA detection is
-     architecture-dependent and Decision 20 PERF note suggests it's
-     optional). Document the residual non-determinism (Intel MKL's
-     internal jitting can still vary) as a known v1 limitation in the
-     CHANGELOG.
+6. **Env-restoration aggressiveness = standard quartet + numpy.errstate**
+   (Step 7). Restore numpy random state, force `OMP_NUM_THREADS` /
+   `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` all to `1`, plus
+   capture/restore `numpy.errstate` (floating-point error handling).
+   Skip FMA disable for v1 (FMA detection is architecture-dependent;
+   Decision 20 PERF note flags it as optional). **Document the
+   residual non-determinism** -- Intel MKL's internal jitting can
+   still vary across calls -- as a known v1 limitation in the
+   CHANGELOG's Phase 7 entry.
 
 ---
 
