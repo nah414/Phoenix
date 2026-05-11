@@ -15,6 +15,258 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev8] — 2026-05-11
+
+Phase 7 shipped — the audit-grade observability and bit-exact replay
+layer that distinguishes Phoenix from a research prototype. Phase 7
+lands a structured audit event format with a JSONL default sink and
+an optional OpenTelemetry OTLP exporter; the Omega Ledger hashchained
+provenance store with vendored SHA-256 primitives and StateBackend-
+backed durable persistence; the verification gate's ledger
+composition path that stitches `VerificationProvenance`,
+`RoutingProvenance`, and `TrinityCoreTrace` into a `SolveEntry` per
+architecture §6.7; reproducibility modes (`strict` + `replay`) that
+capture numpy RNG + BLAS env + `PYTHONHASHSEED` for bit-exact
+replay; a replay engine + `POST /v1/tasks/{task_id}/replay` endpoint
+that re-executes the deterministic pipeline and verifies the
+recorded `result_hash`; the drift → router intelligence feedback
+callback that lowers `estimated_fidelity` for drifted providers per
+§4.6 Source C; and read-only `/v1/audit/events` + `/v1/audit/ledger/verify`
+endpoints. End-to-end, a regulated user can now POST a strict-mode
+task, get a hashchained ledger entry, and POST to `/replay` to verify
+the original solve bit-exactly.
+
+### Locked scope decisions (2026-05-11)
+
+The six open items the BUILDGUIDE drafted were all locked on
+2026-05-11 at session start (recorded in the BUILDGUIDE's "Locked
+decisions" section):
+
+1. **Audit JSONL rotation = date-stamped daily files.**
+   `events-YYYY-MM-DD.jsonl`, rotated at midnight UTC, no size cap.
+   Predictable per-day boundary aligns with standard SIEM ingest
+   cadence; long-term archival is Phoenix Cloud's commercial bundle
+   (Decision 35).
+2. **OTel exporter protocol = HTTP/protobuf.**
+   `opentelemetry-exporter-otlp-proto-http` over port 4318. Standard
+   OTel collector default; works through corporate firewalls. gRPC
+   alternative would pull in `grpcio` with native-compile complexity.
+3. **Omega Ledger vendoring = vendor + thin adapter (Option B).**
+   The upstream `C:\frank-data\omega\ledger.py` is 2666 lines carrying
+   DF&E-specific tables (evolution epochs, MDL snapshots, distillation
+   chains). Phoenix vendors only the hashchain primitives verbatim
+   (`_compute_entry_hash`, `GENESIS_HASH`, `seal`/`verify_chain`/
+   `get_entry` core ~210 lines) and drops the DF&E-specific
+   superstructure. The slim vendor file documents what was kept and
+   what was dropped.
+4. **Ledger storage = new `ledger_entries` table.**
+   Separate from Phase 6b's `audit_events` firehose. `audit_events`
+   is the high-write structured-event store (one row per gate
+   decision / WS connect / drift cycle); `ledger_entries` is the
+   long-lived hashchained provenance store (one row per solve plus
+   state transitions). Different audiences, different retention
+   contracts.
+5. **Default reproducibility mode = `default` (no env capture).**
+   `strict` and `replay` are opt-in per request. `default` keeps the
+   Phase 5/6 fast path; `strict` adds 15-30% wall-clock cost per
+   Decision 20; `replay` doubles wall-clock per Decision 19.
+6. **Replay env restoration = numpy RNG + BLAS thread env vars +
+   PYTHONHASHSEED.** Hardware FP environment (rounding mode,
+   denormals) is NOT captured — Python's `fpectl` is removed and
+   getting it portably requires platform-specific code we'd have to
+   maintain forever. Replay tests on x86_64 Linux/macOS/Windows
+   show bit-exact match without this.
+
+### What landed (commits 145925d → bdd4805, 11 commits)
+
+- **Step 1 (`1437907`) — audit event format + JSONL writer + emitter
+  singleton.** `phoenix/audit/event_format.py` ships the typed
+  `AuditEvent` frozen dataclass with stable field order
+  (timestamp_unix, actor_id, layer, event_type, parameters,
+  result_hash, request_id) and canonical JSON serialization
+  (sort_keys=True, ensure_ascii=True). `jsonl_writer.py` ships
+  the `JSONLWriter` daemon-thread sink that writes to
+  `~/.phoenix/runtime/audit/events-YYYY-MM-DD.jsonl` with midnight-
+  UTC rotation, queue-overflow drop tracking, and SIGTERM-safe drain.
+  `emitter.py` ships the `AuditEmitter` multi-sink dispatcher with
+  per-sink exception isolation. Singleton via `get_emitter()` /
+  `reset_emitter()`. 15 unit tests.
+- **Step 2 (`5fb6351`) — audit emits across safety + verification +
+  REST/WS.** `phoenix/safety/gate.py` Stage 8 (Phase 6a placeholder)
+  now emits one `safety.gate.<decision>` event per `verify_request`
+  call (allowed / denied.{kill_switch,auth,permission,rate_limit,
+  frontier_physics}) via try/except/finally so every code path emits
+  exactly once. New `request_id` kwarg threads the front-door UUID
+  through. `phoenix/verification/gate.py` emits seven lifecycle
+  events parallel to the broker's WS stream (started, solver_complete,
+  control_complete, orchestrate_progress, promoted×2, completed).
+  `phoenix/api/routes.py` HTTP middleware mints `req_<uuid>` per
+  request, stashes on `request.state.request_id`, emits
+  `api.request.{start,complete,error}`. WS handlers emit
+  `api.ws.{connect_rejected,connect_accepted,closed}` with
+  try/finally so all exit paths produce a close record. 12
+  integration tests verify shape + request_id propagation.
+- **Step 3 (`b4d8610`) — OpenTelemetry export adapter.**
+  `phoenix/audit/otel_adapter.py` implements `AuditSink` with lazy
+  imports inside `OTelExporter.__init__` (Phoenix install without
+  the `[otel]` extra never tries to import `opentelemetry`).
+  `from_env()` returns None when `$PHOENIX_OTEL_ENABLED != "1"`,
+  preserving import safety. Severity mapping derives WARN/ERROR/INFO
+  from substring matches on `event_type`. `[otel]` optional extra
+  (`opentelemetry-sdk` + `opentelemetry-exporter-otlp-proto-http`)
+  + mypy override matching the psycopg / nats-py pattern. 19 tests
+  including lifespan wiring with mocked `LoggerProvider`.
+- **Step 4 (`877c978`) — Vendor Omega Ledger (slim profile) + Phoenix
+  adapter.** `vendor/omega/__init__.py` (empty) + `vendor/omega/
+  ledger.py` (slim, ~210 lines extracted verbatim from the upstream
+  2666-line DF&E source). `phoenix/ledger/entry_types.py` ships the
+  on-chain `LedgerEntry` shape + four typed payload dataclasses
+  (`SolveEntry`, `OverrideByOperatorEntry`, `KillSwitchEntry`,
+  `EnrollmentEntry`) with `*_to_ledger_entry` factory converters.
+  `omega_ledger.py` (Step-4 form) wraps the vendored substrate;
+  Step 6 refactors persistence to StateBackend. `pyproject.toml`
+  mypy override for `omega.*`. 22 tests.
+- **Step 5 (`25f28c6`) — Extend StateBackend for durable ledger
+  storage.** `phoenix/state/migrations/phase7_ledger.py` (VERSION=2)
+  creates the `ledger_entries` table with indexes on
+  `timestamp_unix` and `entry_kind` for both SQLite + Postgres
+  dialects. `StateBackend` Protocol gains 3 additive methods:
+  `append_ledger_entry`, `list_ledger_entries(*, since_unix, limit)`,
+  `verify_ledger_integrity()` (SQL window-function structural check
+  via `LAG(entry_hash, 1, 'GENESIS') OVER (ORDER BY timestamp_unix,
+  entry_id)`). 7 new parametrized parity tests.
+- **Step 6 (`25188e9`) — Wire verification gate to compose + persist
+  ledger entries.** `OmegaLedger` refactored to delegate persistence
+  to `StateBackend` (Step 5's `ledger_entries` table) instead of the
+  Step 4 vendored SQLite glue. The vendored module's hash primitives
+  (`_compute_entry_hash`, `GENESIS_HASH`) are still used verbatim.
+  `phoenix/ledger/solve_composer.py` ships
+  `compose_and_append_solve_entry` which composes the §6.7 four-
+  component payload, computes a replay-invariant `result_hash`,
+  snapshots the vendor manifest, and appends via OmegaLedger.
+  `phoenix/trinity/data_model.py` `ProvenanceTrace` gains
+  `omega_ledger_entry_id: str | None`. Verification gate's
+  post-solve path composes inside try/except (audit-path failure
+  must NOT block solve response). 27 ledger + composition tests.
+- **Step 7 (`6c6c025`) — Reproducibility modes (strict + replay env
+  capture).** `phoenix/_internal/reproducibility.py` ships `EnvSnapshot`
+  + `capture_environment` / `restore_environment` /
+  `deterministic_environment` context manager + `pin_single_thread_blas`.
+  `phoenix/trinity/reproducibility_context.py` adds a thread-local
+  per-request snapshot scratchpad keyed by `task.request_id` for
+  isolating concurrent solves. `phoenix/trinity/pipeline.py` honors
+  `task.tolerance.reproducibility_mode`: strict/replay capture →
+  stash → pin BLAS → solve → restore in finally. `SolveEntry` payload
+  gains `reproducibility_mode` + `environment_snapshot`. 15 tests
+  including pipeline env restoration after strict solve.
+- **Step 8 (`0f3370e`) — Replay engine + `POST /v1/tasks/{task_id}/replay`
+  endpoint.** `phoenix/ledger/replay_engine.py` ships `replay(task_id)`
+  + 5 typed exceptions (`ReplayError` base, `LedgerEntryNotFound`,
+  `ReplayEntryIncomplete`, `ReplayProviderUnavailable`,
+  `ReplayDivergence` with both hashes attached) + `ReplayReport`
+  dataclass. Replay reads the entry, validates strict-mode + env
+  snapshot present + no cloud shots, reconstructs `PhysicsTask` from
+  `task_spec`, sets replay-active flag on the composer (so the
+  re-run doesn't append a duplicate entry), restores env via
+  `deterministic_environment` context manager, re-runs pipeline,
+  computes `result_hash`, compares. `routes.py` `POST /v1/tasks/
+  {task_id}/replay` endpoint with full HTTP code mapping (404 / 409
+  / 500 / 401 / 403 / 429 / 503). 9 integration tests including
+  bit-exact happy path, no chain extension, divergence on tampered
+  hash, permission gating.
+- **Step 9 (`bdd4805`) — Drift → router intelligence feedback
+  callback.** `phoenix/router/intelligence.py` gains the per-provider
+  drift multiplier table guarded by an RLock; `on_drift_snapshot`
+  callback translates `firing_detectors` named `<provider>_drift`
+  into multipliers per the ladder (healthy=1.0, warning=0.90,
+  high_confidence_warning=0.70). `estimate_fidelity` scales by the
+  multiplier. `register_for_drift_updates()` idempotent registration
+  with the singleton `DriftDetector` — the OPEN-6 forward-compat
+  seam from Phase 6b paying its dividend in exactly the
+  architecture-promised location (second `register_drift_callback`
+  caller). 17 integration tests including end-to-end fidelity
+  haircut + provider isolation.
+- **Step 10 (this commit) — Admin audit endpoints + version bump.**
+  `routes.py` adds `GET /v1/audit/events?since_unix&limit` (reads
+  the `audit_events` table) + `GET /v1/audit/ledger/verify` (returns
+  both the SQL structural report AND the Python crypto walk).
+  `pyproject.toml` + `phoenix/_internal/version.py` bump
+  `1.0.0.dev7` → `1.0.0.dev8`; `_DEFAULT_PHOENIX_RELEASE` in the
+  SQLite + Postgres backends + the drift detector default updated.
+  Test-version assertions in `test_smoke.py` + `test_health.py`
+  updated.
+
+### Tests
+
+- 402 tests passing with full infrastructure (Postgres + NATS
+  enabled). 0 skipped, 0 failed.
+- Phase 7 additions vs Phase 6b's 237: +165 tests across audit emit
+  (15) + audit wiring (12) + OTel adapter (19) + omega ledger (21) +
+  solve ledger composition (6) + state-backend ledger parity (7,
+  parametrized SQLite + Postgres = 14 individual runs) +
+  reproducibility mode (15) + replay engine (9) + drift router
+  feedback (17) + omega ledger plus parity counts shifting under
+  the refactor.
+- Pre-commit gates: ruff (lint + format), mypy --strict, pytest
+  smoke (4/4) — all clean.
+
+### Bug fixes found during testing
+
+- **Step 5 migration reverts**: parity-test fixture teardown was
+  reverting Phase 6b's migration but leaving the Phase 7
+  `ledger_entries` table behind. Subsequent tests saw stale rows.
+  Fixed by reverting in reverse migration order (`phase7_ledger.revert`
+  before `phase6b_initial.revert`).
+- **Step 6 OmegaLedger refactor**: Step 4's vendored-SQLite path
+  was scaffolding; Step 6 redirects persistence to the StateBackend
+  introduced in Step 5. The vendored `_compute_entry_hash` +
+  `GENESIS_HASH` primitives are still used verbatim. This means
+  Postgres installs now get replicated ledger storage for free.
+- **Step 8 ledger composer replay-skip**: an early Step 8 draft
+  duplicated every replay into the chain. Added a thread-local
+  `is_replay_active` flag in `reproducibility_context` so the
+  composer can short-circuit the append on replays — replay
+  verifies, it doesn't extend the chain.
+- **Step 9 register-callback idempotency**: `DriftDetector.register_drift_callback`
+  appends unconditionally; lifespan restarts in `TestClient` were
+  double-registering the router callback. Made
+  `register_for_drift_updates()` itself idempotent via a
+  callback-identity check before appending.
+
+### Out of scope for Phase 7 (deferred to Phase 8+ / v1.x)
+
+- **Admin dev-ops backdoor endpoints** (`/v1/admin/ledger/integrity-
+  report`, `/v1/admin/calibration/...`, kill-switch admin
+  endpoints) — Phase 8 (§8).
+- **LoRA adapter sandbox, MCP server, CLI commands** — Phase 9
+  (§5.4-5.5, §9).
+- **OTel adapter to non-OTLP backends (Datadog/Splunk-specific
+  shims)** — the generic OTLP exporter suffices for v1; vendor-
+  specific shims are v1.x.
+- **Cloud-shot retention** — replay of cloud-quantum solves with
+  `cloud_shots_recorded=True` raises `ReplayProviderUnavailable`
+  until the shot-retention layer ships. Decision 20 anticipated this:
+  cloud shots are intrinsically non-deterministic and recorded once;
+  v1 documents the boundary.
+- **threadpoolctl live BLAS pool resize** — `pin_single_thread_blas`
+  writes `OMP_NUM_THREADS=1` etc. via `os.environ` which affects
+  new pools but doesn't resize already-loaded ones. v1.x adds
+  threadpoolctl as an opt-in dependency for tighter strict-mode
+  pinning.
+- **Empirical fidelity from past Results (§4.6 Source C, the other
+  half)** — Phase 7 ships the drift-feedback half; the
+  measured-fidelities-from-past-Results half lands later when there
+  are enough ledger entries to do the regression.
+- **Replay long-window test** — the §10.7 acceptance test that
+  re-replays a 6+ month old ledger entry across clean Linux + macOS
+  containers lands at Phase 11's acceptance.
+- **`/v1/admin/...` endpoints** — Phase 8.
+- **Standalone binary, Docker image, cloud-seams concrete impls** —
+  Phase 10.
+- **Final §10.7 acceptance + 1.0.0 release** — Phase 11.
+
+---
+
 ## [1.0.0.dev7] — 2026-05-10
 
 Phase 6b shipped — the infrastructure layer that pairs with Phase 6a's

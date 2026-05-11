@@ -305,6 +305,18 @@ def solve(task: PhysicsTask) -> Result:
     (Solver + Control + Orchestrate) with the
     ``phase_3_solver_control_orchestrate`` honesty marker.
 
+    **Phase 7 Step 7 -- reproducibility modes:** when
+    ``task.tolerance.reproducibility_mode`` is ``"strict"`` or
+    ``"replay"``, this function captures the deterministic environment
+    (numpy RNG, BLAS thread counts, PYTHONHASHSEED) BEFORE delegating
+    to the verification gate, then pins BLAS to a single thread per
+    Decision 20. The captured snapshot lands in the ledger entry's
+    ``environment_snapshot`` field so the replay engine (Phase 7
+    Step 8) can restore it bit-exactly. After the solve completes
+    the prior environment is restored so the daemon's other workers
+    aren't affected. ``"replay"`` mode currently behaves identically
+    to ``"strict"`` -- Step 8 adds the post-solve verification re-run.
+
     Raises:
         LatencyTierNotImplemented: ``task.tolerance.latency_tier`` is not
             ``BATCH_REALTIME``.
@@ -318,12 +330,29 @@ def solve(task: PhysicsTask) -> Result:
         ValueError: cross-precision logic could not compute disagreement
             (both eigenvalue lists empty AND energy is None on both grids).
     """
+    from phoenix._internal.reproducibility import (
+        capture_environment,
+        pin_single_thread_blas,
+        restore_environment,
+    )
+    from phoenix.trinity import reproducibility_context
+
     _enforce_latency_tier(task)
 
-    # Phase 5: delegate the entire three-layer flow to the verification
-    # gate. The gate handles rung selection (replaces Phase 3's hardcoded
-    # _DEFAULT_DEPTH), reactive promotion, drift fail-closed wiring,
-    # Axis 1 + Axis 2 + Axis 3 dispatch, distance matrix composition,
-    # and agreement classification. The gate's verify() returns a fully-
-    # composed Result with VerificationProvenance attached.
+    mode = task.tolerance.reproducibility_mode
+    if mode in ("strict", "replay"):
+        # Capture BEFORE pinning so the snapshot reflects the user's
+        # pre-pin env; replay restores this exact env, then re-pins
+        # to single thread before re-executing.
+        captured = capture_environment()
+        reproducibility_context.set_snapshot(task.request_id, captured)
+        prior_env = capture_environment()  # for the post-solve restore
+        pin_single_thread_blas()
+        try:
+            return _get_gate().verify(task)
+        finally:
+            restore_environment(prior_env)
+            reproducibility_context.clear_snapshot(task.request_id)
+
+    # Default mode -- no env capture (Phase 5/6 behavior).
     return _get_gate().verify(task)

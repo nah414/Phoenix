@@ -23,13 +23,21 @@ phases:
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
@@ -37,6 +45,7 @@ from phoenix._internal.version import __version__, read_vendor_version
 from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
+from phoenix.audit import AuditEvent, get_emitter
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
 from phoenix.safety.errors import AuthError, PermissionDenied
 from phoenix.safety.gate import verify_request
@@ -58,20 +67,27 @@ from phoenix.verification.rung_table import select_initial_rung
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Phoenix daemon lifecycle (Phase 6b Steps 4 + 8 startup wiring).
+    """Phoenix daemon lifecycle (Phase 6b Steps 4 + 8 + Phase 7 Step 3 startup wiring).
 
     On startup:
 
-    - **Step 4**: construct the configured :class:`StateBackend` from
-      :func:`phoenix.state.get_state_backend` and wire it into the
+    - **Phase 6b Step 4**: construct the configured :class:`StateBackend`
+      from :func:`phoenix.state.get_state_backend` and wire it into the
       kill-switch write-through path.
-    - **Step 8**: get the :class:`DriftDetector` singleton and
+    - **Phase 6b Step 8**: get the :class:`DriftDetector` singleton and
       register the drift-alert emitter callback that bridges drift
       cycles into the event broker -- the
       ``/v1/ws/calibration/drift`` endpoint reads from that broker
       channel.
+    - **Phase 7 Step 3**: when ``$PHOENIX_OTEL_ENABLED=1`` is set,
+      construct an :class:`~phoenix.audit.otel_adapter.OTelExporter`
+      and register it as a second sink on the singleton audit
+      emitter. The JSONL sink (Step 1 default) remains active in
+      parallel. When the env flag is unset, the OTel SDK is never
+      imported -- safe on installs without the ``otel`` extra.
 
-    On shutdown: clear the wiring and close the backend, then reset
+    On shutdown: close the audit emitter (which flushes both sinks),
+    clear the kill-switch wiring and close the backend, then reset
     the detector singleton (which stops its scheduler if started).
 
     Per Decision 31, the backend choice is made once at startup and
@@ -86,12 +102,68 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     detector = get_detector()
     broker = get_broker()
     install_drift_alert_emitter(detector, broker)
+    # Phase 7 Step 3: register the OTel sink if $PHOENIX_OTEL_ENABLED=1.
+    # from_env() returns None when the flag is unset -- no opentelemetry
+    # import attempted. The sink stays attached for the daemon lifetime;
+    # reset_emitter() on shutdown drains + closes both JSONL and OTel.
+    from phoenix.audit.otel_adapter import OTelExporter
+
+    otel_sink = OTelExporter.from_env()
+    if otel_sink is not None:
+        get_emitter().add_sink(otel_sink)
+
+    # Phase 7 Step 9: register the router intelligence's drift-feedback
+    # callback as the second register_drift_callback caller (the first
+    # was the verification gate in Phase 6b). Per-provider drift
+    # multipliers shape estimated_fidelity per §4.6 Source C.
+    from phoenix.router.intelligence import register_for_drift_updates
+
+    register_for_drift_updates()
     try:
         yield
     finally:
+        # reset_emitter flushes both the JSONL writer and the OTel
+        # processor (and shuts down the OTel LoggerProvider) per
+        # the AuditSink.close() contract.
+        from phoenix.audit import reset_emitter
+
+        reset_emitter()
         set_store_backend(None)
         reset_state_backend()
         reset_detector()
+
+
+def _safe_audit_emit(
+    *,
+    layer: str,
+    event_type: str,
+    actor_id: str = "unknown",
+    parameters: dict[str, Any] | None = None,
+    result_hash: str = "",
+    request_id: str | None = None,
+) -> None:
+    """Fire-and-forget audit emit that never raises.
+
+    Step 2 wires audit emits across the API surface (middleware for
+    REST, inline for WS connect/close). Per the Phase 7 Step 1
+    contract, audit failures must never propagate into the request
+    handling path -- this helper enforces that invariant.
+    """
+    try:
+        get_emitter().emit(
+            AuditEvent(
+                timestamp_unix=time.time(),
+                actor_id=actor_id,
+                layer=layer,
+                event_type=event_type,
+                parameters=dict(parameters or {}),
+                result_hash=result_hash,
+                request_id=request_id,
+            )
+        )
+    except Exception:
+        # Last-resort: never let the audit emit take down the request.
+        pass
 
 
 app = FastAPI(
@@ -106,6 +178,66 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Step 2: HTTP audit middleware -- emit api.request.* events for
+# every REST request (entry + completion + error). The middleware also
+# generates the canonical per-request UUID and stashes it on
+# ``request.state.request_id`` so handlers can pass it through to
+# ``verify_request`` for the safety-gate audit emit AND to the
+# ``PhysicsTask.request_id`` field for downstream verification-gate /
+# ledger correlation.
+#
+# WebSocket endpoints bypass HTTP middleware -- their inline emits are
+# in each ``@app.websocket(...)`` handler.
+
+
+@app.middleware("http")
+async def _audit_http_middleware(request: Request, call_next: Any) -> Any:
+    """Emit api.request.* audit events around every HTTP request."""
+    request_id = f"req_{uuid.uuid4().hex}"
+    request.state.request_id = request_id
+    method = request.method
+    path = str(request.url.path)
+    start_time = time.time()
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.request.start",
+        parameters={"method": method, "path": path},
+        request_id=request_id,
+    )
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.request.error",
+            parameters={
+                "method": method,
+                "path": path,
+                "error_type": type(exc).__name__,
+                "error_detail": str(exc),
+                "duration_ms": (time.time() - start_time) * 1000.0,
+            },
+            request_id=request_id,
+        )
+        raise
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.request.complete",
+        parameters={
+            "method": method,
+            "path": path,
+            "status_code": response.status_code,
+            "duration_ms": (time.time() - start_time) * 1000.0,
+        },
+        request_id=request_id,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +314,10 @@ def _provenance_to_dict(provenance: Any) -> dict[str, Any]:
     out: dict[str, Any] = {
         "request_id": provenance.request_id,
         "cloud_shots_recorded": provenance.cloud_shots_recorded,
+        # Phase 7 Step 6: ledger entry correlation key.
+        # None when the verification gate's ledger composition failed
+        # (StateBackend unavailable, etc.).
+        "omega_ledger_entry_id": provenance.omega_ledger_entry_id,
     }
 
     if provenance.solver is not None:
@@ -255,6 +391,7 @@ def _kpi_bundle_to_dict(bundle: Any) -> dict[str, Any]:
 @app.post("/v1/tasks")
 def submit_task(
     req: SolveRequest,
+    request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Submit a physics task. Phase 3 returns the full :class:`Result` envelope.
@@ -288,6 +425,11 @@ def submit_task(
     # would break fresh clones before Phase 1 vendor sync.
     from synthesis.equations.base import PhysicsContext
 
+    # Phase 7 Step 2: use the request_id set by the HTTP middleware so
+    # downstream audit events (safety gate, verification gate, ledger
+    # entry) all share the same correlation key.
+    request_id: str = request.state.request_id
+
     # Phase 6a: Actor verification at the front door + safety gate.
     # Per locked scope (2026-05-08): Actor required with bootstrap-actor
     # fallback when the Authorization header is absent and the keystore
@@ -313,6 +455,7 @@ def submit_task(
             rung_for_cost=initial_rung.name,
             requested_regime=str(requested_regime).upper() if requested_regime else None,
             task_frontier_physics_flag=req.tolerance.frontier_physics,
+            request_id=request_id,
         )
     except KillSwitchEngaged as exc:
         raise HTTPException(
@@ -368,7 +511,7 @@ def submit_task(
         latency_tier=tier,
         frontier_physics=req.tolerance.frontier_physics,
     )
-    request_id = f"req_{uuid.uuid4().hex}"
+    # request_id already pulled from request.state.request_id above (Phase 7 Step 2).
     task = PhysicsTask(
         physics_context=ctx,
         tolerance=tolerance,
@@ -447,6 +590,248 @@ def submit_task(
 
 
 # ---------------------------------------------------------------------------
+# Phase 7 Step 10: GET /v1/audit/events + GET /v1/audit/ledger/verify
+#
+# Per architecture v1 Section 5.2: read-only audit endpoints. Both
+# require any authenticated actor (no special capability); rate-limited
+# at the standard "tasks_get" cost. Phase 8's /v1/admin/ledger/integrity-
+# report layers an admin-only fuller report on top.
+
+
+@app.get("/v1/audit/events")
+def get_audit_events(
+    request: Request,
+    since_unix: float = 0.0,
+    limit: int = 100,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """List audit events with ``timestamp_unix >= since_unix``,
+    ordered ascending, up to ``limit`` rows.
+
+    Per architecture v1 Section 5.2: reads from the StateBackend's
+    ``audit_events`` table (Phase 6b shape). Authentication via the
+    safety gate; no special capability required beyond a recognized
+    Actor. Cost = 1 token per request (action_key=``tasks_get``).
+
+    Query params:
+      - ``since_unix`` (float, default 0): only events at or after
+        this unix timestamp.
+      - ``limit`` (int, default 100, max 1000): cap on rows returned.
+
+    Status codes:
+      - 200: success; body is ``{"events": [...], "count": N}``.
+      - 401: missing / bad Actor signature.
+      - 429: rate-limited.
+      - 503: kill switch engaged.
+    """
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_get",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    capped_limit = max(1, min(int(limit), 1000))
+    rows = get_state_backend().list_audit_events(
+        since_unix=float(since_unix),
+        limit=capped_limit,
+    )
+    return {"events": rows, "count": len(rows)}
+
+
+@app.get("/v1/audit/ledger/verify")
+def verify_ledger(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Verify the Omega Ledger hashchain integrity.
+
+    Returns BOTH integrity reports:
+
+    - ``sql_structural`` -- the SQL window-function walk from
+      :meth:`StateBackend.verify_ledger_integrity`. Catches structural
+      breaks (deleted rows, parent_hash rewritten in the chain) using
+      a single ``LAG``-CTE query.
+    - ``python_crypto`` -- the Python crypto walk from
+      :meth:`OmegaLedger.verify_chain`. Recomputes SHA-256 per row;
+      catches cryptographic tampering of ``payload_json`` that the
+      SQL check can't see.
+
+    A clean chain has ``valid=True`` on both checks. Mismatches name
+    the first broken entry_id + a human-readable reason for ops triage.
+
+    Status codes:
+      - 200: success (whether or not the chain is valid -- the body
+        carries the report).
+      - 401 / 429 / 503: same safety-gate handling as
+        :func:`get_audit_events`.
+    """
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_get",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    # Lazy import: phoenix.ledger imports vendor.omega which resolves
+    # via the sys.path injection in phoenix/__init__.py at first call.
+    from phoenix.ledger import get_ledger
+
+    sql_report = get_state_backend().verify_ledger_integrity()
+    python_report = get_ledger().verify_chain()
+    return {
+        "sql_structural": sql_report,
+        "python_crypto": {
+            "valid": python_report.valid,
+            "entries_checked": python_report.entries_checked,
+            "first_broken_entry_id": python_report.first_broken_entry_id,
+            "reason": python_report.reason,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 Step 8: POST /v1/tasks/{task_id}/replay
+
+
+@app.post("/v1/tasks/{task_id}/replay")
+def replay_task(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Re-run a previously-sealed task and verify the result hash.
+
+    Per architecture v1 Section 5.2 line 956 + Section 1 Decisions
+    19-21: the replay path reads the ledger entry for ``task_id``,
+    restores the captured deterministic environment, re-runs the
+    pipeline, and compares the recomputed ``result_hash`` against
+    the recorded value.
+
+    Authorization: requires ``can_replay_tasks`` permission. Rate-
+    limited at ``replay`` cost.
+
+    Status code mapping:
+
+    - 200: replay succeeded; response carries the
+      :class:`ReplayReport` shape.
+    - 401: bad/missing actor signature.
+    - 403: actor lacks ``can_replay_tasks``.
+    - 404: no ledger entry has ``payload.task_id == task_id``.
+    - 409: entry is incomplete (no ``task_spec`` /
+      ``environment_snapshot``, or ``reproducibility_mode="default"``),
+      OR the original used cloud shots Phoenix v1 cannot re-fetch.
+    - 429: rate-limit exceeded.
+    - 500: replay completed but the recomputed result_hash diverged
+      from the recorded value (:class:`ReplayDivergence`).
+    - 503: kill switch engaged.
+    """
+    request_id: str = request.state.request_id
+
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_replay",
+            requires_capability="can_replay_tasks",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"permission denied: actor={exc.actor_name!r} lacks {exc.missing_capability!r}"
+            ),
+        ) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    # Lazy import: phoenix.ledger imports vendor.omega via sys.path
+    # injection that phoenix/__init__.py runs at module load. The
+    # FastAPI route is registered at import time, so we keep the
+    # heavy imports inside the handler.
+    from phoenix.ledger import (
+        LedgerEntryNotFound,
+        ReplayDivergence,
+        ReplayEntryIncomplete,
+        ReplayProviderUnavailable,
+        replay,
+    )
+
+    try:
+        report = replay(task_id)
+    except LedgerEntryNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ReplayEntryIncomplete, ReplayProviderUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ReplayDivergence as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "replay_divergence",
+                "message": str(exc),
+                "task_id": exc.task_id,
+                "original_entry_id": exc.original_entry_id,
+                "original_result_hash": exc.original_result_hash,
+                "replayed_result_hash": exc.replayed_result_hash,
+                "divergent_layer": exc.divergent_layer,
+            },
+        ) from exc
+
+    return {
+        "task_id": report.task_id,
+        "original_entry_id": report.original_entry_id,
+        "original_result_hash": report.original_result_hash,
+        "replayed_result_hash": report.replayed_result_hash,
+        "hashes_match": report.hashes_match,
+        "divergent_layer": report.divergent_layer,
+        "wall_clock_ms": report.wall_clock_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Phase 6a: identity + WebSocket endpoints
 
 
@@ -460,6 +845,7 @@ class WSTokenRequest(BaseModel):
 
 @app.post("/v1/identity/ws-token")
 def ws_token(
+    request: Request,
     _req: WSTokenRequest | None = None,
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -472,6 +858,7 @@ def ws_token(
     endpoint by Section 7.5 cost catalogue but ``ws_token`` is keyed
     to 1 token).
     """
+    request_id: str = request.state.request_id  # Phase 7 Step 2
     try:
         actor, _ = extract_or_bootstrap(authorization)
     except IdentityError as exc:
@@ -481,6 +868,7 @@ def ws_token(
             actor,
             action_key="ws_token",
             requires_capability="can_submit_tasks",
+            request_id=request_id,
         )
     except KillSwitchEngaged as exc:
         raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
@@ -522,21 +910,57 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
     - 1000 (normal): task completed (task.complete event sent).
     - 1008 (policy violation): token invalid / expired / used.
     """
+    # Phase 7 Step 2: WS handlers bypass HTTP middleware, so mint a
+    # fresh per-connection request_id here for audit correlation.
+    request_id = f"req_{uuid.uuid4().hex}"
     if not token:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/tasks/{task_id}/stream",
+                "task_id": task_id,
+                "reason": "missing_token",
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason="missing token query parameter")
         return
     try:
-        get_ws_token_store().consume(token)
+        actor_name = get_ws_token_store().consume(token)
     except WSTokenError as exc:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/tasks/{task_id}/stream",
+                "task_id": task_id,
+                "reason": "invalid_token",
+                "error_detail": str(exc),
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason=str(exc))
         return
 
     await websocket.accept()
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.ws.connect_accepted",
+        actor_id=actor_name,
+        parameters={
+            "path": "/v1/ws/tasks/{task_id}/stream",
+            "task_id": task_id,
+        },
+        request_id=request_id,
+    )
     broker = get_broker()
     cursor = 0
     # Phase 6a poll-based stream: bounded loop so a long-disconnected
     # task doesn't keep the WS open forever. v1.x adjusts to push.
     max_iterations = 6000  # 6000 * 0.1s = 600s = 10 min timeout
+    close_code = 1000
+    close_reason = "stream poll timeout"
     try:
         for _ in range(max_iterations):
             new_events = broker.get_events(task_id, since_index=cursor)
@@ -544,15 +968,32 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
                 await websocket.send_json(to_dict(event))
                 cursor += 1
                 if event.type in ("task.complete", "task.failed"):
-                    await websocket.close(code=1000, reason="task finished")
+                    close_reason = "task finished"
+                    await websocket.close(code=1000, reason=close_reason)
                     return
             await asyncio.sleep(0.1)
         # Polling timeout reached without task.complete; close gracefully.
-        await websocket.close(code=1000, reason="stream poll timeout")
+        await websocket.close(code=close_code, reason=close_reason)
     except WebSocketDisconnect:
         # Client disconnected; nothing to clean up (broker buffer
         # remains for any future reconnect).
+        close_code = 1006
+        close_reason = "client disconnect"
         return
+    finally:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.closed",
+            actor_id=actor_name,
+            parameters={
+                "path": "/v1/ws/tasks/{task_id}/stream",
+                "task_id": task_id,
+                "close_code": close_code,
+                "close_reason": close_reason,
+                "events_streamed": cursor,
+            },
+            request_id=request_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -598,16 +1039,45 @@ async def calibration_drift_stream(
     - 1008 (policy violation): token missing / invalid / expired /
       already consumed.
     """
+    # Phase 7 Step 2: WS handlers bypass HTTP middleware, so mint a
+    # fresh per-connection request_id here for audit correlation.
+    request_id = f"req_{uuid.uuid4().hex}"
     if not token:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/calibration/drift",
+                "reason": "missing_token",
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason="missing token query parameter")
         return
     try:
-        get_ws_token_store().consume(token)
+        actor_name = get_ws_token_store().consume(token)
     except WSTokenError as exc:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.connect_rejected",
+            parameters={
+                "path": "/v1/ws/calibration/drift",
+                "reason": "invalid_token",
+                "error_detail": str(exc),
+            },
+            request_id=request_id,
+        )
         await websocket.close(code=1008, reason=str(exc))
         return
 
     await websocket.accept()
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.ws.connect_accepted",
+        actor_id=actor_name,
+        parameters={"path": "/v1/ws/calibration/drift"},
+        request_id=request_id,
+    )
     broker = get_broker()
     cursor = 0
     poll_seconds = 0.25
@@ -615,6 +1085,8 @@ async def calibration_drift_stream(
     # Per Decision 17 drift cycles are minutes-scale work but state
     # transitions are sparse, so this just bounds runaway connections.
     max_iterations = int(8 * 60 * 60 / poll_seconds)
+    close_code = 1000
+    close_reason = "stream poll timeout"
     try:
         for _ in range(max_iterations):
             new_events = broker.get_events(DRIFT_ALERTS_CHANNEL, since_index=cursor)
@@ -622,8 +1094,23 @@ async def calibration_drift_stream(
                 await websocket.send_json(to_dict(event))
                 cursor += 1
             await asyncio.sleep(poll_seconds)
-        await websocket.close(code=1000, reason="stream poll timeout")
+        await websocket.close(code=close_code, reason=close_reason)
     except WebSocketDisconnect:
         # Client disconnected; broker buffer remains for any future
         # reconnect (subject to the buffer cap / NATS retention).
+        close_code = 1006
+        close_reason = "client disconnect"
         return
+    finally:
+        _safe_audit_emit(
+            layer="api",
+            event_type="api.ws.closed",
+            actor_id=actor_name,
+            parameters={
+                "path": "/v1/ws/calibration/drift",
+                "close_code": close_code,
+                "close_reason": close_reason,
+                "events_streamed": cursor,
+            },
+            request_id=request_id,
+        )

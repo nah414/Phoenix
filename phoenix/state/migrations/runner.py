@@ -33,7 +33,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
-from phoenix.state.migrations import phase6b_initial
+from phoenix.state.migrations import phase6b_initial, phase7_ledger
 
 
 class MigrationModule(Protocol):
@@ -55,7 +55,10 @@ class MigrationModule(Protocol):
 
 # Explicit migration enumeration in apply order. mypy sees the module
 # satisfies MigrationModule structurally; the cast spells that out.
-ALL_MIGRATIONS: list[MigrationModule] = [cast(MigrationModule, phase6b_initial)]
+ALL_MIGRATIONS: list[MigrationModule] = [
+    cast(MigrationModule, phase6b_initial),
+    cast(MigrationModule, phase7_ledger),
+]
 
 
 def applied_versions(conn: Any) -> set[int]:

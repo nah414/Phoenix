@@ -186,3 +186,69 @@ class StateBackend(Protocol):
         entry.
         """
         ...
+
+    # --- Phase 7: Omega Ledger durable store (Section 1 Decision 15) ---
+    # The hashchain primitives live in vendor/omega/ledger.py + the
+    # adapter at phoenix/ledger/omega_ledger.py. Phase 7 Step 5 adds
+    # the state backend as the durable home for the chain so installs
+    # using Postgres get replication/concurrency for free. Per locked
+    # OPEN-4 (2026-05-11), ``ledger_entries`` is a separate table from
+    # ``audit_events`` -- audit_events is the structured-event firehose;
+    # ledger_entries is the long-lived provenance store.
+
+    def append_ledger_entry(self, entry_record: dict[str, Any]) -> None:
+        """Append a ledger entry to the durable store.
+
+        Required fields per :class:`phoenix.ledger.LedgerEntry`:
+        ``entry_id`` (str, primary key), ``entry_kind`` (str
+        discriminator), ``timestamp_unix`` (float), ``actor_id`` (str),
+        ``parent_hash`` (str; ``"GENESIS"`` for the first entry),
+        ``entry_hash`` (str; SHA-256 hex), ``payload_json`` (str;
+        canonical JSON of the typed payload).
+
+        The store is append-only: there is no UPDATE or DELETE method.
+        Tampering breaks the hashchain (Section 1 Decision 15).
+
+        Raises if an entry with the same ``entry_id`` already exists --
+        the OmegaLedger mints UUID4 IDs so collisions are
+        cryptographically impossible; an error here would mean a
+        client-side replay attack or a corrupted UUID generator.
+        """
+        ...
+
+    def list_ledger_entries(
+        self,
+        *,
+        since_unix: float,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """List ledger entries with ``timestamp_unix >= since_unix``,
+        ordered ascending by timestamp, up to ``limit`` rows.
+
+        Returned rows have the same shape as
+        :meth:`append_ledger_entry` accepts. Consumed by the
+        ``GET /v1/audit/ledger`` admin endpoint (architecture §5.2)
+        and by the replay engine (Phase 7 Step 8) to walk the chain.
+        """
+        ...
+
+    def verify_ledger_integrity(self) -> dict[str, Any]:
+        """Walk the chain in SQL and return an integrity summary.
+
+        Uses a window function (``LAG``) to verify each row's
+        ``parent_hash`` matches the previous row's ``entry_hash`` in
+        timestamp order. Catches structural breaks (a row whose
+        parent_hash doesn't link to the prior row's entry_hash) but
+        not cryptographic tampering of the payload -- the latter
+        requires recomputing SHA-256 per row, which lives in the
+        in-process :meth:`OmegaLedger.verify_chain` walk.
+
+        Returns: ``{valid: bool, entries_checked: int,
+        first_broken_entry_id: str | None, reason: str | None}``.
+
+        Phase 8's ``GET /v1/admin/ledger/integrity-report`` invokes
+        this method for the SQL-level structural check and the
+        in-process :meth:`OmegaLedger.verify_chain` for the full
+        cryptographic check; the report reconciles both.
+        """
+        ...

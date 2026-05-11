@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from psycopg_pool import ConnectionPool
 
 
-_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev7"
+_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev8"
 
 
 def _default_dsn() -> str | None:
@@ -415,3 +415,98 @@ class PostgresStateBackend:
                     time.time(),
                 ),
             )
+
+    # --- Phase 7: Omega Ledger durable store ---
+
+    def append_ledger_entry(self, entry_record: dict[str, Any]) -> None:
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO ledger_entries
+                       (entry_id, entry_kind, timestamp_unix, actor_id,
+                        parent_hash, entry_hash, payload_json)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    entry_record["entry_id"],
+                    entry_record["entry_kind"],
+                    entry_record["timestamp_unix"],
+                    entry_record["actor_id"],
+                    entry_record["parent_hash"],
+                    entry_record["entry_hash"],
+                    entry_record["payload_json"],
+                ),
+            )
+
+    def list_ledger_entries(
+        self,
+        *,
+        since_unix: float,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT entry_id, entry_kind, timestamp_unix, actor_id,
+                          parent_hash, entry_hash, payload_json
+                   FROM ledger_entries
+                   WHERE timestamp_unix >= %s
+                   ORDER BY timestamp_unix ASC, entry_id ASC
+                   LIMIT %s""",
+                (since_unix, limit),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "entry_id": row[0],
+                "entry_kind": row[1],
+                "timestamp_unix": row[2],
+                "actor_id": row[3],
+                "parent_hash": row[4],
+                "entry_hash": row[5],
+                "payload_json": row[6],
+            }
+            for row in rows
+        ]
+
+    def verify_ledger_integrity(self) -> dict[str, Any]:
+        """SQL window-function structural check over ``ledger_entries``.
+
+        Postgres dialect mirrors the SQLite path: a CTE with
+        ``LAG(entry_hash, 1, 'GENESIS')`` over timestamp order detects
+        the first row whose ``parent_hash`` doesn't link to the
+        previous row's ``entry_hash``. Postgres has had window
+        functions since 8.4 so this works across all supported targets.
+        """
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """WITH ordered AS (
+                       SELECT entry_id, parent_hash, entry_hash,
+                              LAG(entry_hash, 1, 'GENESIS')
+                                  OVER (ORDER BY timestamp_unix ASC,
+                                                entry_id ASC) AS expected_prev
+                       FROM ledger_entries
+                   )
+                   SELECT entry_id, parent_hash, expected_prev
+                   FROM ordered
+                   WHERE parent_hash != expected_prev
+                   ORDER BY entry_id ASC
+                   LIMIT 1"""
+            )
+            broken = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM ledger_entries")
+            count_row = cur.fetchone()
+        total = int(count_row[0]) if count_row else 0
+        if broken is None:
+            return {
+                "valid": True,
+                "entries_checked": total,
+                "first_broken_entry_id": None,
+                "reason": None,
+            }
+        return {
+            "valid": False,
+            "entries_checked": total,
+            "first_broken_entry_id": broken[0],
+            "reason": (
+                f"parent_hash mismatch: expected {str(broken[2])[:16]}... "
+                f"got {str(broken[1])[:16]}..."
+            ),
+        }

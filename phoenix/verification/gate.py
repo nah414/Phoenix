@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from phoenix.api.event_broker import get_broker
+from phoenix.audit import AuditEvent, get_emitter
+from phoenix.ledger import compose_and_append_solve_entry
 from phoenix.router.data_model import RoutingRequest
 from phoenix.router.errors import NoEligibleProvidersError
 from phoenix.trinity.control.engine import run_dpd
@@ -138,6 +140,17 @@ class VerificationGate:
                 "drift_state": drift.state,
             },
         )
+        # Phase 7 Step 2: audit emit -- durable, structured log
+        # paralleling the live WS stream above.
+        _emit_verification_audit(
+            task,
+            "verification.gate.started",
+            {
+                "initial_rung": initial_rung.name,
+                "max_error_bar": max_error_bar,
+                "drift_state": drift.state,
+            },
+        )
 
         axis_results: list[AxisResult] = []
 
@@ -159,6 +172,14 @@ class VerificationGate:
                 "skipped": axis_1_result.metadata.get("skipped", False),
             },
         )
+        _emit_verification_audit(
+            task,
+            "verification.gate.solver_complete",
+            {
+                "error_bar_solver": axis_1_result.error_bar_contribution,
+                "skipped": axis_1_result.metadata.get("skipped", False),
+            },
+        )
 
         # Reactive promotion check after Axis 1.
         promoted = self._maybe_promote(axis_1_result, current_rung, max_error_bar, promotions)
@@ -166,6 +187,16 @@ class VerificationGate:
             broker.emit(
                 task.request_id,
                 "task.verification.promoted",
+                {
+                    "from_rung": current_rung.name,
+                    "to_rung": promoted.name,
+                    "promoting_axis": axis_1_result.axis_name,
+                    "reason": "axis_disagreement_exceeded_half_remaining_budget",
+                },
+            )
+            _emit_verification_audit(
+                task,
+                "verification.gate.promoted",
                 {
                     "from_rung": current_rung.name,
                     "to_rung": promoted.name,
@@ -201,6 +232,15 @@ class VerificationGate:
                     "metric": axis_2_result.metadata.get("metric"),
                 },
             )
+            _emit_verification_audit(
+                task,
+                "verification.gate.control_complete",
+                {
+                    "error_bar_control": axis_2_result.error_bar_contribution,
+                    "skipped": axis_2_result.metadata.get("skipped", False),
+                    "metric": axis_2_result.metadata.get("metric"),
+                },
+            )
 
             # Reactive promotion check after Axis 2.
             promoted = self._maybe_promote(axis_2_result, current_rung, max_error_bar, promotions)
@@ -208,6 +248,16 @@ class VerificationGate:
                 broker.emit(
                     task.request_id,
                     "task.verification.promoted",
+                    {
+                        "from_rung": current_rung.name,
+                        "to_rung": promoted.name,
+                        "promoting_axis": axis_2_result.axis_name,
+                        "reason": "axis_disagreement_exceeded_half_remaining_budget",
+                    },
+                )
+                _emit_verification_audit(
+                    task,
+                    "verification.gate.promoted",
                     {
                         "from_rung": current_rung.name,
                         "to_rung": promoted.name,
@@ -260,6 +310,15 @@ class VerificationGate:
         broker.emit(
             task.request_id,
             "task.orchestrate.progress",
+            {
+                "provider_id": primary_decision.primary.provider_id,
+                "backend_name": primary_decision.primary.backend_name,
+                "estimated_fidelity": primary_decision.estimated_fidelity,
+            },
+        )
+        _emit_verification_audit(
+            task,
+            "verification.gate.orchestrate_progress",
             {
                 "provider_id": primary_decision.primary.provider_id,
                 "backend_name": primary_decision.primary.backend_name,
@@ -387,6 +446,47 @@ class VerificationGate:
             phase="phase_5_verification_gate",
         )
 
+        # Phase 5 keeps Result.agreement_type as the vendored DisagreementType
+        # for backward-compat at the data model boundary; the Phoenix-native
+        # PhoenixDisagreementType is a sibling enum exposed via the
+        # VerificationProvenance for audit. Map back to the closest vendored
+        # value for the Result envelope.
+        # NOTE: Result is built BEFORE ProvenanceTrace because Phase 7
+        # Step 6 composes the ledger entry from the four canonical
+        # sources (verification_provenance, solver_provenance,
+        # control_provenance, orchestrate provenance, Result) and the
+        # composed entry_id is then stamped onto the ProvenanceTrace.
+        result_for_ledger = Result(
+            value=primary_result.value,
+            error_bar=error_bar,
+            sigma=sigma,
+            agreement_type=_to_vendored_disagreement(agreement_type),
+            kpi_bundle_orchestrate=primary_result.kpi_bundle_orchestrate,
+            provenance=ProvenanceTrace(request_id=task.request_id),  # placeholder
+        )
+
+        # Phase 7 Step 6: compose + append the SolveEntry to the ledger.
+        # Failure here MUST NOT block the user's solve response (audit-
+        # path failures degrade observability, not safety). We log the
+        # exception and continue with omega_ledger_entry_id=None.
+        omega_ledger_entry_id: str | None = None
+        try:
+            link = compose_and_append_solve_entry(
+                task=task,
+                result=result_for_ledger,
+                verification_provenance=verification_provenance,
+                solver_provenance=solver_provenance,
+                control_provenance=control_provenance,
+                orchestrate_provenance=primary_orch_prov,
+                rung_used=current_rung.name,
+            )
+            omega_ledger_entry_id = link.entry_id
+        except Exception:
+            log.exception(
+                "Ledger append failed for request_id=%s; user response unaffected",
+                task.request_id,
+            )
+
         trace = ProvenanceTrace(
             request_id=task.request_id,
             solver=solver_provenance,
@@ -394,13 +494,9 @@ class VerificationGate:
             orchestrate=primary_orch_prov,
             verification=verification_provenance,
             cloud_shots_recorded=primary_orch_prov.cloud_shots_recorded,
+            omega_ledger_entry_id=omega_ledger_entry_id,
         )
 
-        # Phase 5 keeps Result.agreement_type as the vendored DisagreementType
-        # for backward-compat at the data model boundary; the Phoenix-native
-        # PhoenixDisagreementType is a sibling enum exposed via the
-        # VerificationProvenance for audit. Map back to the closest vendored
-        # value for the Result envelope.
         result = Result(
             value=primary_result.value,
             error_bar=error_bar,
@@ -413,19 +509,18 @@ class VerificationGate:
         # Section 5.3: task.complete with summary fields the WS client
         # can use to render final status without re-fetching the full
         # ProvenanceTrace (which is large).
-        broker.emit(
-            task.request_id,
-            "task.complete",
-            {
-                "value": float(result.value) if isinstance(result.value, (int, float)) else None,
-                "error_bar": result.error_bar,
-                "sigma": result.sigma,
-                "agreement_type": result.agreement_type.value,
-                "phoenix_agreement_type": agreement_type.value,
-                "final_rung": current_rung.name,
-                "promotions": promotions,
-            },
-        )
+        complete_payload: dict[str, Any] = {
+            "value": float(result.value) if isinstance(result.value, (int, float)) else None,
+            "error_bar": result.error_bar,
+            "sigma": result.sigma,
+            "agreement_type": result.agreement_type.value,
+            "phoenix_agreement_type": agreement_type.value,
+            "final_rung": current_rung.name,
+            "promotions": promotions,
+            "omega_ledger_entry_id": omega_ledger_entry_id,
+        }
+        broker.emit(task.request_id, "task.complete", complete_payload)
+        _emit_verification_audit(task, "verification.gate.completed", complete_payload)
         return result
 
     # ----- helpers ------------------------------------------------------
@@ -488,6 +583,43 @@ class VerificationGate:
         mean = sum(flat) / len(flat)
         var = sum((x - mean) ** 2 for x in flat) / len(flat)
         return math.sqrt(var)
+
+
+def _emit_verification_audit(
+    task: PhysicsTask, event_type: str, parameters: dict[str, Any]
+) -> None:
+    """Emit a verification-gate audit event in parallel to broker.emit.
+
+    Phase 7 Step 2: every lifecycle moment the verification gate
+    already streams to the WebSocket broker (Phase 6a) also lands in
+    the durable audit log. The two streams have different audiences
+    (live ops dashboard vs. forever audit trail) but the same payload
+    shape.
+
+    The emit is wrapped in try/except so a misbehaving audit emitter
+    cannot take down the verification gate's hot path -- per the
+    Phase 7 Step 1 fire-and-forget contract.
+    """
+    actor_name = "unknown"
+    actor = getattr(task, "actor", None)
+    if actor is not None:
+        name = getattr(actor, "name", None)
+        if isinstance(name, str) and name:
+            actor_name = name
+    try:
+        get_emitter().emit(
+            AuditEvent(
+                timestamp_unix=time.time(),
+                actor_id=actor_name,
+                layer="verification_gate",
+                event_type=event_type,
+                parameters=parameters,
+                result_hash="",
+                request_id=task.request_id,
+            )
+        )
+    except Exception:
+        log.exception("verification gate audit emit failed: %s", event_type)
 
 
 def _to_vendored_disagreement(phoenix_type: PhoenixDisagreementType) -> Any:
