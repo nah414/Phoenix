@@ -382,6 +382,44 @@ subprocess; send canonical tool requests; verify responses.
 
 ---
 
+## Locked decisions (2026-05-12)
+
+Adam approved all six recommendations on 2026-05-12. Recorded back
+into the BUILDGUIDE so future readers see why the implementation
+looks the way it does.
+
+1. **`[OPEN-1] LOCKED` — Reference adapter = identity adapter shipped
+   as built-in.** `phoenix/adapters/identity_adapter.py` is a
+   weights-free echo adapter usable by tests AND by client integrators
+   as a starting template.
+
+2. **`[OPEN-2] LOCKED` — Sandbox isolation = subprocess + timeout +
+   restricted env + per-call tempdir.** Middle ground; catches the
+   80% case (runaway adapters that loop forever) without claiming
+   OS-level ACL guarantees Phoenix v1 can't deliver portably.
+   v1.x can layer stricter isolation when a real threat model
+   emerges.
+
+3. **`[OPEN-3] LOCKED` — MCP transport = stdio only in Phase 9.**
+   Covers Claude Code + Cursor + Cline (the 80% case). HTTP+SSE
+   for browser-based MCP clients deferred to v1.x.
+
+4. **`[OPEN-4] LOCKED` — MCP SDK = official Anthropic `mcp` SDK.**
+   Stable, well-supported, matches the broader MCP ecosystem.
+   `pyproject.toml` adds `[mcp]` optional extra.
+
+5. **`[OPEN-5] LOCKED` — CLI HTTP client = `httpx`.** Already a
+   dev-only dependency; promoted to main. Supports both sync (CLI
+   today) and async (future v1.x idioms) without a second
+   dependency.
+
+6. **`[OPEN-6] LOCKED` — Sanskrit memory MCP tools = deferred to
+   v1.x.** Phase 9 ships only the 8 canonical task-lifecycle tools
+   per Section 5.5. The 7 Sanskrit tools are vendored substrate for
+   the reference admin client (Section 9), not Phoenix v1 core.
+
+---
+
 ## Open items to lock before Step 1
 
 Six open items surfaced during BUILDGUIDE authoring. Lock with Adam
