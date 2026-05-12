@@ -42,6 +42,15 @@ from pydantic import BaseModel, Field
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
 from phoenix._internal.version import __version__, read_vendor_version
+from phoenix.adapters import (
+    AdapterAlreadyRegistered,
+    AdapterError,
+    AdapterNotLoaded,
+    AdapterTimeoutError,
+    AdapterValidationError,
+    get_registry as get_adapter_registry,
+    load_adapter,
+)
 from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
@@ -897,6 +906,188 @@ def ws_token(
         "expires_in_seconds": 60,
         "single_use": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 Step 3: LoRA adapter management endpoints
+#
+# Per architecture v1 Section 2.7 + 5.2: POST/GET/DELETE under
+# ``/v1/adapters`` is the front door for the LoRA hot-swap interface.
+# All three pass through the 9-stage safety gate. POST + DELETE
+# require ``can_load_adapter`` / ``can_unload_adapter`` respectively;
+# GET requires no capability (read-only listing).
+#
+# Errors map AdapterError family to HTTP per Section 2.7:
+#   - AdapterAlreadyRegistered -> 409
+#   - AdapterValidationError   -> 503
+#   - AdapterTimeoutError      -> 504
+#   - AdapterNotLoaded         -> 404
+#   - AdapterError (base)      -> 400 (bad spec, etc.)
+#   - NotImplementedError      -> 501 (file-path spec form, v1.x)
+
+
+class AdapterSpecPayload(BaseModel):
+    """JSON body for POST /v1/adapters.
+
+    ``spec`` is a module-style ``"module.path:callable"`` string in
+    Phase 9 v1 (locked OPEN-2 + the loader's contract).
+    """
+
+    spec: str = Field(..., min_length=1)
+
+
+@app.post("/v1/adapters")
+def post_adapter(
+    payload: AdapterSpecPayload,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Load + validate + register a LoRA adapter.
+
+    Returns the public adapter metadata on success. Refuses to register
+    if the inference-time round-trip validator catches any failed
+    canonical input -- a broken adapter never enters the registry.
+    """
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="adapters_post",
+            requires_capability="can_load_adapter",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except (AuthError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    try:
+        record = load_adapter(payload.spec)
+    except AdapterValidationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "adapter_validation_failed",
+                "adapter_name": exc.adapter_name,
+                "failed_cases": exc.failed_cases,
+            },
+        ) from exc
+    except AdapterTimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"adapter timeout: {exc}",
+        ) from exc
+    except AdapterAlreadyRegistered as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail=str(exc),
+        ) from exc
+    except AdapterError as exc:
+        # Catch-all for AdapterError base (bad spec, missing module/
+        # callable, factory raised, returned non-Protocol). 400 because
+        # the caller's input was malformed.
+        raise HTTPException(
+            status_code=400,
+            detail=f"adapter load failed: {exc}",
+        ) from exc
+    return record.to_dict()
+
+
+@app.get("/v1/adapters")
+def list_adapters(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """List all currently-loaded LoRA adapters."""
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="tasks_get",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except (AuthError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    records = get_adapter_registry().list_adapters()
+    return {
+        "count": len(records),
+        "adapters": [r.to_dict() for r in records],
+    }
+
+
+@app.delete("/v1/adapters/{adapter_id}")
+def delete_adapter(
+    adapter_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Unregister a previously-loaded LoRA adapter.
+
+    The adapter's history ring buffer is dropped along with the
+    record. 404 when the adapter isn't loaded.
+    """
+    request_id: str = request.state.request_id
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    try:
+        verify_request(
+            actor,
+            action_key="adapters_post",  # mutation cost matches POST
+            requires_capability="can_unload_adapter",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except (AuthError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    try:
+        get_adapter_registry().unregister(adapter_id)
+    except AdapterNotLoaded as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"adapter_id": adapter_id, "unloaded": True}
 
 
 @app.websocket("/v1/ws/tasks/{task_id}/stream")
