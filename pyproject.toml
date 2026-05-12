@@ -23,13 +23,17 @@ dependencies = [
     # disk/RSS). GPU/VRAM/NPU/thermal fields land later when the cloud-GPU
     # adapter ships in Phase 9+.
     "psutil>=5.9,<8.0",
+    # Phase 9 Step 6 -- CLI HTTP client. Locked OPEN-5 (2026-05-12):
+    # httpx (not requests + urllib3) so the CLI shares the same client
+    # surface FastAPI's TestClient is built on. Moves from dev-only
+    # to main deps when the CLI lands as a first-class surface.
+    "httpx>=0.27,<0.29",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-asyncio>=0.23,<0.25",
-    "httpx>=0.27,<0.29",
     "ruff>=0.3,<0.10",
     "mypy>=1.8,<2.0",
     "pre-commit>=3.6,<4.0",
