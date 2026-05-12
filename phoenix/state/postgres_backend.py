@@ -213,6 +213,150 @@ class PostgresStateBackend:
                 ),
             )
 
+    # --- Phase 10: cost-ledger 24h-window queries + budget overrides ---
+
+    def record_solve_cost(
+        self,
+        *,
+        request_id: str,
+        actor_name: str,
+        org_id: str | None,
+        timestamp_unix: float,
+        actual_cost_usd: float,
+        reproducibility_mode: str,
+        provenance_json: str = "{}",
+    ) -> None:
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO solve_cost_ledger
+                       (solve_id, actor_id, cost_usd_estimate,
+                        cost_usd_actual, provider, submitted_at_unix,
+                        completed_at_unix, org_id, reproducibility_mode,
+                        provenance_json)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT(solve_id) DO UPDATE SET
+                       actor_id = EXCLUDED.actor_id,
+                       cost_usd_actual = EXCLUDED.cost_usd_actual,
+                       submitted_at_unix = EXCLUDED.submitted_at_unix,
+                       org_id = EXCLUDED.org_id,
+                       reproducibility_mode = EXCLUDED.reproducibility_mode,
+                       provenance_json = EXCLUDED.provenance_json""",
+                (
+                    request_id,
+                    actor_name,
+                    0.0,
+                    actual_cost_usd,
+                    "",
+                    timestamp_unix,
+                    timestamp_unix,
+                    org_id,
+                    reproducibility_mode,
+                    provenance_json,
+                ),
+            )
+            conn.commit()
+
+    def query_actor_24h_spend(
+        self,
+        actor_name: str,
+        *,
+        as_of_unix: float,
+    ) -> float:
+        floor = as_of_unix - 86400.0
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(SUM(cost_usd_actual), 0.0)
+                   FROM solve_cost_ledger
+                   WHERE actor_id = %s
+                     AND submitted_at_unix >= %s
+                     AND submitted_at_unix <= %s""",
+                (actor_name, floor, as_of_unix),
+            )
+            row = cur.fetchone()
+        return float((row[0] if row else 0.0) or 0.0)
+
+    def query_org_24h_spend(
+        self,
+        org_id: str,
+        *,
+        as_of_unix: float,
+    ) -> float:
+        floor = as_of_unix - 86400.0
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(SUM(cost_usd_actual), 0.0)
+                   FROM solve_cost_ledger
+                   WHERE org_id = %s
+                     AND submitted_at_unix >= %s
+                     AND submitted_at_unix <= %s""",
+                (org_id, floor, as_of_unix),
+            )
+            row = cur.fetchone()
+        return float((row[0] if row else 0.0) or 0.0)
+
+    def insert_budget_override(
+        self,
+        *,
+        actor_name: str,
+        scope: str,
+        new_ceiling_usd: float,
+        expires_at_unix: float,
+        created_by: str,
+        rationale: str | None = None,
+    ) -> int:
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO budget_overrides
+                       (actor_name, scope, new_ceiling_usd,
+                        expires_at_unix, created_by, created_at_unix,
+                        rationale)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   RETURNING override_id""",
+                (
+                    actor_name,
+                    scope,
+                    new_ceiling_usd,
+                    expires_at_unix,
+                    created_by,
+                    time.time(),
+                    rationale,
+                ),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        return int(row[0]) if row else 0
+
+    def list_active_budget_overrides(
+        self,
+        actor_name: str,
+        *,
+        as_of_unix: float,
+    ) -> list[dict[str, Any]]:
+        with self._lock, self._require_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT override_id, scope, new_ceiling_usd,
+                          expires_at_unix, created_by, created_at_unix,
+                          rationale
+                   FROM budget_overrides
+                   WHERE actor_name = %s
+                     AND expires_at_unix > %s
+                   ORDER BY created_at_unix ASC""",
+                (actor_name, as_of_unix),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "override_id": row[0],
+                "scope": row[1],
+                "new_ceiling_usd": float(row[2]),
+                "expires_at_unix": float(row[3]),
+                "created_by": row[4],
+                "created_at_unix": float(row[5]),
+                "rationale": row[6],
+            }
+            for row in rows
+        ]
+
     # --- Phase 6b: audit events ---
 
     def append_audit_event(self, event: dict[str, Any]) -> None:

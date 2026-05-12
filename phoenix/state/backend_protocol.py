@@ -232,6 +232,94 @@ class StateBackend(Protocol):
         """
         ...
 
+    # --- Phase 10: cost-ledger 24h-window queries + budget overrides ---
+
+    def record_solve_cost(
+        self,
+        *,
+        request_id: str,
+        actor_name: str,
+        org_id: str | None,
+        timestamp_unix: float,
+        actual_cost_usd: float,
+        reproducibility_mode: str,
+        provenance_json: str = "{}",
+    ) -> None:
+        """Record a completed solve's actual cost into ``solve_cost_ledger``.
+
+        Idempotent on ``request_id`` per locked OPEN-2 (Phase 10):
+        re-recording the same id overwrites (``INSERT OR REPLACE`` /
+        ``ON CONFLICT DO UPDATE``). The post-solve writer is the
+        single source; duplicate writes only happen on retry, and the
+        last write IS the authoritative outcome.
+
+        ``org_id`` may be ``None`` for single-actor installs; the
+        24h-window per-org query treats ``None`` as a sentinel that
+        matches no rows (the resolver falls back to actor-name
+        scoping for solo developers).
+        """
+        ...
+
+    def query_actor_24h_spend(
+        self,
+        actor_name: str,
+        *,
+        as_of_unix: float,
+    ) -> float:
+        """Sum ``actual_cost_usd`` for ``actor_name`` over the
+        ``[as_of_unix - 86400, as_of_unix]`` window.
+
+        Returns ``0.0`` when the actor has no recorded solves.
+        """
+        ...
+
+    def query_org_24h_spend(
+        self,
+        org_id: str,
+        *,
+        as_of_unix: float,
+    ) -> float:
+        """Sum ``actual_cost_usd`` for ``org_id`` over the
+        ``[as_of_unix - 86400, as_of_unix]`` window.
+
+        Returns ``0.0`` when the org has no recorded solves.
+        """
+        ...
+
+    def insert_budget_override(
+        self,
+        *,
+        actor_name: str,
+        scope: str,
+        new_ceiling_usd: float,
+        expires_at_unix: float,
+        created_by: str,
+        rationale: str | None = None,
+    ) -> int:
+        """Insert a new budget override row; return the override_id.
+
+        ``scope`` must be one of ``per_solve`` | ``per_actor_24h`` |
+        ``per_org_24h``. ``expires_at_unix`` must be in the future.
+        Caller (Step 8 admin endpoint) validates both before calling.
+        """
+        ...
+
+    def list_active_budget_overrides(
+        self,
+        actor_name: str,
+        *,
+        as_of_unix: float,
+    ) -> list[dict[str, Any]]:
+        """List unexpired budget overrides for ``actor_name``.
+
+        Returns rows with ``override_id``, ``scope``,
+        ``new_ceiling_usd``, ``expires_at_unix``, ``created_by``,
+        ``created_at_unix``, ``rationale``. Ordered by
+        ``created_at_unix`` ASC so the cost-ceiling resolver can
+        pick the most recent override per scope.
+        """
+        ...
+
     def verify_ledger_integrity(self) -> dict[str, Any]:
         """Walk the chain in SQL and return an integrity summary.
 
