@@ -191,27 +191,13 @@ class TestStep1Stubs:
         with pytest.raises(NotImplementedError):
             impl.flush(timeout_s=1.0)
 
-    def test_budget_check_stub_raises(self) -> None:
-        seams = CloudSeams()
-        impl = seams.get("budget")
-        with pytest.raises(NotImplementedError) as excinfo:
-            impl.check_solve_budget(
-                actor=object(),  # type: ignore[arg-type]
-                estimated_cost_usd=1.0,
-                reproducibility_mode="default",
-            )
-        assert "Step 4" in str(excinfo.value)
+    def test_budget_impl_is_real_local_controller_after_step_4(self) -> None:
+        """Step 4 swapped the stub out for LocalJobBudgetController."""
+        from phoenix._internal.cloud_seams import LocalJobBudgetController
 
-    def test_budget_record_stub_raises(self) -> None:
         seams = CloudSeams()
         impl = seams.get("budget")
-        with pytest.raises(NotImplementedError):
-            impl.record_solve_cost(
-                actor=object(),  # type: ignore[arg-type]
-                request_id="tx-1",
-                actual_cost_usd=0.5,
-                provenance={},
-            )
+        assert isinstance(impl, LocalJobBudgetController)
 
 
 # ---------------------------------------------------------------------

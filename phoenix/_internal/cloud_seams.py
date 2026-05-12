@@ -215,8 +215,44 @@ class _Step1AuditStub:
         )
 
 
-class _Step1BudgetStub:
-    """Stub :class:`JobBudgetController` -- raises until Step 4."""
+class LocalJobBudgetController:
+    """Default :class:`JobBudgetController` impl (Phase 10 Step 4).
+
+    Composes the three Phase 10 substrate pieces:
+
+    1. :func:`phoenix.safety.cost_ceilings.resolve_ceilings` for the
+       Section 4.7 default ladder (per-solve x mode + per-actor x
+       tier + per-org).
+    2. :class:`StateBackend`'s ``query_actor_24h_spend`` +
+       ``query_org_24h_spend`` for the rolling-24h spend window.
+    3. :class:`StateBackend`'s ``list_active_budget_overrides`` for
+       Step 8's admin override layer.
+
+    The controller is **stateless** -- every call resolves ceilings
+    + overrides + spend fresh. State lives in the SQLite/Postgres
+    backend; the controller is just orchestration. This makes the
+    seam safely swappable: Phoenix Cloud's impl reads from a
+    different store but the contract is identical.
+
+    **Safety:** the controller can only DENY a solve. The
+    safety-gate denials run upstream (Section 7); the
+    cost-ceiling check is a SEPARATE final gate that adds budget
+    awareness without ever bypassing safety.
+    """
+
+    def __init__(
+        self,
+        *,
+        state_backend: Any | None = None,
+        permissions_registry: Any | None = None,
+        clock: Any | None = None,
+    ) -> None:
+        # Lazy: resolved on first call so importing the module
+        # doesn't force a state backend to be opened. Production
+        # callers pass None and let the lookups happen on demand.
+        self._state_backend = state_backend
+        self._permissions_registry = permissions_registry
+        self._clock = clock
 
     def check_solve_budget(
         self,
@@ -224,9 +260,87 @@ class _Step1BudgetStub:
         estimated_cost_usd: float,
         reproducibility_mode: str,
     ) -> BudgetDecision:
-        raise NotImplementedError(
-            f"LocalJobBudgetController: {_STEP_1_STUB_MESSAGE} "
-            "(Real impl lands in Phase 10 Step 4.)"
+        from phoenix.safety.cost_ceilings import resolve_ceilings
+
+        backend = self._resolve_state_backend()
+        now = self._now()
+        actor_tier = self._actor_tier(actor)
+        org_id = self._actor_org_id(actor)
+
+        triple = resolve_ceilings(
+            reproducibility_mode=reproducibility_mode,
+            actor_tier=actor_tier,
+        )
+
+        # Apply admin overrides on top of the resolved triple.
+        overrides = backend.list_active_budget_overrides(actor.name, as_of_unix=now)
+        per_solve_ceiling = _apply_override(triple.per_solve_usd, overrides, scope="per_solve")
+        per_actor_ceiling = _apply_override(
+            triple.per_actor_24h_usd, overrides, scope="per_actor_24h"
+        )
+        per_org_ceiling = _apply_override(triple.per_org_24h_usd, overrides, scope="per_org_24h")
+
+        # 1. Per-solve check (single solve cap).
+        if per_solve_ceiling is not None and estimated_cost_usd > per_solve_ceiling:
+            return BudgetDecision(
+                allowed=False,
+                remaining_usd=0.0,
+                rationale=(
+                    f"per_solve ceiling tripped: estimated_cost ${estimated_cost_usd:.4f} "
+                    f"> per_solve ceiling ${per_solve_ceiling:.4f}"
+                ),
+                ceiling_applied_usd=per_solve_ceiling,
+            )
+
+        # 2. Per-actor-24h check.
+        actor_spend = backend.query_actor_24h_spend(actor.name, as_of_unix=now)
+        if per_actor_ceiling is not None and (actor_spend + estimated_cost_usd) > per_actor_ceiling:
+            remaining = max(0.0, per_actor_ceiling - actor_spend)
+            return BudgetDecision(
+                allowed=False,
+                remaining_usd=remaining,
+                rationale=(
+                    f"per_actor_24h ceiling tripped: 24h spend ${actor_spend:.4f} + "
+                    f"estimated ${estimated_cost_usd:.4f} > ceiling "
+                    f"${per_actor_ceiling:.4f}"
+                ),
+                ceiling_applied_usd=per_actor_ceiling,
+            )
+
+        # 3. Per-org-24h check (only when org_id is set).
+        if org_id is not None:
+            org_spend = backend.query_org_24h_spend(org_id, as_of_unix=now)
+            if per_org_ceiling is not None and (org_spend + estimated_cost_usd) > per_org_ceiling:
+                remaining = max(0.0, per_org_ceiling - org_spend)
+                return BudgetDecision(
+                    allowed=False,
+                    remaining_usd=remaining,
+                    rationale=(
+                        f"per_org_24h ceiling tripped: 24h org spend ${org_spend:.4f} + "
+                        f"estimated ${estimated_cost_usd:.4f} > ceiling "
+                        f"${per_org_ceiling:.4f}"
+                    ),
+                    ceiling_applied_usd=per_org_ceiling,
+                )
+
+        # Allowed. Report headroom under the per-solve ceiling (the
+        # tightest cap that applies to THIS request; the per-actor
+        # and per-org caps shape future requests, not this one).
+        if per_solve_ceiling is not None:
+            remaining = max(0.0, per_solve_ceiling - estimated_cost_usd)
+            applied = per_solve_ceiling
+        else:
+            remaining = float("inf")
+            applied = float("inf")
+        return BudgetDecision(
+            allowed=True,
+            remaining_usd=remaining,
+            rationale=(
+                f"under per_solve ceiling ${applied:.4f}; "
+                f"actor_24h_spend=${actor_spend:.4f}; "
+                f"org_24h_spend={'n/a' if org_id is None else f'${backend.query_org_24h_spend(org_id, as_of_unix=now):.4f}'}"
+            ),
+            ceiling_applied_usd=applied,
         )
 
     def record_solve_cost(
@@ -236,10 +350,95 @@ class _Step1BudgetStub:
         actual_cost_usd: float,
         provenance: dict[str, Any],
     ) -> None:
-        raise NotImplementedError(
-            f"LocalJobBudgetController: {_STEP_1_STUB_MESSAGE} "
-            "(Real impl lands in Phase 10 Step 4.)"
+        import json
+
+        backend = self._resolve_state_backend()
+        org_id = self._actor_org_id(actor)
+        reproducibility_mode = str(provenance.get("reproducibility_mode", "default"))
+        backend.record_solve_cost(
+            request_id=request_id,
+            actor_name=actor.name,
+            org_id=org_id,
+            timestamp_unix=self._now(),
+            actual_cost_usd=actual_cost_usd,
+            reproducibility_mode=reproducibility_mode,
+            provenance_json=json.dumps(provenance, sort_keys=True, default=str),
         )
+
+    # ---------------- helpers ----------------
+
+    def _resolve_state_backend(self) -> Any:
+        if self._state_backend is not None:
+            return self._state_backend
+        from phoenix.state import get_state_backend
+
+        return get_state_backend()
+
+    def _actor_tier(self, actor: "Actor") -> str:
+        """Resolve the actor's rate-limit tier via the permissions registry.
+
+        Falls back to ``"default"`` on any lookup failure -- the
+        ceiling resolver also treats unknown tiers as default, so
+        the worst case is a too-strict ceiling.
+        """
+        try:
+            registry = self._permissions_registry
+            if registry is None:
+                from phoenix.safety import permissions as permissions_module
+
+                registry = permissions_module.get_registry()
+            perms = registry.get(actor.name)
+            return str(getattr(perms, "rate_limit_tier", "default"))
+        except Exception:
+            return "default"
+
+    def _actor_org_id(self, actor: "Actor") -> str | None:
+        """Per locked OPEN-5: use ``actor.org_id`` if present, else None.
+
+        Phoenix Cloud will populate ``org_id`` on the Actor payload;
+        v1 single-actor installs leave it absent. Returning None
+        causes :meth:`check_solve_budget` to skip the per-org check
+        entirely (which the solo developer expects).
+        """
+        return getattr(actor, "org_id", None)
+
+    def _now(self) -> float:
+        if self._clock is not None:
+            return float(self._clock())
+        import time
+
+        return time.time()
+
+
+def _apply_override(
+    base_ceiling: float | None,
+    overrides: list[dict[str, Any]],
+    *,
+    scope: str,
+) -> float | None:
+    """Return the strictest of the base ceiling + the most recent override.
+
+    Per Section 4.7: "override never *removes* a ceiling -- the
+    lowest possible override is the ceiling already in effect;
+    override only grants more budget, never less."
+
+    So when an override is present, we use ``max(base, override)``
+    (the override raises the cap). When the base is ``None``
+    (admin-tier with no cap), we keep ``None`` rather than letting
+    an override reintroduce a cap accidentally.
+    """
+    if base_ceiling is None:
+        return None
+    # Pick the latest unexpired override for this scope (overrides
+    # are already ordered by created_at ASC; the last one wins).
+    latest = None
+    for row in overrides:
+        if row.get("scope") == scope:
+            latest = row
+    if latest is None:
+        return base_ceiling
+    raised = float(latest["new_ceiling_usd"])
+    return max(base_ceiling, raised)
 
 
 # ---------------------------------------------------------------------
@@ -269,10 +468,11 @@ class CloudSeams:
     def __init__(self) -> None:
         self._impls: dict[str, Any] = {}
         self._lock = threading.RLock()
-        # Phase 10 Step 1: register stubs. Steps 4 + 9 replace.
+        # Phase 10 Step 1 stubs for auth/audit (replaced at Step 9);
+        # Step 4 ships the real LocalJobBudgetController for budget.
         self._impls["auth"] = _Step1AuthStub()
         self._impls["audit"] = _Step1AuditStub()
-        self._impls["budget"] = _Step1BudgetStub()
+        self._impls["budget"] = LocalJobBudgetController()
 
     def register(self, name: str, impl: Any) -> None:
         """Replace (or register) the implementation for ``name``.
@@ -309,7 +509,7 @@ class CloudSeams:
             return sorted(self._impls.keys())
 
     def reset_to_defaults(self) -> None:
-        """Drop all registrations and re-register Step 1 stubs.
+        """Drop all registrations and re-register Phoenix v1 default impls.
 
         Test-isolation helper. Does NOT replace the singleton itself;
         use :func:`reset_seams` for that.
@@ -318,7 +518,7 @@ class CloudSeams:
             self._impls.clear()
             self._impls["auth"] = _Step1AuthStub()
             self._impls["audit"] = _Step1AuditStub()
-            self._impls["budget"] = _Step1BudgetStub()
+            self._impls["budget"] = LocalJobBudgetController()
 
 
 # ---------------------------------------------------------------------
@@ -352,6 +552,7 @@ __all__ = [
     "CloudSeams",
     "HttpAuthExtractor",
     "JobBudgetController",
+    "LocalJobBudgetController",
     "UnknownSeam",
     "get_seams",
     "reset_seams",
