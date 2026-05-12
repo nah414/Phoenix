@@ -41,6 +41,7 @@ from phoenix.cli.commands import audit as audit_cmd
 from phoenix.cli.commands import calibration as calibration_cmd
 from phoenix.cli.commands import identity as identity_cmd
 from phoenix.cli.commands import lora as lora_cmd
+from phoenix.cli.commands import mcp_server as mcp_cmd
 from phoenix.cli.commands import providers as providers_cmd
 from phoenix.cli.commands import task as task_cmd
 from phoenix.cli.config_loader import CLIConfig, ConfigError, load_config
@@ -207,7 +208,16 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_calibration_group(subparsers)
     _add_admin_group(subparsers)
 
+    # Step 9 -- MCP server
+    _add_mcp_group(subparsers)
+
     return parser
+
+
+def _add_mcp_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
+    sp = subparsers.add_parser("mcp", help="MCP server commands.")
+    inner = sp.add_subparsers(dest="mcp_command")
+    inner.add_parser("serve", help="Boot the MCP server on stdio.")
 
 
 # --------------------------------------------------------------------
@@ -393,6 +403,7 @@ _GROUP_HANDLER_MAPS: dict[str, dict[str, _CommandHandler]] = {
     "audit": audit_cmd.HANDLERS,
     "calibration": calibration_cmd.HANDLERS,
     "admin": admin_cmd.HANDLERS,
+    "mcp": mcp_cmd.HANDLERS,
 }
 
 

@@ -72,6 +72,15 @@ otel = [
     "opentelemetry-sdk>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
 ]
+# Phase 9 Step 9 -- MCP server for Claude Code / Cursor / Cline / etc.
+# Opt-in: the CLI works without MCP; only `phoenix mcp serve`
+# requires this extra. Install via:
+#     pip install phoenix-middleware[mcp]
+# Locked OPEN-3 (2026-05-12): stdio transport only in Phase 9.
+# Locked OPEN-4 (2026-05-12): official Anthropic `mcp` SDK.
+mcp = [
+    "mcp>=1.0,<2.0",
+]
 
 [project.scripts]
 phoenix = "phoenix.cli.entry:main"
