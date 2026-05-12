@@ -15,6 +15,179 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev11] — 2026-05-13
+
+Phase 10 shipped — **cost-ceiling enforcement + Phoenix Cloud
+abstraction seams** per architecture v1 Section 4.7 + 10.3.1. Two
+tightly-coupled architectural pieces close the biggest remaining
+gap in v1's §10.7 acceptance criteria.
+
+1. **Cost-ceiling enforcement (§4.7).** Phase 4 shipped the
+   `cost_ceiling_usd` field + `CostCeilingExceeded` error + Stage 2
+   per-solve filter. Phase 10 adds the 24h-window accumulators
+   (per-actor + per-org), the post-solve accounting writer, the
+   verification gate's pre-promotion check with
+   `budget_bound_skipped_axis` provenance, and the
+   `POST /v1/admin/budget/override` admin endpoint.
+
+2. **Phoenix Cloud abstraction seams (§10.3.1).** Three thin
+   `typing.Protocol` definitions (`HttpAuthExtractor`,
+   `AuditLogExporter`, `JobBudgetController`) plus a generic
+   `CloudSeams` name-keyed registry plus local default
+   implementations. The default `LocalJobBudgetController` IS the
+   v1 cost-ceiling engine — Phoenix Cloud (a future product) swaps
+   in tenant-aware impls via one `register("budget", ...)` call
+   with zero changes to Phoenix core.
+
+The two pieces compose because Phase 10's cost-ceiling code lives
+**behind the seam from day one**, not retrofitted later.
+
+### Locked scope decisions (2026-05-13)
+
+The six open items surfaced during BUILDGUIDE authoring were
+locked at draft time with autonomous-execution defaults (per
+Adam's 2026-05-13 direction: "keep building for a while before we
+create a PR"). Recorded back into the BUILDGUIDE; summarized here:
+
+1. **OPEN-1 LOCKED**: new migration file
+   `phase10_cost_ledger.py` (not extending Phase 6b's initial) so
+   replay against a Phase-6b-era backend stays unambiguous.
+2. **OPEN-2 LOCKED**: `record_solve_cost` is last-write-wins
+   on `request_id` via `INSERT ... ON CONFLICT DO UPDATE`. Single
+   writer (Orchestrate post-solve); duplicate writes only on
+   retry, where last write IS the authoritative outcome.
+3. **OPEN-3 LOCKED**: `budget_bound_skipped_axis` lives on
+   `VerificationProvenance` (verification-gate decision, not
+   routing-layer). Mixing it onto `RoutingProvenance` would muddy
+   the layer boundary.
+4. **OPEN-4 LOCKED**: admin override scope = three explicit
+   canonical values (`per_solve` / `per_actor_24h` /
+   `per_org_24h`). An admin override at the per-org level is
+   qualitatively different from a per-actor one; the audit log
+   needs to distinguish them.
+5. **OPEN-5 LOCKED**: org_id resolution = `actor.org_id` if
+   present, else `None`. Solo developers (no org_id) get no
+   per-org enforcement; Phoenix Cloud will populate org_id on
+   the Actor payload and exercise the per-org path.
+6. **OPEN-6 LOCKED**: new `BudgetOverrideEntry` ledger kind
+   (distinct from Phase 8's `OverrideByOperatorEntry` for
+   HUMAN_REVIEW solve disposition). Sharing a kind would obscure
+   the audit story.
+
+### What landed (commits efd4a9f → 9b6b706 → 0722784 → e8a35c3 → d723751 → c9e49fa → ecaec90 → b672620 → 3e58957 → 1eae092 → this commit, 11 commits)
+
+- **BUILDGUIDE drafted + locked (`efd4a9f`).** Six open items
+  surfaced and resolved at draft time.
+- **Step 1 (`9b6b706`) — cloud_seams Protocol shells + registry.**
+  Three `typing.Protocol` definitions, `BudgetDecision` frozen
+  dataclass, generic `CloudSeams` name-keyed registry (not
+  hardcoded three slots), `UnknownSeam(KeyError)`, module-level
+  singleton via `get_seams()` / `reset_seams()`. Step 1 stubs
+  registered for all three names; replaced at Steps 4 + 9.
+- **Step 2 (`0722784`) — solve_cost_ledger 24h-window + budget_overrides.**
+  New migration `phase10_cost_ledger.py` (VERSION 3) extends the
+  Phase 6b `solve_cost_ledger` with `org_id` / `reproducibility_mode` /
+  `provenance_json` columns and creates the `budget_overrides`
+  table. Four new `StateBackend` methods:
+  `record_solve_cost` (idempotent on request_id),
+  `query_actor_24h_spend` / `query_org_24h_spend`,
+  `insert_budget_override` / `list_active_budget_overrides`.
+- **Step 3 (`e8a35c3`) — cost-ceiling defaults + resolver.**
+  `phoenix/safety/cost_ceilings.py` implements the §4.7 default
+  ladder (per-solve $5/$25/$50, per-actor $50/$500/None,
+  per-org $2000) plus env-var overrides (`$PHOENIX_PER_SOLVE_CEILING_USD`
+  etc.) with invalid-value tolerance.
+- **Step 4 (`d723751`) — LocalJobBudgetController default impl.**
+  Composes cost_ceilings.resolve_ceilings + state-backend 24h-window
+  queries + admin-override list. Stateless; every call resolves
+  fresh. `_apply_override` helper enforces §4.7's "override only
+  raises" rule via `max(base, override)`.
+- **Step 5 (`c9e49fa`) — Router Stage 2 consults the seam.**
+  When `task.actor` is set, Router calls
+  `cloud_seams.get("budget").check_solve_budget` before per-
+  candidate filtering. Seam denial → `CostCeilingExceeded` with
+  rationale embedded; seam allowance → effective ceiling =
+  min(user, seam). Backward compat: `task.actor=None` skips the
+  seam (existing fixtures + tier-1 stay green). Defense-in-depth:
+  buggy seam doesn't take down the Router.
+- **Step 6 (`ecaec90`) — post-solve accounting hook.**
+  `pipeline._record_post_solve_cost` runs after every solve;
+  computes actual cost via `router.pricing.estimate_cost_usd` and
+  calls `seam.record_solve_cost`. Fire-and-forget: any exception
+  swallowed + logged. Skipped when `task.actor=None` or no
+  orchestrate provenance.
+- **Step 7 (`b672620`) — verification gate pre-promotion check.**
+  `_axis_3_would_exceed_ceiling` helper estimates the second
+  routing request's cost; if `primary_cost + cheapest_alt > per_solve_ceiling`,
+  Axis 3 is skipped, `budget_bound=True`,
+  `budget_bound_skipped_axis="cross_provider_axis"`. The user
+  still gets their primary-only Result with a clear marker.
+- **Step 8 (`3e58957`) — POST /v1/admin/budget/override.**
+  New `BudgetOverrideEntry` ledger kind (locked OPEN-6).
+  Validates: scope in canonical set, `expires_at > now`,
+  `new_ceiling_usd > 0` (override only raises per §4.7).
+  Appends ledger entry + writes state-backend row + emits
+  `admin.budget.override.success` audit. Non-admin gets 403
+  before the registry write.
+- **Step 9 (`1eae092`) — LocalHttpAuthExtractor + LocalAuditLogExporter +
+  acceptance test.** Real auth/audit seam impls replace the Step 1
+  stubs. `tests/integration/test_cloud_seams.py` is the §10.3.1
+  acceptance test: 5 tests proving (1) synthesized Actor flows
+  through safety gate, (2) audit events fan out to BOTH default
+  JSONL + mock cloud sink, (3) tenant-scoped budget denial
+  surfaces as CostCeilingExceeded with no tenant-state leak,
+  (4) extension discipline accepts `canonical_library` without
+  breaking core, (5) v1 defaults satisfy all three Protocols.
+- **Step 10 (this commit) — Version bump + CHANGELOG.** Bumps
+  `1.0.0.dev10 → 1.0.0.dev11` in pyproject + version.py + the
+  three `_DEFAULT_PHOENIX_RELEASE` call sites + drift detector
+  default + test version assertions.
+
+### Test coverage
+
+Phase 10 adds 99 tests bringing the suite from 636 (after Phase 9)
+to 735 passing + 39 skipped. New test files:
+
+- `test_cloud_seams_step1.py` (19) — Protocol shells + registry
+  + singleton lifecycle.
+- `test_cost_ledger_step2.py` (15) — record + query round trip,
+  last-write-wins, 24h-window semantics, budget-override CRUD.
+- `test_cost_ceilings_step3.py` (19) — Section 4.7 default
+  ladder, unknown-mode/tier fallbacks, env-var overrides,
+  invalid-value tolerance.
+- `test_local_budget_controller_step4.py` (20) — happy path,
+  per-solve / per-actor-24h / per-org-24h denials, admin tier,
+  override only-raises, expired-override invisible.
+- `test_router_budget_seam_step5.py` (5) — backward compat,
+  per-actor / per-org denials surface via Router, seam-narrows-
+  ceiling, buggy seam fault tolerance.
+- `test_post_solve_accounting_step6.py` (6) — hook records via
+  seam, skips when actor=None or no provenance, buggy seam
+  swallowed, e2e through pipeline.solve.
+- `test_gate_budget_check_step7.py` (6) — VerificationProvenance
+  field + `_axis_3_would_exceed_ceiling` predicate edges.
+- `test_admin_budget_override_step8.py` (11) — happy path,
+  state-backend row, ledger entry, validation (422 + 400),
+  non-admin 403, e2e override-raises-ceiling.
+- `test_cloud_seams.py` (5) — §10.3.1 acceptance: 3 seam compose
+  tests + extension discipline + Protocol satisfaction regression.
+
+### Limitations explicitly documented
+
+- **Compositional fail-closed test ("panic mode")**: §10.7
+  acceptance item; not yet shipped. Phase 11 target.
+- **Long-window replay test**: §10.7 acceptance item; not yet
+  shipped. Phase 11 target.
+- **Distribution artifacts** (pip wheel, Docker image, Nuitka
+  binary): release-time work; v1 release candidate.
+- **Per-directory READMEs**: §10.7 acceptance item; Phase 11
+  docs pass.
+- **`phoenix admin pricing-update` CLI**: §11.2.2 disposition
+  defers to v1.x. Phase 10 surfaces stale pricing via the
+  Result envelope's existing soft-warn path.
+
+---
+
 ## [1.0.0.dev10] — 2026-05-12
 
 Phase 9 shipped — **LoRA adapter hot-swap interface + CLI + MCP**
