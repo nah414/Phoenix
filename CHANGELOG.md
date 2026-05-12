@@ -15,6 +15,203 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev9] — 2026-05-12
+
+Phase 8 shipped — the **admin dev-ops backdoor** under `/v1/admin/...`
+per architecture v1 Section 8. Phoenix is now operable without paging
+the developer: admins with `is_admin=True` can inspect every subsystem,
+engage/release the kill switch, force-cycle the drift detector,
+override HUMAN_REVIEW solves, manually quarantine + restore providers,
+query the audit log with filter composition, and pull a full ledger
+integrity report — all from privileged HTTP endpoints with audit
+emit per call and ledger entries for the two architecture-listed
+mutations (kill switch + HUMAN_REVIEW override).
+
+The architecturally consequential piece is the verification gate's
+auto-enqueue: DEGRADED solves now land in `pending_review_queue`
+automatically (locked OPEN-3). The pending-review queue is no longer
+dead code Phase 6b shipped without a writer — admin sees real data.
+
+### Locked scope decisions (2026-05-11)
+
+The six open items surfaced during BUILDGUIDE authoring were locked
+on 2026-05-11 after Adam reviewed recommendations. Recorded back into
+the BUILDGUIDE; summarized here:
+
+1. **OPEN-1 LOCKED: Admin mount path = APIRouter + include_router**
+   with `/v1/admin` prefix. One FastAPI app, one OpenAPI schema with
+   an `Admin`-tagged section, modular code (each handler group
+   registers its own APIRouter that the parent collects).
+2. **OPEN-2 LOCKED: `/v1/admin/governor` = psutil-based v1 minimum.**
+   CPU%, RAM%, disk%, process RSS populated; GPU/VRAM/NPU/thermal
+   fields return `None` until Phase 9+ when the cloud-GPU adapter
+   layer matures.
+3. **OPEN-3 LOCKED: HUMAN_REVIEW enqueue WIRED in Phase 8.** The
+   verification gate's DEGRADED + DEGRADED_BUDGET_BOUND classifications
+   now enqueue a `pending_review_queue` row automatically. The user
+   still gets their result synchronously; the queue is informational
+   v1 (v1.x can promote to hold-for-review semantics).
+4. **OPEN-4 LOCKED: Router decision retention = in-process ring buffer.**
+   Default 1000 entries, configurable via
+   `$PHOENIX_ROUTER_DECISION_LOG_SIZE`. Survives daemon lifetime only;
+   audit log captures the canonical durable record via Phase 7 ledger
+   entries' `routing_provenance` block.
+5. **OPEN-5 LOCKED: Manual quarantine = audit-event only, no ledger
+   entry.** Provider state mutations are operational, not audit-grade.
+   Section 8.4 reserves ledger entries for kill switch + HUMAN_REVIEW
+   override only.
+6. **OPEN-6 LOCKED: Adapter `force-revalidate` = 501 stub in Phase 8.**
+   Endpoint registered in OpenAPI; handler returns 501 with a "Phase 9"
+   message. `round-trip-history` deferred entirely to Phase 9.
+
+### What landed (commits b3599c1 → 6e3daf6 → c03fd3b → this commit, 12 commits)
+
+- **BUILDGUIDE drafted (`b3599c1`) + locked (`03b2702`).** Six open
+  items surfaced and resolved at session start.
+- **Step 1 (`6e3daf6`) — Admin scaffold + auth + audit decorator.**
+  `phoenix/admin/auth.py` (require_admin privilege check),
+  `audit_decorator.py` (emit_admin_audit with fire-and-forget contract),
+  `errors.py` (5 typed errors with HTTP code mappings),
+  `router.py` (APIRouter aggregator + sanity-check `/v1/admin/_ping`).
+  Cost catalogue gains `admin.ping` / `admin.read` / `admin.mutate`.
+  Pattern: every admin handler runs the 4-layer composition
+  `extract_or_bootstrap → verify_request → require_admin →
+  emit_admin_audit`.
+- **Step 2 (`9e7b504`) — Kill switch engage/release/status.**
+  Three endpoints + a `skip_kill_switch_check` flag on
+  `verify_request` so admin endpoints stay callable while the
+  switch is engaged. Both mutations append a `KillSwitchEntry`
+  ledger entry with `transition` discriminator + `engaged_at_unix`
+  cross-reference.
+- **Step 3 (`9454656`) — Health + governor + inference-status + budget.**
+  Four read-only inspection endpoints. `health/detailed` rolls up
+  every subsystem with defensive sub-call wrapping (one broken
+  subsystem doesn't take down the rollup). `governor` ships
+  psutil-based v1 minimum. `inference-status` is a Phase 9
+  placeholder shape. `budget` reads `RateLimiter.snapshot()` with
+  non-mutating refill projection.
+- **Step 4 (`cf1f45d`) — Calibration drill-down + force-cycle.**
+  `detail` exposes per-checker state. `history` filters audit_events
+  to `drift.*`. `run` body `{wait: bool}` toggles synchronous vs
+  daemon-thread execution; non-blocking lock returns 409
+  `CalibrationRunInProgress` on concurrent attempts.
+- **Step 5 (`347d3b1`) — Verification + pending-review override
+  (OPEN-3 WIRING).** Verification gate auto-enqueues DEGRADED +
+  DEGRADED_BUDGET_BOUND solves into `pending_review_queue`.
+  `tasks-pending-review` lists them; `override/{task_id}` requires
+  `can_override_human_review` AND `is_admin`, validates the
+  disposition string, appends an `OverrideByOperatorEntry` ledger
+  entry. `rung-distribution` histograms `initial_rung` over the
+  audit-log window.
+- **Step 6 (`c9216db`) — Router decision ring buffer + provider
+  health history.** Module-level `collections.deque` (size
+  configurable via `$PHOENIX_ROUTER_DECISION_LOG_SIZE`) appended
+  to on every `Router.decide()` call. `health-history` filters
+  audit events to `provider.health.*`.
+- **Step 7 (`02ff88b`) — Provider manual quarantine + restore +
+  audit mirror.** Two mutation endpoints (cost `admin.mutate`,
+  24h duration cap on quarantine, 404 on unknown provider, 403
+  for non-admin). `emit_admin_audit` extended to ALSO write to
+  `state_backend.audit_events` so admin actions surface in
+  history endpoints (Phase 7's audit emitter was JSONL-only).
+- **Step 8 (`6a2e81c`) — Audit replay + ledger integrity report.**
+  `audit/replay` accepts filter composition (event_type_prefix,
+  actor_id, layer, since/until). `ledger/integrity-report` returns
+  both checks + entry_kind histogram + chain_head pointer with
+  age_seconds.
+- **Step 9 (`c03fd3b`) — Adapter force-revalidate 501 stub.**
+  Endpoint registered with full auth chain; success path returns
+  501 with "Phase 9" message. `round-trip-history` deferred
+  entirely.
+- **Step 10 (this commit) — Version bump + CHANGELOG.** Bumps
+  `1.0.0.dev8 → 1.0.0.dev9` in pyproject + version.py + the three
+  `_DEFAULT_PHOENIX_RELEASE` call sites + drift detector default
+  + test version assertions.
+
+### Endpoint surface
+
+Phase 8 ships **15 read + 7 mutation = 22 endpoints** under `/v1/admin/`,
+matching the full architecture §8.2 surface:
+
+Read: `_ping`, `health/detailed`, `governor`, `inference-status`,
+`budget`, `calibration/detail`, `calibration/history`,
+`router/decisions`, `providers/health-history`,
+`tasks-pending-review`, `verification/rung-distribution`,
+`kill-switch/status`, `audit/replay`, `ledger/integrity-report`.
+
+Mutation: `kill-switch/engage`, `kill-switch/release`,
+`calibration/run`, `tasks-pending-review/{task_id}/override`,
+`providers/{provider_id}/manual-quarantine`,
+`providers/{provider_id}/manual-restore`,
+`adapters/{adapter_id}/force-revalidate` (501 stub).
+
+Of the seven mutations, ONLY kill switch + HUMAN_REVIEW override
+append Omega Ledger entries per locked OPEN-5 and architecture §8.4.
+All seven emit top-priority audit events.
+
+### Tests
+
+- 512 passed, 0 skipped, 0 failed with full infrastructure
+  (Postgres on 5432 + NATS on 24222).
+- Phase 8 additions vs Phase 7's 402: +110 tests across scaffold (8),
+  kill switch (15), health/governor/inference/budget (17),
+  calibration (16), verification/override (15), router/health-
+  history (12), provider mutate (12), audit replay/integrity (10),
+  adapter stub (5).
+- Pre-commit gates: ruff (lint + format), mypy --strict, pytest
+  smoke (4/4) — all clean.
+
+### Bug fixes found during testing
+
+- **Step 5 `from-import` patching gotcha**: the verification gate's
+  `from phoenix.verification.drift_state import read_drift_state`
+  creates a local binding in `gate`'s namespace; patching the
+  source module didn't affect the gate's already-bound reference.
+  Fixed by patching `gate_module.read_drift_state` directly. Same
+  gotcha that bit Phase 7 Step 6 — worth documenting because v1.x
+  refactors will hit it again.
+- **Step 7 audit mirror missing**: `emit_admin_audit` originally
+  only wrote to the JSONL writer; the `/v1/admin/*/history`
+  endpoints (which read from the SQL `audit_events` table) saw
+  empty results when tested end-to-end. Fixed by extending
+  `emit_admin_audit` to write to BOTH sinks. Localized to admin
+  events for Phase 8; a v1.x cleanup could promote all audit
+  events to dual-write.
+- **Step 6 ring-buffer threading**: `collections.deque.append` is
+  GIL-atomic but iterating during concurrent appends is undefined.
+  Added an explicit `threading.Lock` only around the `snapshot()`
+  copy operation — the append path stays lock-free.
+
+### Out of scope for Phase 8 (deferred to Phase 9+ / Phase 10 / v1.x)
+
+- **LoRA adapter sandbox + management plane** — Phase 9 (§2.7,
+  §5.4-5.5). `POST /v1/admin/adapters/{id}/force-revalidate` ships
+  as a 501 stub in Phase 8 so v1 client integrators can see the
+  surface; the real handler lands in Phase 9.
+  `GET /v1/admin/adapters/{id}/round-trip-history` deferred entirely.
+- **MCP server, CLI commands** — Phase 9 (§5.4-5.5, §9).
+- **GPU / VRAM / NPU / thermal in `/v1/admin/governor`** — Phase 9+
+  when the cloud-GPU adapter layer surfaces them.
+- **Cumulative provider spend aggregation in `/v1/admin/budget`** —
+  v1.x. Phase 8 ships the endpoint shape with `0.0` placeholders;
+  the per-actor / org-level rollup work waits for the
+  `solve_cost_ledger` aggregation layer.
+- **Persisted router decision log** — v1.x. Phase 8 ships an
+  in-process ring buffer (per locked OPEN-4); cross-restart
+  persistence is deferred.
+- **Promoting all audit events to dual-write (JSONL + SQL)** —
+  v1.x cleanup. Phase 8 mirrors only admin emits; verification
+  gate + safety gate emits stay JSONL-only.
+- **Phoenix Cloud integration** (§8.5) — outside Phoenix process
+  boundary; commercial-bundle scope per Decision 35.
+- **Manual calibration baseline override** — permanent NO per
+  Section 8.4 + Section 11.5.2's resolved disposition.
+- **Standalone binary, Docker image, cloud-seams concrete impls** —
+  Phase 10.
+- **Final §10.7 acceptance + 1.0.0 release** — Phase 11.
+
+---
+
 ## [1.0.0.dev8] — 2026-05-11
 
 Phase 7 shipped — the audit-grade observability and bit-exact replay
