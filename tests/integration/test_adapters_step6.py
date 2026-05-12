@@ -334,14 +334,14 @@ class TestMainDispatcher:
         assert rc == 4  # EXIT_CONFIG_ERROR
         assert "config error" in capsys.readouterr().err
 
-    def test_stub_subcommand_returns_not_implemented(
+    def test_group_without_subcommand_returns_usage_error(
         self,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Task/lora/identity subcommands are Step 7 stubs in Step 6."""
+        """`phoenix task` (no subcommand) returns EXIT_USAGE_ERROR."""
         rc = cli_main(["task"])
-        assert rc == 64  # EXIT_NOT_IMPLEMENTED
-        assert "not implemented" in capsys.readouterr().err
+        assert rc == 2  # EXIT_USAGE_ERROR
+        assert "subcommand required" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------

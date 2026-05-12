@@ -32,10 +32,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from phoenix._internal.version import __version__
+from phoenix.cli.commands import identity as identity_cmd
+from phoenix.cli.commands import lora as lora_cmd
+from phoenix.cli.commands import providers as providers_cmd
+from phoenix.cli.commands import task as task_cmd
 from phoenix.cli.config_loader import CLIConfig, ConfigError, load_config
 from phoenix.cli.http_client import CLIHTTPClient, CLIHTTPError, build_client
 from phoenix.cli.output_formats import render
@@ -83,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"phoenix: client setup error: {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
-    handler = _COMMAND_HANDLERS.get(args.command)
+    handler = _resolve_handler(args)
     if handler is None:
         print(
             f"phoenix: '{args.command}' is not implemented yet (lands in Phase 9 Step 7/8).",
@@ -96,6 +100,52 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CLIHTTPError as exc:
         print(f"phoenix: HTTP error: {exc}", file=sys.stderr)
         return EXIT_HTTP_ERROR
+
+
+# Callable[..., int] rather than a strict positional signature so
+# handlers can use keyword-only / underscore-prefixed parameter names
+# (mypy can't match named param signatures across module boundaries).
+_CommandHandler = Callable[..., int]
+
+
+def _resolve_handler(args: argparse.Namespace) -> _CommandHandler | None:
+    """Route an argparse Namespace to its command handler.
+
+    Top-level commands (``health``) resolve via
+    :data:`_TOPLEVEL_HANDLERS`. Grouped commands (``task submit``,
+    ``lora list``, ...) resolve via the group module's ``HANDLERS``
+    dict using ``args.<group>_command``.
+    """
+    command = args.command
+    if command in _TOPLEVEL_HANDLERS:
+        return _TOPLEVEL_HANDLERS[command]
+    group_map: dict[str, _CommandHandler] | None = _GROUP_HANDLER_MAPS.get(command)
+    if group_map is None:
+        return None
+    subcommand_attr = f"{command}_command"
+    subcommand = getattr(args, subcommand_attr, None)
+    if subcommand is None:
+        # `phoenix task` with no subcommand
+        print(
+            f"phoenix {command}: subcommand required (available: {sorted(group_map.keys())})",
+            file=sys.stderr,
+        )
+        return _print_usage_handler
+    return group_map.get(subcommand)
+
+
+def _print_usage_handler(
+    _args: argparse.Namespace,
+    _config: CLIConfig,
+    _client: CLIHTTPClient,
+    _fmt: str,
+) -> int:
+    """No-op handler that returns ``EXIT_USAGE_ERROR``.
+
+    Routed when a group is invoked without a subcommand;
+    :func:`_resolve_handler` has already printed the helpful list.
+    """
+    return EXIT_USAGE_ERROR
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -166,31 +216,66 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_task_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     sp = subparsers.add_parser("task", help="Task lifecycle commands.")
     inner = sp.add_subparsers(dest="task_command")
-    inner.add_parser("submit", help="Submit a task (Step 7).")
-    inner.add_parser("get", help="Get a task result (Step 7).")
-    inner.add_parser("replay", help="Replay a task (Step 7).")
-    inner.add_parser("stream", help="Stream verification events (Step 7).")
+
+    submit = inner.add_parser("submit", help="POST /v1/tasks.")
+    submit.add_argument(
+        "--spec",
+        required=True,
+        help="Task spec JSON. Inline string or @path-to-file.json.",
+    )
+
+    get = inner.add_parser("get", help="Show cached task envelope.")
+    get.add_argument("task_id", help="Task ID returned by submit.")
+
+    replay = inner.add_parser("replay", help="POST /v1/tasks/{id}/replay.")
+    replay.add_argument("task_id")
+    replay.add_argument(
+        "--mode",
+        choices=["permissive", "strict", "replay"],
+        default="strict",
+    )
+
+    stream = inner.add_parser("stream", help="Print WS connect hint.")
+    stream.add_argument("task_id")
 
 
 def _add_lora_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     sp = subparsers.add_parser("lora", help="LoRA adapter commands.")
     inner = sp.add_subparsers(dest="lora_command")
-    inner.add_parser("load", help="Load an adapter (Step 7).")
-    inner.add_parser("list", help="List loaded adapters (Step 7).")
-    inner.add_parser("unload", help="Unload an adapter (Step 7).")
+
+    load = inner.add_parser("load", help="POST /v1/adapters.")
+    load.add_argument(
+        "spec",
+        help='Adapter spec (e.g., "phoenix.adapters.identity_adapter:make_identity_adapter").',
+    )
+
+    inner.add_parser("list", help="GET /v1/adapters.")
+
+    unload = inner.add_parser("unload", help="DELETE /v1/adapters/{id}.")
+    unload.add_argument("adapter_id")
 
 
 def _add_identity_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     sp = subparsers.add_parser("identity", help="Identity commands.")
     inner = sp.add_subparsers(dest="identity_command")
-    inner.add_parser("show", help="Show current actor (Step 7).")
-    inner.add_parser("enroll", help="Enroll a new actor (Step 7).")
+
+    inner.add_parser("show", help="Show effective actor + daemon reachability.")
+
+    enroll = inner.add_parser("enroll", help="POST /v1/identity/enroll.")
+    enroll.add_argument("actor_name")
+    enroll.add_argument(
+        "--permission",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Permission key=value (repeatable). e.g., can_load_adapter=true.",
+    )
 
 
 def _add_providers_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     sp = subparsers.add_parser("providers", help="Provider registry commands.")
     inner = sp.add_subparsers(dest="providers_command")
-    inner.add_parser("list", help="List providers (Step 7).")
+    inner.add_parser("list", help="GET /v1/admin/providers/health-history.")
 
 
 def _add_audit_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -247,8 +332,16 @@ def _cmd_health(
     return EXIT_OK
 
 
-_COMMAND_HANDLERS = {
+_TOPLEVEL_HANDLERS: dict[str, _CommandHandler] = {
     "health": _cmd_health,
+}
+
+# Group dispatch: args.command -> group's HANDLERS dict.
+_GROUP_HANDLER_MAPS: dict[str, dict[str, _CommandHandler]] = {
+    "task": task_cmd.HANDLERS,
+    "lora": lora_cmd.HANDLERS,
+    "identity": identity_cmd.HANDLERS,
+    "providers": providers_cmd.HANDLERS,
 }
 
 
