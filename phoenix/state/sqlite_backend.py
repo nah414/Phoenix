@@ -34,7 +34,7 @@ from typing import Any
 
 from phoenix.state.migrations import runner
 
-_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev9"
+_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev10"
 
 
 def _default_db_path() -> Path:

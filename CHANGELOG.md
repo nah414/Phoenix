@@ -15,6 +15,175 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev10] — 2026-05-12
+
+Phase 9 shipped — **LoRA adapter hot-swap interface + CLI + MCP**
+per architecture v1 Section 2.7 + 3.5 + 5.4 + 5.5. Three new
+surfaces land on top of the Phase 8 substrate:
+
+1. **LoRA adapter subsystem** — Protocol + reference identity
+   adapter + subprocess sandbox + in-process registry + inference-
+   time round-trip validator + loader. POST/GET/DELETE
+   `/v1/adapters` is the public surface; `POST /v1/admin/adapters/
+   {id}/force-revalidate` and `GET .../round-trip-history` are the
+   admin surfaces (Phase 8 Step 9's 501 stub is now a real
+   handler).
+2. **`phoenix` CLI** — `pyproject.toml`'s console-script entry
+   wires up. Eight command groups: `task`, `lora`, `identity`,
+   `providers` (Step 7) and `audit`, `calibration`, `admin`
+   (Step 8), plus `health` (Step 6 smoke) and `mcp serve`
+   (Step 9). httpx is now a main dependency.
+3. **MCP server** — `phoenix mcp serve` boots an MCP (Model
+   Context Protocol) server on stdio per Section 5.5 +
+   locked OPEN-3 + OPEN-4. Eight canonical task-lifecycle tools
+   bridge IDE-integrated clients (Claude Code, Cursor, Cline)
+   into the Phoenix REST surface.
+
+Plus a new `POST /v1/identity/enroll` endpoint (admin-only) that
+writes ActorPermissions through the registry and appends an
+EnrollmentEntry to the Omega Ledger.
+
+### Locked scope decisions (2026-05-12)
+
+The six open items surfaced during BUILDGUIDE authoring were
+locked on 2026-05-12 after Adam reviewed recommendations. Recorded
+back into the BUILDGUIDE; summarized here:
+
+1. **OPEN-1 LOCKED: Reference adapter = identity adapter shipped
+   as built-in.** `phoenix/adapters/identity_adapter.py` is a
+   weights-free echo adapter usable by tests AND by client
+   integrators as a starting template.
+2. **OPEN-2 LOCKED: Sandbox isolation = subprocess + timeout +
+   restricted env + per-call tempdir.** Middle ground; catches the
+   80% case (runaway adapters that loop forever) without claiming
+   OS-level ACL guarantees Phoenix v1 can't deliver portably.
+3. **OPEN-3 LOCKED: MCP transport = stdio only in Phase 9.**
+   Covers Claude Code + Cursor + Cline. HTTP+SSE deferred to v1.x.
+4. **OPEN-4 LOCKED: MCP SDK = official Anthropic `mcp` SDK.**
+   Stable, well-supported. `pyproject.toml` adds `[mcp]` optional
+   extra.
+5. **OPEN-5 LOCKED: CLI HTTP client = httpx.** Matches FastAPI's
+   TestClient internals so the CLI shares one client surface with
+   tests. Moved from dev-only to main deps.
+6. **OPEN-6 LOCKED: MCP tools = 8 canonical task-lifecycle tools.**
+   `phoenix_task_submit / get / replay`, `phoenix_provenance_get`,
+   `phoenix_providers_list`, `phoenix_calibration_status`,
+   `phoenix_health`, `phoenix_audit_verify`. Adapter / kill-switch
+   / enroll deferred to v1.x.
+
+### What landed (commits 4c1c265 → b3b8d9a → f800f8a → this commit, 12 commits)
+
+- **BUILDGUIDE drafted (`4c1c265`) + locked (`b3b8d9a`).** Six
+  open items surfaced and resolved at session start.
+- **Step 1 (`f800f8a`) — LoRA Protocol + sandbox + identity adapter +
+  errors.** `phoenix/adapters/protocol.py` (@runtime_checkable
+  Protocol), `sandbox.py` (medium-isolation subprocess sandbox
+  with timeout + restricted env + tempdir per locked OPEN-2),
+  `identity_adapter.py` (reference echo adapter with constant
+  SHA-256 fingerprint per OPEN-1), `errors.py` (5 typed errors
+  mapping to HTTP 503/504/412/404/409).
+- **Step 2 (`1bb9ace`) — Adapter loader + validator + in-process
+  registry.** Thread-safe (RLock) `AdapterRegistry` singleton +
+  per-adapter `ValidationHistoryEntry` ring buffer (cap 50).
+  `run_round_trip_validation` drives 5 canonical inputs (ASCII,
+  whitespace, unicode); always returns an entry (loader checks
+  `passed` and raises). `load_adapter(spec)` is the
+  spec→import→validate→register chokepoint; file-path specs
+  raise NotImplementedError (v1.x).
+- **Step 3 (`cdf3476`) — REST adapter endpoints.** POST/GET/
+  DELETE `/v1/adapters` wired through the 9-stage safety gate.
+  POST/DELETE require `can_load_adapter` / `can_unload_adapter`;
+  GET is open. AdapterError family maps to HTTP per Section 2.7.
+- **Step 4 (`26fbd79`) — Force-revalidate filler + round-trip-
+  history.** Phase 8 501 stub becomes a real handler that drives
+  the validator + appends to history. `GET /v1/admin/adapters/
+  {id}/round-trip-history` returns the per-adapter ring snapshot.
+  Auth chain runs BEFORE registry lookup (prevents "adapter
+  exists" leakage via HTTP code).
+- **Step 5 (`64a5531`) — `POST /v1/identity/enroll`.** Admin-only
+  enrollment of new actor permissions. Writes through the
+  permissions registry, appends an `EnrollmentEntry` to the Omega
+  Ledger (operator history matters; idempotent on actor_name
+  always appends a fresh ledger entry). Cost: `identity_enroll`
+  (5 tokens). Validates actor_name regex + rate_limit_tier.
+- **Step 6 (`d0ce87f`) — CLI scaffold.** `phoenix/cli/
+  config_loader.py` (YAML + env-var overrides, ConfigError on
+  malformed), `output_formats.py` (json / text / table / auto
+  with TTY detection), `http_client.py` (httpx wrapper with
+  actor signing + CLIHTTPError mapping), `entry.py` (argparse
+  dispatcher with global flags + group-based subcommand routing).
+  `phoenix health` is the Step-6 end-to-end smoke command.
+- **Step 7 (`1515457`) — CLI task / lora / identity / providers
+  groups.** `phoenix/cli/commands/_shared.py` (spec parsing,
+  payload printing, per-user task cache helpers), plus four
+  command modules. `task submit` caches the Result envelope so
+  `task get` surfaces it offline (Phase 9 v1 has no daemon GET
+  endpoint). `identity enroll --permission key=value` with
+  boolean coercion. `providers list` routes to
+  `/v1/admin/providers/health-history` (the only public read
+  surface for the provider registry in v1).
+- **Step 8 (`5f6bdb8`) — CLI audit / calibration / admin
+  groups.** `audit tail / verify`, `calibration status / run`,
+  `admin kill-switch engage|release|status`, `admin health /
+  governor / budget`, `admin override <task-id>
+  --disposition --reason`. Argparse enforces `--reason` and
+  `--disposition` BEFORE dispatch.
+- **Step 9 (`00fcad4`) — MCP server + 8 v1 tools.** FastMCP wiring
+  (`phoenix/mcp/server.py`) + pure-function tool implementations
+  (`tools.py`) registered with typed signatures FastMCP can
+  introspect. `phoenix mcp serve` boots stdio transport. The
+  `mcp` SDK is an optional `[mcp]` extra so installs without
+  IDE integration stay lean. CLIHTTPError translated to an
+  in-payload `{error, status_code, body}` blob.
+- **Step 10 (this commit) — Version bump + CHANGELOG.** Bumps
+  `1.0.0.dev9 → 1.0.0.dev10` in pyproject + version.py + the
+  three `_DEFAULT_PHOENIX_RELEASE` call sites + drift detector
+  default + test version assertions.
+
+### Test coverage
+
+Phase 9 adds 162 tests bringing the suite from 521 (after Phase 8)
+to 636 passing + 39 skipped. New test files:
+
+- `test_adapters_step1.py` (22) — Protocol shape, identity
+  round-trip, sandbox timeout / env / tempdir, error family.
+- `test_adapters_step2.py` (31) — Registry CRUD, history ring,
+  thread-safety, validator pass/fail, loader spec resolution.
+- `test_adapters_step3.py` (17) — REST adapter endpoints (POST/
+  GET/DELETE), error paths, permission gating, OpenAPI shape.
+- `test_admin_adapters.py` (12, rewritten) — force-revalidate
+  happy + broken paths, history, permission gating before
+  lookup, OpenAPI advertising.
+- `test_adapters_step5.py` (16) — Enrollment endpoint happy +
+  idempotency + ledger EnrollmentEntry shape + permission gate
+  + validation + audit emit.
+- `test_adapters_step6.py` (33) — Config loader edges, output
+  formats, http_client wiring, main dispatcher exit codes.
+- `test_adapters_step7.py` (19) — task / lora / identity /
+  providers groups against the in-process FastAPI app.
+- `test_adapters_step8.py` (10) — audit / calibration / admin
+  groups + kill-switch round trip + argparse required flags.
+- `test_adapters_step9.py` (13) — 8 tool implementations,
+  FastMCP wiring, end-to-end `call_tool('phoenix_health')`.
+
+### Limitations explicitly documented
+
+- **Real LoRA weights**: not shipped. Phase 9 ships the
+  capability (Protocol + sandbox + validator + REST + admin);
+  users bring their own weights per Decision 8.
+- **WebSocket streaming in the CLI**: `phoenix task stream`
+  prints the `ws://...` URL + token-mint hint rather than
+  embedding a WS client (httpx doesn't ship sync WS support).
+- **File-path adapter specs**: 501 from the REST surface + a
+  clear NotImplementedError from the loader. v1.x can layer
+  filesystem-discovery on top of the existing spec format
+  without breaking the contract.
+- **MCP HTTP+SSE transport**: deferred to v1.x per OPEN-3.
+  Phase 9 ships stdio only — covers Claude Code / Cursor /
+  Cline (the 80% case).
+
+---
+
 ## [1.0.0.dev9] — 2026-05-12
 
 Phase 8 shipped — the **admin dev-ops backdoor** under `/v1/admin/...`

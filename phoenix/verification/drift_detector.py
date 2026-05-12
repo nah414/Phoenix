@@ -629,7 +629,7 @@ class DriftDetector:
         state_backend: StateBackend | None = None,
         cadence_seconds: int | None = None,
         checkers: list[DriftCheckerProtocol] | None = None,
-        phoenix_release: str = "1.0.0.dev9",
+        phoenix_release: str = "1.0.0.dev10",
         feature_provider: Callable[[], np.ndarray | None] | None = None,
     ) -> None:
         self._backend = state_backend

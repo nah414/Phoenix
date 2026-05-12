@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev9"
-description = "Production-grade quantum-accuracy middleware (Phase 8 -- Admin dev-ops backdoor)"
+version = "1.0.0.dev10"
+description = "Production-grade quantum-accuracy middleware (Phase 9 -- LoRA adapters + CLI + MCP)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
