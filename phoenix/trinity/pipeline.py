@@ -42,6 +42,7 @@ Phase 5's adaptive rung selection lets loose-tolerance tasks demote to R2.
 
 from __future__ import annotations
 
+import logging
 
 from phoenix._internal.latency import LatencyTier, LatencyTierNotImplemented
 from phoenix.router.data_model import (
@@ -124,6 +125,9 @@ def _extract_value(high_grid_result: SolverRunResult) -> float:
     if high_grid_result.energy is not None:
         return float(high_grid_result.energy)
     return 0.0
+
+
+logger = logging.getLogger(__name__)
 
 
 # Module-level Router + FailoverProtocol singletons. Phase 4 ships
@@ -349,10 +353,58 @@ def solve(task: PhysicsTask) -> Result:
         prior_env = capture_environment()  # for the post-solve restore
         pin_single_thread_blas()
         try:
-            return _get_gate().verify(task)
+            result = _get_gate().verify(task)
+            _record_post_solve_cost(task, result, mode)
+            return result
         finally:
             restore_environment(prior_env)
             reproducibility_context.clear_snapshot(task.request_id)
 
     # Default mode -- no env capture (Phase 5/6 behavior).
-    return _get_gate().verify(task)
+    result = _get_gate().verify(task)
+    _record_post_solve_cost(task, result, mode)
+    return result
+
+
+def _record_post_solve_cost(task: PhysicsTask, result: Result, mode: str) -> None:
+    """Phase 10 Step 6: fire-and-forget post-solve cost recording.
+
+    Computes the realised cost from the Result's orchestrate provenance
+    (provider_id -> pricing lookup, per Section 4.7 "actual measured
+    cost (from KPIBundle_orchestrate.shots_used * provider_rate or
+    equivalent)" -- v1's static per-provider pricing IS the "or
+    equivalent"), then calls the JobBudgetController seam's
+    ``record_solve_cost``.
+
+    Defensive: any exception is swallowed + logged. Post-solve
+    accounting is informational; a ledger write failure must NOT
+    corrupt the Result the user is about to receive.
+    """
+    if task.actor is None:
+        return
+    if result.provenance is None or result.provenance.orchestrate is None:
+        return
+    try:
+        from phoenix._internal.cloud_seams import get_seams
+        from phoenix.router.pricing import estimate_cost_usd
+
+        orch = result.provenance.orchestrate
+        actual_cost_usd = estimate_cost_usd(orch.provider_id)
+        provenance_dict = {
+            "reproducibility_mode": mode,
+            "provider_id": orch.provider_id,
+            "backend_name": orch.backend_name,
+            "shots_used": orch.shots_used,
+            "cloud_shots_recorded": orch.cloud_shots_recorded,
+        }
+        get_seams().get("budget").record_solve_cost(
+            actor=task.actor,
+            request_id=task.request_id,
+            actual_cost_usd=actual_cost_usd,
+            provenance=provenance_dict,
+        )
+    except Exception:
+        logger.exception(
+            "post-solve cost recording failed for request_id=%r; Result still returned to user",
+            task.request_id,
+        )
