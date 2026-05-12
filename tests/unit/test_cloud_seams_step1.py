@@ -172,24 +172,19 @@ class TestStep1Stubs:
         impl = seams.get("budget")
         assert isinstance(impl, JobBudgetController)
 
-    def test_auth_stub_raises_not_implemented(self) -> None:
+    def test_auth_impl_is_real_local_extractor_after_step_9(self) -> None:
+        from phoenix._internal.cloud_seams import LocalHttpAuthExtractor
+
         seams = CloudSeams()
         impl = seams.get("auth")
-        with pytest.raises(NotImplementedError) as excinfo:
-            impl.extract_actor(request=object())
-        assert "Step 9" in str(excinfo.value)
+        assert isinstance(impl, LocalHttpAuthExtractor)
 
-    def test_audit_export_stub_raises(self) -> None:
+    def test_audit_impl_is_real_local_exporter_after_step_9(self) -> None:
+        from phoenix._internal.cloud_seams import LocalAuditLogExporter
+
         seams = CloudSeams()
         impl = seams.get("audit")
-        with pytest.raises(NotImplementedError):
-            impl.export(event=object())  # type: ignore[arg-type]
-
-    def test_audit_flush_stub_raises(self) -> None:
-        seams = CloudSeams()
-        impl = seams.get("audit")
-        with pytest.raises(NotImplementedError):
-            impl.flush(timeout_s=1.0)
+        assert isinstance(impl, LocalAuditLogExporter)
 
     def test_budget_impl_is_real_local_controller_after_step_4(self) -> None:
         """Step 4 swapped the stub out for LocalJobBudgetController."""

@@ -180,39 +180,83 @@ class JobBudgetController(Protocol):
 
 
 # ---------------------------------------------------------------------
-# Step 1 stub implementations
+# Default local implementations (registered by CloudSeams.__init__)
 # ---------------------------------------------------------------------
 
 
-_STEP_1_STUB_MESSAGE = (
-    "Phoenix v1 Phase 10 Step 1 ships the cloud_seams shells only; "
-    "the real default impl lands in a later step. "
-    "Either wait for that step to land or register a custom impl via "
-    "phoenix._internal.cloud_seams.get_seams().register(name, impl)."
-)
+class LocalHttpAuthExtractor:
+    """Default :class:`HttpAuthExtractor` impl (Phase 10 Step 9).
 
+    Wraps :func:`phoenix.identity.bootstrap.extract_or_bootstrap`
+    against the standard ``Authorization: Phoenix-Actor <payload>``
+    header on the request. When no Authorization header is present
+    AND a keystore exists, the bootstrap path mints a default Actor
+    (the v1 dev-mode behavior; tests + dev loops rely on this).
 
-class _Step1AuthStub:
-    """Stub :class:`HttpAuthExtractor` -- raises until Step 9."""
+    Phoenix Cloud's impl replaces this with a tenant-scoped session
+    cookie reader that looks up the bound Actor in the hosting
+    layer's identity store and synthesizes an Actor signed by the
+    tenant's HKDF subkey. Phoenix code (Section 7's safety gate)
+    still HMAC-verifies the returned Actor, so the seam can return
+    SOME Actor but not bypass signature verification (Section
+    10.3.1 safety invariant).
+    """
 
     def extract_actor(self, request: Any) -> "Actor":
-        raise NotImplementedError(
-            f"LocalHttpAuthExtractor: {_STEP_1_STUB_MESSAGE} (Real impl lands in Phase 10 Step 9.)"
-        )
+        from phoenix.identity.bootstrap import extract_or_bootstrap
+
+        # FastAPI's Request exposes headers as a case-insensitive
+        # multidict. Duck-typed to keep the seam Protocol decoupled
+        # from FastAPI specifics.
+        try:
+            headers = request.headers
+        except AttributeError:
+            headers = {}
+        authorization = headers.get("Authorization") or headers.get("authorization")
+        actor, _was_bootstrapped = extract_or_bootstrap(authorization)
+        return actor
 
 
-class _Step1AuditStub:
-    """Stub :class:`AuditLogExporter` -- raises until Step 9."""
+class LocalAuditLogExporter:
+    """Default :class:`AuditLogExporter` impl (Phase 10 Step 9).
+
+    Wraps :func:`phoenix.audit.get_emitter` which already composes the
+    local JSONL writer + (optionally) the OTel sink. ``export`` is
+    fire-and-forget per the Protocol contract; ``flush`` drains
+    pending writes by closing + reopening the emitter (the existing
+    audit subsystem's Section 1 Decision 22 contract).
+
+    Phoenix Cloud's impl additionally writes to a tamper-evident
+    long-term retention store with the SLA-bearing contract.
+    """
 
     def export(self, event: "AuditEvent") -> None:
-        raise NotImplementedError(
-            f"LocalAuditLogExporter: {_STEP_1_STUB_MESSAGE} (Real impl lands in Phase 10 Step 9.)"
-        )
+        from phoenix.audit import get_emitter
+
+        try:
+            get_emitter().emit(event)
+        except Exception:
+            # Fire-and-forget per Protocol: errors go to the internal
+            # error log, never to the caller.
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "LocalAuditLogExporter.export failed for event_type=%r",
+                getattr(event, "event_type", "<unknown>"),
+            )
 
     def flush(self, timeout_s: float) -> bool:
-        raise NotImplementedError(
-            f"LocalAuditLogExporter: {_STEP_1_STUB_MESSAGE} (Real impl lands in Phase 10 Step 9.)"
-        )
+        from phoenix.audit import get_emitter, reset_emitter
+
+        try:
+            # The audit emitter's close() drains pending writes per
+            # the AuditSink.close() contract. We then reset the
+            # singleton so subsequent emits use a fresh writer.
+            get_emitter().close(drain_timeout_seconds=timeout_s)
+            reset_emitter()
+            return True
+        except Exception:
+            return False
 
 
 class LocalJobBudgetController:
@@ -470,8 +514,8 @@ class CloudSeams:
         self._lock = threading.RLock()
         # Phase 10 Step 1 stubs for auth/audit (replaced at Step 9);
         # Step 4 ships the real LocalJobBudgetController for budget.
-        self._impls["auth"] = _Step1AuthStub()
-        self._impls["audit"] = _Step1AuditStub()
+        self._impls["auth"] = LocalHttpAuthExtractor()
+        self._impls["audit"] = LocalAuditLogExporter()
         self._impls["budget"] = LocalJobBudgetController()
 
     def register(self, name: str, impl: Any) -> None:
@@ -516,8 +560,8 @@ class CloudSeams:
         """
         with self._lock:
             self._impls.clear()
-            self._impls["auth"] = _Step1AuthStub()
-            self._impls["audit"] = _Step1AuditStub()
+            self._impls["auth"] = LocalHttpAuthExtractor()
+            self._impls["audit"] = LocalAuditLogExporter()
             self._impls["budget"] = LocalJobBudgetController()
 
 
@@ -552,6 +596,8 @@ __all__ = [
     "CloudSeams",
     "HttpAuthExtractor",
     "JobBudgetController",
+    "LocalAuditLogExporter",
+    "LocalHttpAuthExtractor",
     "LocalJobBudgetController",
     "UnknownSeam",
     "get_seams",
