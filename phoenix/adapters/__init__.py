@@ -26,20 +26,37 @@ from phoenix.adapters.errors import (
     AdapterVersionMismatch,
 )
 from phoenix.adapters.identity_adapter import IdentityAdapter, make_identity_adapter
+from phoenix.adapters.loader import load_adapter
 from phoenix.adapters.protocol import LoRAAdapter
+from phoenix.adapters.registry import (
+    AdapterRecord,
+    AdapterRegistry,
+    ValidationHistoryEntry,
+    get_registry,
+    reset_registry,
+)
 from phoenix.adapters.sandbox import SandboxResult, call_adapter_method, run_in_sandbox
+from phoenix.adapters.validator import run_round_trip_validation, validation_inputs
 
 __all__ = [
     "AdapterAlreadyRegistered",
     "AdapterError",
     "AdapterNotLoaded",
+    "AdapterRecord",
+    "AdapterRegistry",
     "AdapterTimeoutError",
     "AdapterValidationError",
     "AdapterVersionMismatch",
     "IdentityAdapter",
     "LoRAAdapter",
     "SandboxResult",
+    "ValidationHistoryEntry",
     "call_adapter_method",
+    "get_registry",
+    "load_adapter",
     "make_identity_adapter",
+    "reset_registry",
     "run_in_sandbox",
+    "run_round_trip_validation",
+    "validation_inputs",
 ]
