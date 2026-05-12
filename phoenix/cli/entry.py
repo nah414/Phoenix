@@ -36,6 +36,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from phoenix._internal.version import __version__
+from phoenix.cli.commands import admin as admin_cmd
+from phoenix.cli.commands import audit as audit_cmd
+from phoenix.cli.commands import calibration as calibration_cmd
 from phoenix.cli.commands import identity as identity_cmd
 from phoenix.cli.commands import lora as lora_cmd
 from phoenix.cli.commands import providers as providers_cmd
@@ -281,8 +284,22 @@ def _add_providers_group(subparsers: "argparse._SubParsersAction[argparse.Argume
 def _add_audit_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     sp = subparsers.add_parser("audit", help="Audit log commands.")
     inner = sp.add_subparsers(dest="audit_command")
-    inner.add_parser("tail", help="Tail audit events (Step 8).")
-    inner.add_parser("verify", help="Verify ledger chain (Step 8).")
+
+    tail = inner.add_parser("tail", help="GET /v1/audit/events.")
+    tail.add_argument(
+        "--since",
+        type=float,
+        default=None,
+        help="Lower bound (unix timestamp). Default: 0.",
+    )
+    tail.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Max events to return (default 100).",
+    )
+
+    inner.add_parser("verify", help="GET /v1/audit/ledger/verify.")
 
 
 def _add_calibration_group(
@@ -290,24 +307,55 @@ def _add_calibration_group(
 ) -> None:
     sp = subparsers.add_parser("calibration", help="Calibration commands.")
     inner = sp.add_subparsers(dest="calibration_command")
-    inner.add_parser("status", help="Calibration status (Step 8).")
-    inner.add_parser("run", help="Run calibration cycle (Step 8).")
+    inner.add_parser("status", help="GET /v1/admin/calibration/detail.")
+    inner.add_parser("run", help="POST /v1/admin/calibration/run.")
 
 
 def _add_admin_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     sp = subparsers.add_parser("admin", help="Admin commands.")
     inner = sp.add_subparsers(dest="admin_command")
 
-    ks = inner.add_parser("kill-switch", help="Kill switch (Step 8).")
+    ks = inner.add_parser(
+        "kill-switch",
+        help="Engage / release / status the kill switch.",
+    )
     ks_inner = ks.add_subparsers(dest="admin_kill_switch_subcommand")
-    ks_inner.add_parser("engage")
-    ks_inner.add_parser("release")
-    ks_inner.add_parser("status")
 
-    inner.add_parser("health", help="Detailed health (Step 8).")
-    inner.add_parser("governor", help="Governor snapshot (Step 8).")
-    inner.add_parser("budget", help="Budget snapshot (Step 8).")
-    inner.add_parser("override", help="Override task disposition (Step 8).")
+    ks_engage = ks_inner.add_parser("engage", help="Engage the kill switch.")
+    ks_engage.add_argument(
+        "--reason",
+        required=True,
+        help="Operator-supplied reason recorded in the ledger.",
+    )
+
+    ks_release = ks_inner.add_parser("release", help="Release the kill switch.")
+    ks_release.add_argument(
+        "--reason",
+        required=True,
+        help="Operator-supplied reason recorded in the ledger.",
+    )
+
+    ks_inner.add_parser("status", help="GET /v1/admin/kill-switch/status.")
+
+    inner.add_parser("health", help="GET /v1/admin/health/detailed.")
+    inner.add_parser("governor", help="GET /v1/admin/governor.")
+    inner.add_parser("budget", help="GET /v1/admin/budget.")
+
+    override = inner.add_parser(
+        "override",
+        help="POST /v1/admin/tasks-pending-review/{task_id}/override.",
+    )
+    override.add_argument("task_id")
+    override.add_argument(
+        "--disposition",
+        choices=["pass", "fail", "degraded"],
+        required=True,
+    )
+    override.add_argument(
+        "--reason",
+        required=True,
+        help="Operator-supplied reason recorded in the audit log.",
+    )
 
 
 # --------------------------------------------------------------------
@@ -342,6 +390,9 @@ _GROUP_HANDLER_MAPS: dict[str, dict[str, _CommandHandler]] = {
     "lora": lora_cmd.HANDLERS,
     "identity": identity_cmd.HANDLERS,
     "providers": providers_cmd.HANDLERS,
+    "audit": audit_cmd.HANDLERS,
+    "calibration": calibration_cmd.HANDLERS,
+    "admin": admin_cmd.HANDLERS,
 }
 
 
