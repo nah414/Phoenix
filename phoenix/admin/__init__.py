@@ -29,6 +29,7 @@ from phoenix.admin.router import admin_router
 # FastAPI app calls include_router(admin_router) (Phase 8 Step 1).
 from phoenix.admin import adapters_admin as _adapters_admin  # noqa: F401
 from phoenix.admin import audit_replay as _audit_replay  # noqa: F401
+from phoenix.admin import budget_override as _budget_override  # noqa: F401
 from phoenix.admin import calibration as _calibration  # noqa: F401
 from phoenix.admin import health as _health  # noqa: F401
 from phoenix.admin import kill_switch as _kill_switch  # noqa: F401
