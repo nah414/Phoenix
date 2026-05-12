@@ -30,6 +30,7 @@ from phoenix.admin.router import admin_router
 from phoenix.admin import calibration as _calibration  # noqa: F401
 from phoenix.admin import health as _health  # noqa: F401
 from phoenix.admin import kill_switch as _kill_switch  # noqa: F401
+from phoenix.admin import router_inspect as _router_inspect  # noqa: F401
 from phoenix.admin import verification_inspect as _verification_inspect  # noqa: F401
 
 __all__ = [

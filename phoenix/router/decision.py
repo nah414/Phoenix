@@ -43,7 +43,10 @@ Phase 4 ships all seven stages with the Phase 4 scope cuts:
 
 from __future__ import annotations
 
+import collections
 import logging
+import os
+import threading
 from typing import TYPE_CHECKING, Any
 
 from phoenix.router.data_model import (
@@ -74,6 +77,40 @@ if TYPE_CHECKING:
     pass  # all imports above are runtime-resolved
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Step 6 (OPEN-4 LOCKED 2026-05-11): in-process ring buffer of the
+# last N :class:`RoutingDecision` instances for /v1/admin/router/decisions
+# triage. Bounded by ``$PHOENIX_ROUTER_DECISION_LOG_SIZE`` (default 1000).
+# In-memory only; the audit log captures the canonical durable record via
+# Phase 7 ledger entries. Thread-safe via :class:`collections.deque`'s
+# atomic ``append`` + the explicit lock guarding ``snapshot()``.
+
+_DECISION_LOG_SIZE = int(os.environ.get("PHOENIX_ROUTER_DECISION_LOG_SIZE", "1000"))
+_DECISION_LOG: collections.deque[RoutingDecision] = collections.deque(maxlen=_DECISION_LOG_SIZE)
+_DECISION_LOG_LOCK = threading.Lock()
+
+
+def decision_log_snapshot(*, limit: int | None = None) -> list[RoutingDecision]:
+    """Return the most-recent N :class:`RoutingDecision` instances.
+
+    The admin ``/v1/admin/router/decisions`` endpoint reads from here.
+    ``limit=None`` returns the full ring buffer (up to the configured
+    cap). A copy is returned so callers can iterate without holding
+    the lock.
+    """
+    with _DECISION_LOG_LOCK:
+        items = list(_DECISION_LOG)
+    if limit is not None and limit < len(items):
+        return items[-limit:]
+    return items
+
+
+def clear_decision_log() -> None:
+    """Clear the ring buffer. Test-isolation helper."""
+    with _DECISION_LOG_LOCK:
+        _DECISION_LOG.clear()
 
 
 # Stage 6 weights per Section 4.4 (instrument-grade defaults).
@@ -232,12 +269,11 @@ class Router:
         }
         if is_stale:
             log.warning(
-                "Router using pricing data %d days old (>90 day threshold); "
-                "estimates inaccurate.",
+                "Router using pricing data %d days old (>90 day threshold); estimates inaccurate.",
                 days_stale,
             )
 
-        return RoutingDecision(
+        decision = RoutingDecision(
             primary=primary_selection,
             alternates=alternate_selections,
             rationale=rationale,
@@ -246,6 +282,15 @@ class Router:
             estimated_fidelity=primary_estimates[0],
             decision_provenance=decision_provenance,
         )
+        # Phase 8 Step 6 (OPEN-4 LOCKED): record the decision into the
+        # process-lifetime ring buffer for /v1/admin/router/decisions
+        # ops triage. In-memory only; survives daemon lifetime; bounded
+        # by $PHOENIX_ROUTER_DECISION_LOG_SIZE (default 1000). Audit
+        # log already captures routing decisions via Phase 7 ledger
+        # entries (the canonical durable record); the ring buffer is
+        # for "what just happened" without going through SQL.
+        _DECISION_LOG.append(decision)
+        return decision
 
     # ----- Per-stage filter implementations -----
 
