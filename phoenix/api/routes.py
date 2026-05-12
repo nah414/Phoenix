@@ -51,12 +51,18 @@ from phoenix.adapters import (
     get_registry as get_adapter_registry,
     load_adapter,
 )
+from phoenix.admin.auth import require_admin
+from phoenix.admin.errors import AdminPrivilegeRequired
 from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
 from phoenix.audit import AuditEvent, get_emitter
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.ledger import enrollment_to_ledger_entry, get_ledger
+from phoenix.ledger.entry_types import EnrollmentEntry
+from phoenix.safety import permissions as permissions_module
 from phoenix.safety.errors import AuthError, PermissionDenied
+from phoenix.safety.permissions import ActorPermissions
 from phoenix.safety.gate import verify_request
 from phoenix.safety.kill_switch import KillSwitchEngaged, set_store_backend
 from phoenix.safety.rate_limiter import RateLimitExceeded
@@ -1088,6 +1094,167 @@ def delete_adapter(
     except AdapterNotLoaded as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"adapter_id": adapter_id, "unloaded": True}
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 Step 5: POST /v1/identity/enroll
+#
+# Per architecture v1 Section 5.2 + 7.3: admin-only enrollment of a
+# new actor's permissions. Sets ``ActorPermissions`` via the
+# permissions registry and appends an ``EnrollmentEntry`` to the
+# Omega Ledger so the operator's history is on-chain.
+#
+# Idempotent on ``actor_name``: re-enrolling overwrites the permissions
+# in the registry but STILL records a fresh ledger entry. Operator
+# history matters even when the resulting permission set is identical.
+
+import re  # noqa: E402
+
+_ACTOR_NAME_RE = re.compile(r"^[a-z0-9_\-]{1,64}$")
+
+
+class EnrollPermissionsPayload(BaseModel):
+    """Subset of :class:`ActorPermissions` accepted at enrollment.
+
+    All fields are optional; missing fields fall back to the
+    ``ActorPermissions`` dataclass default. The admin can enroll a
+    bare ``{}`` to grant only the defaults (submit/replay tasks at
+    the default rate tier).
+    """
+
+    can_submit_tasks: bool | None = None
+    can_replay_tasks: bool | None = None
+    can_load_adapter: bool | None = None
+    can_unload_adapter: bool | None = None
+    frontier_physics: bool | None = None
+    can_override_human_review: bool | None = None
+    is_admin: bool | None = None
+    rate_limit_tier: str | None = None
+
+
+class EnrollRequest(BaseModel):
+    """JSON body for POST /v1/identity/enroll."""
+
+    actor_name: str = Field(..., min_length=1, max_length=64)
+    permissions: EnrollPermissionsPayload = Field(default_factory=EnrollPermissionsPayload)
+
+
+@app.post("/v1/identity/enroll")
+def enroll_actor(
+    req: EnrollRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Enroll a new actor with the requested permissions.
+
+    Admin-only (``is_admin`` privilege required). Writes the
+    permissions through the registry, appends an
+    :class:`EnrollmentEntry` to the Omega Ledger, and emits a
+    ``api.identity.enroll.success`` audit event.
+
+    Re-enrolling the same ``actor_name`` overwrites the permissions
+    and records a NEW ledger entry (operator history matters).
+
+    Status codes:
+      - 200: enrollment recorded.
+      - 400: invalid ``actor_name`` (must match
+        ``^[a-z0-9_-]{1,64}$``) or invalid ``rate_limit_tier``.
+      - 401/403/429/503: standard safety-gate chain. 403 also when
+        the actor lacks ``is_admin``.
+    """
+    request_id: str = request.state.request_id
+
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+
+    try:
+        verify_request(
+            actor,
+            action_key="identity_enroll",
+            request_id=request_id,
+        )
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except (AuthError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    # Enrollment is high-trust -- require is_admin BEYOND the
+    # standard safety gate.
+    try:
+        require_admin(actor)
+    except AdminPrivilegeRequired as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if not _ACTOR_NAME_RE.match(req.actor_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"invalid actor_name {req.actor_name!r}; must match ^[a-z0-9_-]{{1,64}}$"),
+        )
+
+    # Compose ActorPermissions from the dict (None fields fall back
+    # to dataclass defaults).
+    perm_kwargs = {k: v for k, v in req.permissions.model_dump().items() if v is not None}
+    try:
+        permissions = ActorPermissions(**perm_kwargs)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid permissions payload: {exc}",
+        ) from exc
+
+    registry = permissions_module.get_registry()
+    try:
+        registry.set(req.actor_name, permissions)
+    except ValueError as exc:
+        # rate_limit_tier validation
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    enrollment = EnrollmentEntry(
+        enrolled_actor_name=req.actor_name,
+        enrolled_by=actor.name,
+        permissions={
+            "can_submit_tasks": permissions.can_submit_tasks,
+            "can_replay_tasks": permissions.can_replay_tasks,
+            "can_load_adapter": permissions.can_load_adapter,
+            "can_unload_adapter": permissions.can_unload_adapter,
+            "frontier_physics": permissions.frontier_physics,
+            "can_override_human_review": permissions.can_override_human_review,
+            "is_admin": permissions.is_admin,
+            "rate_limit_tier": permissions.rate_limit_tier,
+        },
+        identity_fingerprint="",  # keystore enrolls separately on first auth
+    )
+    ledger_entry = enrollment_to_ledger_entry(enrollment)
+    link = get_ledger().append_entry(ledger_entry)
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.identity.enroll.success",
+        actor_id=actor.name,
+        parameters={
+            "enrolled_actor_name": req.actor_name,
+            "enrolled_by": actor.name,
+            "ledger_entry_hash": link.entry_hash,
+        },
+        request_id=request_id,
+    )
+
+    return {
+        "enrolled_actor_name": req.actor_name,
+        "enrolled_by": actor.name,
+        "permissions": enrollment.permissions,
+        "ledger_entry_hash": link.entry_hash,
+    }
 
 
 @app.websocket("/v1/ws/tasks/{task_id}/stream")
