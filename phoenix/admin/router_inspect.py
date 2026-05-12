@@ -33,9 +33,11 @@ from typing import Any
 
 from fastapi import Header, HTTPException, Request
 
+from pydantic import BaseModel, Field
+
 from phoenix.admin.audit_decorator import emit_admin_audit
 from phoenix.admin.auth import require_admin
-from phoenix.admin.errors import AdminPrivilegeRequired
+from phoenix.admin.errors import AdminPrivilegeRequired, QuarantineDurationExceeded
 from phoenix.admin.router import admin_router
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
 from phoenix.safety.errors import AuthError, PermissionDenied
@@ -267,7 +269,210 @@ def provider_health_history(
     return payload
 
 
+# ---------------------------------------------------------------------------
+# POST /v1/admin/providers/{provider_id}/manual-quarantine
+# POST /v1/admin/providers/{provider_id}/manual-restore
+#
+# Per architecture v1 Section 8.2 + locked OPEN-5 (2026-05-11): manual
+# provider state is operational, not audit-grade. Both endpoints emit
+# top-priority audit events (so /v1/admin/providers/health-history
+# surfaces them) but do NOT append to the Omega Ledger -- the ledger
+# is reserved for the two architecture-listed mutations (kill switch +
+# HUMAN_REVIEW override) per Section 8.4's explicit mutation surface.
+
+# Per architecture spec: 24-hour policy cap on manual quarantine. ops
+# wanting a longer window can re-quarantine when this expires; reducing
+# the cap prevents "forgot a provider was quarantined for a week" mistakes.
+_QUARANTINE_DURATION_CAP_SECONDS = 86400
+
+
+class QuarantineBody(BaseModel):
+    """Body for POST /v1/admin/providers/{provider_id}/manual-quarantine.
+
+    Fields:
+      - ``duration_seconds`` (int, default 3600=1h): how long the
+        provider stays DEGRADED. Capped at 86400 (24h).
+      - ``reason`` (str, audit-only): operator rationale.
+    """
+
+    duration_seconds: int = Field(default=3600, ge=1)
+    reason: str = Field(default="", max_length=4096)
+
+
+class RestoreBody(BaseModel):
+    """Body for POST /v1/admin/providers/{provider_id}/manual-restore."""
+
+    reason: str = Field(default="", max_length=4096)
+
+
+def _provider_registry() -> Any:
+    """Get the live module-level provider registry.
+
+    Phoenix's pipeline keeps a singleton router (and therefore a singleton
+    provider registry) lazily built on first solve. The admin endpoints
+    must mutate THAT registry, not a fresh one, so changes are visible
+    to subsequent /v1/tasks requests.
+    """
+    from phoenix.trinity.pipeline import _get_router
+
+    return _get_router().registry
+
+
+@admin_router.post("/providers/{provider_id}/manual-quarantine")
+def manual_quarantine_provider(
+    provider_id: str,
+    body: QuarantineBody,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Mark a provider DEGRADED for a specified duration.
+
+    Per architecture §8.2: "Useful when ops has out-of-band knowledge
+    (IBM Quantum announced maintenance) that telemetry hasn't caught
+    up to."
+
+    Effects:
+      1. Calls registry.mark_degraded(provider_id) with a
+         degraded_until timestamp.
+      2. Emits provider.health.manual_quarantine audit event so the
+         /v1/admin/providers/health-history endpoint surfaces it.
+
+    Status codes:
+      - 200: quarantined; response carries new state + auto-restore time.
+      - 400 QuarantineDurationExceeded: duration > 86400 seconds.
+      - 401/403/429/503: standard admin chain.
+      - 404: provider_id not in registry.
+    """
+    request_id: str = request.state.request_id
+    actor = _admin_authn(
+        request,
+        authorization,
+        event_prefix="admin.providers.manual_quarantine",
+        action_key="admin.mutate",
+    )
+
+    if body.duration_seconds > _QUARANTINE_DURATION_CAP_SECONDS:
+        exc = QuarantineDurationExceeded(
+            requested_seconds=body.duration_seconds,
+            cap_seconds=_QUARANTINE_DURATION_CAP_SECONDS,
+        )
+        emit_admin_audit(
+            actor=actor,
+            event_type="admin.providers.manual_quarantine.error.duration_exceeded",
+            parameters={
+                "provider_id": provider_id,
+                "requested_seconds": body.duration_seconds,
+                "cap_seconds": _QUARANTINE_DURATION_CAP_SECONDS,
+            },
+            request_id=request_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    registry = _provider_registry()
+    # Compute the degraded_until ISO-8601 timestamp.
+    from datetime import datetime, timedelta, timezone
+
+    degraded_until = datetime.now(timezone.utc) + timedelta(seconds=body.duration_seconds)
+    degraded_until_utc = degraded_until.isoformat()
+
+    try:
+        registry.mark_degraded(provider_id, degraded_until_utc=degraded_until_utc)
+    except KeyError as exc:
+        emit_admin_audit(
+            actor=actor,
+            event_type="admin.providers.manual_quarantine.error.not_found",
+            parameters={"provider_id": provider_id},
+            request_id=request_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider {provider_id!r} not registered.",
+        ) from exc
+
+    # Top-priority audit so /providers/health-history surfaces it.
+    emit_admin_audit(
+        actor=actor,
+        event_type="provider.health.manual_quarantine",
+        parameters={
+            "provider_id": provider_id,
+            "duration_seconds": body.duration_seconds,
+            "degraded_until_utc": degraded_until_utc,
+            "reason": body.reason,
+        },
+        request_id=request_id,
+    )
+
+    return {
+        "provider_id": provider_id,
+        "health": "degraded",
+        "degraded_until_utc": degraded_until_utc,
+        "duration_seconds": body.duration_seconds,
+        "quarantined_by": actor.name,
+        "reason": body.reason,
+    }
+
+
+@admin_router.post("/providers/{provider_id}/manual-restore")
+def manual_restore_provider(
+    provider_id: str,
+    body: RestoreBody,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Lift a manual quarantine; restore the provider to HEALTHY.
+
+    Mirror image of manual_quarantine_provider. Emits a
+    provider.health.manual_restore audit event.
+
+    Status codes:
+      - 200: restored.
+      - 401/403/429/503: standard admin chain.
+      - 404: provider_id not in registry.
+    """
+    request_id: str = request.state.request_id
+    actor = _admin_authn(
+        request,
+        authorization,
+        event_prefix="admin.providers.manual_restore",
+        action_key="admin.mutate",
+    )
+
+    registry = _provider_registry()
+    try:
+        registry.mark_healthy(provider_id)
+    except KeyError as exc:
+        emit_admin_audit(
+            actor=actor,
+            event_type="admin.providers.manual_restore.error.not_found",
+            parameters={"provider_id": provider_id},
+            request_id=request_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider {provider_id!r} not registered.",
+        ) from exc
+
+    emit_admin_audit(
+        actor=actor,
+        event_type="provider.health.manual_restore",
+        parameters={
+            "provider_id": provider_id,
+            "reason": body.reason,
+        },
+        request_id=request_id,
+    )
+
+    return {
+        "provider_id": provider_id,
+        "health": "healthy",
+        "restored_by": actor.name,
+        "reason": body.reason,
+    }
+
+
 __all__ = [
+    "manual_quarantine_provider",
+    "manual_restore_provider",
     "provider_health_history",
     "router_decisions",
 ]

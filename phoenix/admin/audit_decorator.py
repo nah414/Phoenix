@@ -91,14 +91,16 @@ def emit_admin_audit(
         if isinstance(name, str) and name:
             actor_name = name
 
+    now = time.time()
+    params_copy = dict(parameters)
     try:
         get_emitter().emit(
             AuditEvent(
-                timestamp_unix=time.time(),
+                timestamp_unix=now,
                 actor_id=actor_name,
                 layer="admin",
                 event_type=event_type,
-                parameters=dict(parameters),
+                parameters=params_copy,
                 result_hash=result_hash,
                 request_id=request_id,
             )
@@ -108,6 +110,31 @@ def emit_admin_audit(
             "Admin audit emit failed for event_type=%r request_id=%r",
             event_type,
             request_id,
+        )
+    # Phase 8 mirror to state_backend.audit_events so the admin
+    # history endpoints (/v1/admin/audit/replay,
+    # /v1/admin/providers/health-history, /v1/admin/calibration/history)
+    # surface admin actions. Without this, admin emits go only to
+    # JSONL and the SQL-queryable audit log is silent on admin
+    # activity. Best-effort: a state-backend failure here must not
+    # propagate (Phase 7 §7.1 fire-and-forget contract).
+    try:
+        from phoenix.state import get_state_backend
+
+        get_state_backend().append_audit_event(
+            {
+                "timestamp_unix": now,
+                "actor_id": actor_name,
+                "layer": "admin",
+                "event_type": event_type,
+                "parameters": params_copy,
+                "result_hash": result_hash,
+            }
+        )
+    except Exception:
+        _log.exception(
+            "Admin audit mirror to state_backend failed for event_type=%r",
+            event_type,
         )
 
 
