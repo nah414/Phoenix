@@ -94,16 +94,16 @@ class TestBuildStrictModeQhoFixture:
         assert isinstance(fixture, FixtureSolve)
         assert fixture.task_id.startswith("req_")
 
-    def test_result_hash_is_sha256_format(self, isolated_runtime: Path) -> None:
-        """The replay engine compares against the SHA-256 stored as
-        ``sha256:<hex>``. The fixture's recorded hash matches that
-        format so the Step 7 comparison is apples-to-apples.
+    def test_omega_ledger_entry_id_populated(self, isolated_runtime: Path) -> None:
+        """The fixture captures the ledger entry's UUID for the solve.
+        The replay engine fetches the original ``result_hash`` from
+        the entry internally; the fixture only needs the ID to wire
+        the replay call (POST /v1/tasks/{id}/replay).
         """
         fixture = build_strict_mode_qho_fixture(isolated_runtime)
-        # Phase 7 ledger uses raw SHA-256 hex (not sha256: prefix). Just
-        # confirm it's a populated hex-like string.
-        assert len(fixture.result_hash) >= 16
-        assert fixture.result_hash != ""
+        # UUID4-shaped: 36 chars with hyphens
+        assert len(fixture.omega_ledger_entry_id) == 36
+        assert fixture.omega_ledger_entry_id.count("-") == 4
 
     def test_solve_timestamp_recent(self, isolated_runtime: Path) -> None:
         """``solve_unix_timestamp`` records when the fixture was built;

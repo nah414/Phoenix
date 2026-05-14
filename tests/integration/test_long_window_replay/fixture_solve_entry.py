@@ -60,9 +60,13 @@ class FixtureSolve:
       - ``result_value`` / ``error_bar`` / ``sigma``: pinned numeric
         outputs from the deterministic solve.
       - ``agreement_type``: the gate's classification of the solve.
-      - ``result_hash``: the canonical SHA-256 the replay engine
-        will recompute and compare. Comes from the actual solve
-        result (via ``provenance.omega_ledger_entry_id``).
+      - ``omega_ledger_entry_id``: UUID of the ledger entry (from
+        ``Result.provenance.omega_ledger_entry_id``). NOT the same
+        as ``result_hash`` -- the result_hash is the SHA-256 over
+        the canonical-JSON Result payload, computed internally by
+        the replay engine. The fixture doesn't need to capture
+        result_hash because the replay engine fetches the
+        original's hash from the ledger entry on every replay call.
       - ``solve_unix_timestamp``: wall-clock at fixture build time.
         The long-window test advances the clock past this by
         180+ days.
@@ -73,7 +77,7 @@ class FixtureSolve:
     error_bar: float
     sigma: float
     agreement_type: str
-    result_hash: str
+    omega_ledger_entry_id: str
     solve_unix_timestamp: float
 
 
@@ -113,8 +117,10 @@ def build_strict_mode_qho_fixture(runtime: Path) -> FixtureSolve:
         assert resp.status_code == 200, f"fixture solve failed: {resp.text}"
         body = resp.json()
         task_id = body["task_id"]
-        result_hash = body.get("provenance", {}).get("omega_ledger_entry_id")
-        assert result_hash is not None, f"fixture solve missing omega_ledger_entry_id; got: {body}"
+        ledger_entry_id = body.get("provenance", {}).get("omega_ledger_entry_id")
+        assert (
+            ledger_entry_id is not None
+        ), f"fixture solve missing omega_ledger_entry_id; got: {body}"
 
     return FixtureSolve(
         task_id=task_id,
@@ -122,7 +128,7 @@ def build_strict_mode_qho_fixture(runtime: Path) -> FixtureSolve:
         error_bar=float(body["error_bar"]),
         sigma=float(body["sigma"]),
         agreement_type=str(body["agreement_type"]),
-        result_hash=str(result_hash),
+        omega_ledger_entry_id=str(ledger_entry_id),
         solve_unix_timestamp=solve_unix,
     )
 
