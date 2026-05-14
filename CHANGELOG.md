@@ -15,6 +15,88 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev12] — 2026-05-14
+
+Phase 11 closes v1: compositional acceptance tests + per-directory READMEs.
+
+### Section 10.7 acceptance battery (`@pytest.mark.acceptance`)
+
+Five canonical tests now green under `pytest -m acceptance`:
+
+- **Three panic-mode isolation tests** (Steps 2-4): each fail-closed
+  branch exercised in isolation. NATS subsystem unreachable, state
+  backend unreachable, drift detector unreachable -- each surfaces
+  the typed `QueueUnavailable` / `StateBackendUnavailable` /
+  `DriftStateUnavailable` exception cleanly through `pipeline.solve`
+  and the front door without partial-state corruption.
+- **Combined three-failure panic test** (Step 5): all three
+  subsystems simultaneously down. Phoenix refuses-to-start cleanly
+  with the kill-switch posture rather than silently degrading. The
+  load-bearing acceptance contract from Section 7.6.
+- **Long-window bit-exact replay test** (Steps 6-7): hand-built
+  `SolveEntry` fixture played back through `pipeline.replay` after
+  monkey-patched system clock advances 180 days; the replayed
+  `Result.value` matches the recorded value bit-exactly. The
+  acceptance contract for Section 1 Decision 15's hashchained ledger
+  surviving real time drift.
+
+### Typed-error audit + panic-mode harness scaffolding (Step 1)
+
+Inventoried every fail-closed boundary in Phoenix per OPEN-7 LOCKED:
+created missing typed exceptions (`QueueUnavailable`,
+`StateBackendUnavailable`) where prior phases relied on generic
+`Exception`. The panic-mode test harness at `tests/acceptance/`
+exercises each boundary via dependency injection (no global monkey-
+patching beyond the clock helper).
+
+### Per-directory READMEs (Steps 8-9)
+
+OPEN-4 LOCKED ("rich-for-top, minimal-for-leaves") audit + fill:
+
+- Every directory under `phoenix/` and `vendor/` has a README.
+- Top-level `phoenix/README.md` ships the request-flow ASCII trace
+  from `POST /v1/tasks` down through audit + ledger; links to each
+  subsystem's README.
+- Top-level `vendor/README.md` already documented the vendoring
+  contract (Section 10.2 + 11.7.1); per-vendored-package READMEs
+  filled for `actor/`, `ml/`, `omega/`, `synthesis/`, and
+  `synthesis/quantum/`.
+- Repo-root `README.md` rolling ship line bumped to "All v1 phases
+  shipped 2026-05-06 → 2026-05-14".
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev11` ->
+  `1.0.0.dev12`.
+- `_DEFAULT_PHOENIX_RELEASE` constants in `sqlite_backend.py`,
+  `postgres_backend.py`, and the drift detector's `phoenix_release`
+  default kwarg all bumped in lockstep so newly-initialized state
+  backends + freshly-spawned drift detectors stamp the right
+  release.
+- Test version assertions updated: `tests/unit/test_smoke.py`,
+  `tests/integration/test_health.py`,
+  `tests/integration/test_adapters_step6.py`.
+
+### Out of scope for Phase 11 (locked at draft time)
+
+- Distribution / packaging beyond `pip install phoenix-middleware`
+  (PyInstaller binaries, container images, system-package descriptors)
+  -- OPEN-5 LOCKED deferral to Phase 12.
+- Repo-root README status-table backfill for Phases 6b-10. Phase 11's
+  acceptance contract is the ship-line + Phase 11 row; the per-phase
+  rows accumulated docs debt while Phase 6b-10 shipped which v1.1 can
+  close.
+
+### Refs
+
+- `PHOENIX_ARCHITECTURE_v1.md` Section 7.6 (fail-closed posture),
+  Section 10.7 (acceptance criteria), Section 1 Decision 15 (ledger
+  replay).
+- `BUILDGUIDE_phoenix_v1_phase11_acceptance_composition.md` (all 10
+  steps + 7 OPEN items locked at draft).
+
+---
+
 ## [1.0.0.dev11] — 2026-05-13
 
 Phase 10 shipped — **cost-ceiling enforcement + Phoenix Cloud

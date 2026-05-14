@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev11"
-description = "Production-grade quantum-accuracy middleware (Phase 10 -- Cost-ceiling + Phoenix Cloud seams)"
+version = "1.0.0.dev12"
+description = "Production-grade quantum-accuracy middleware (Phase 11 -- v1 acceptance)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
