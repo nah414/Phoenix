@@ -1,0 +1,77 @@
+# Phoenix v1 sdist manifest -- Phase 12 Step 3.
+#
+# MANIFEST.in shapes what `python -m build --sdist` includes in the
+# source distribution beyond the packages.find discovery. Wheels use
+# packages.find + package-data from pyproject.toml; sdists need this
+# explicit manifest because they ship the whole repo by default
+# (minus .gitignore + setuptools defaults).
+#
+# Per Section 10.4, vendor/ is frozen at distribution-build time --
+# the sdist must carry the same vendored substrate that the wheel
+# was built against. vendor_sync.py never runs at install/runtime.
+
+# Root-level docs that ship with every sdist
+include LICENSE
+include README.md
+include CHANGELOG.md
+include PHOENIX_ARCHITECTURE_v1.md
+include pyproject.toml
+
+# Vendor tree -- shipped wholesale so the wheel-build step (or anyone
+# rebuilding from the sdist) reproduces the same vendored substrate.
+# The vendor/ packages are discovered by setuptools.packages.find;
+# this graft makes sure the README files, manifests, and any non-Python
+# data files also travel.
+graft vendor
+
+# Vendor includes its own README per directory (Section 11.7.1).
+# Make sure those READMEs ship.
+recursive-include vendor README.md
+recursive-include vendor *.md
+recursive-include vendor *.yaml
+recursive-include vendor *.yml
+recursive-include vendor *.json
+recursive-include vendor *.txt
+
+# phoenix/ READMEs ship inside the wheel via package-data already;
+# this is a belt-and-suspenders rule for the sdist so the per-section
+# READMEs travel even if package-data resolution changes.
+recursive-include phoenix README.md
+recursive-include phoenix *.md
+recursive-include phoenix *.yaml
+recursive-include phoenix *.yml
+
+# Exclude development infrastructure that has no place in a release
+# artifact. Tests + evals are kept in-repo (the contributor-facing
+# discipline lives there) but don't ship to end users.
+prune tests
+prune evals
+prune docs
+prune scripts
+prune .github
+prune .claude
+prune .venv
+prune .venv-*
+prune build
+prune dist
+prune dist-*
+prune .pytest_cache
+prune .ruff_cache
+prune .mypy_cache
+prune .vscode
+prune .idea
+prune *.egg-info
+
+# Defensive excludes -- catch the long tail of editor / OS / build artifacts.
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude Thumbs.db
+global-exclude *.swp
+global-exclude *.swo
+global-exclude *~
+global-exclude .env
+global-exclude .env.*
+global-exclude *.log

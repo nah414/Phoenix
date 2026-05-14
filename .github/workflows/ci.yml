@@ -1,0 +1,182 @@
+# Phoenix v1 CI -- Phase 12 Step 7.
+#
+# Runs on every push to main + every pull request. Per Section 1
+# Decision 30, CI tests all three release artifacts (pip wheel,
+# Docker image, Nuitka standalone binary) before release. This
+# workflow focuses on the always-on test surface; the release.yml
+# workflow handles the tag-triggered artifact publish.
+#
+# Matrix: ubuntu-latest + windows-latest x python 3.11/3.12/3.13.
+# macOS deferred to v1.1 per Phase 12 locked scope.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (ruff + mypy + shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev deps
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy strict
+        run: mypy phoenix
+      - name: shellcheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/launch.sh scripts/launch_with_nats.sh
+
+  tests:
+    name: tests (py${{ matrix.python }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install Phoenix + extras
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev,postgres,nats,otel,mcp]"
+      - name: pytest -- unit + integration
+        run: pytest tests/unit tests/integration -v --tb=short
+      - name: pytest -- acceptance (Section 10.7)
+        # Marker filter pulls the Section 10.7 acceptance battery out
+        # of tests/integration/test_panic_mode/ + test_long_window_replay/.
+        run: pytest tests/ -v -m acceptance --tb=short
+
+  build-wheel:
+    name: build wheel + sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build
+        run: pip install --upgrade pip build
+      - name: Build wheel + sdist
+        run: python -m build
+      - name: "Smoke: wheel installs in a clean venv and imports phoenix + vendor"
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install --upgrade pip
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/python -c "
+          import phoenix, synthesis.equations.base, wobble.disagreement_types, actor, omega, ml, grammar
+          assert phoenix.__version__.startswith('1.0.0')
+          print('wheel smoke OK:', phoenix.__version__)
+          "
+          /tmp/venv/bin/phoenix --version
+      - name: Upload wheel + sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-wheel-sdist
+          path: dist/*
+          retention-days: 7
+
+  build-docker:
+    name: build Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t phoenix:ci .
+      - name: "Smoke: container reports healthy within 60s"
+        run: |
+          docker run -d --rm --name phoenix-ci -p 8003:8003 phoenix:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8003/v1/health >/dev/null 2>&1; then
+              echo "container healthy after ${i}*2s"
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8003/v1/health
+          docker stop phoenix-ci
+      - name: Image size sanity (under 300 MB)
+        run: |
+          size_bytes=$(docker image inspect phoenix:ci --format='{{.Size}}')
+          size_mb=$((size_bytes / 1024 / 1024))
+          echo "image size: ${size_mb} MB"
+          if [ "$size_mb" -gt 300 ]; then
+            echo "ERROR: image size ${size_mb} MB > 300 MB target" >&2
+            exit 1
+          fi
+
+  build-standalone:
+    name: build Nuitka standalone (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Phoenix + nuitka
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]" "nuitka>=2.0,<3.0"
+      - name: Build standalone binary
+        run: python scripts/build_standalone.py
+      - name: "Smoke: --version"
+        shell: bash
+        run: |
+          # Find the produced binary (platform-dependent name + extension).
+          binary=$(ls dist/phoenix-* | grep -v '.dist' | head -1)
+          echo "running: $binary --version"
+          "$binary" --version
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phoenix-standalone-${{ matrix.os }}
+          path: |
+            dist/phoenix-*
+            !dist/*.whl
+            !dist/*.tar.gz
+          retention-days: 7
+          if-no-files-found: error

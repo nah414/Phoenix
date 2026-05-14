@@ -366,7 +366,7 @@ def test_health_command_e2e(
 
     import httpx as httpx_mod
 
-    fake_response_body = {"status": "ok", "phoenix_version": "1.0.0.dev12"}
+    fake_response_body = {"status": "ok", "phoenix_version": "1.0.0rc1"}
 
     def _handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/health"
@@ -391,7 +391,7 @@ def test_health_command_e2e(
     )
     out = capsys.readouterr().out
     assert rc == 0, f"CLI rc={rc}; out={out!r}"
-    assert "1.0.0.dev12" in out  # rendered version from mocked body
+    assert "1.0.0rc1" in out  # rendered version from mocked body
     assert "status" in out.lower()
 
 

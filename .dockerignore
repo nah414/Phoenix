@@ -1,0 +1,61 @@
+# Phoenix v1 docker ignore -- Phase 12 Step 4.
+#
+# Without this, the build context (everything sent to the Docker daemon
+# when `docker build .` runs) bloats to gigabytes from vendor/'s test
+# fixtures, the dev .venv, pytest caches, etc. We want the context to
+# be just the source tree + pyproject.toml + MANIFEST.in.
+
+# Version control
+.git
+.gitignore
+
+# Dev environments
+.venv
+.venv-*
+.env
+.env.*
+
+# Editor / IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Build artifacts
+build
+dist
+dist-*
+*.egg-info
+
+# Tests + evals (the wheel build inside Docker only needs the source
+# packages, not the test surface)
+tests
+evals
+
+# Docs (the architecture spec + per-section docs are large; the wheel
+# carries the per-section READMEs already via package-data)
+docs
+
+# CI + agent infra (not needed inside the container)
+.github
+.claude
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Docker itself (would cause recursion)
+Dockerfile
+.dockerignore
