@@ -206,7 +206,9 @@ def test_admin_health_endpoint_with_state_backend_down(
 
     from phoenix.api.routes import app
 
-    with TestClient(app) as client:
+    # raise_server_exceptions=False so an uncaught typed error
+    # materializes as 5xx rather than re-raising into the test.
+    with TestClient(app, raise_server_exceptions=False) as client:
         with kill_state_backend():
             resp = client.get("/v1/admin/health/detailed")
 
