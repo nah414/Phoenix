@@ -5,11 +5,39 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "phoenix-middleware"
 version = "1.0.0.dev12"
-description = "Production-grade quantum-accuracy middleware (Phase 11 -- v1 acceptance)"
+description = "Production-grade quantum-accuracy middleware (Phase 12 -- distribution + release artifacts)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
 requires-python = ">=3.11,<3.14"
+keywords = [
+    "quantum",
+    "verification",
+    "middleware",
+    "agents",
+    "physics",
+    "density-matrix",
+    "reproducibility",
+]
+# Phase 12 Step 1 -- PyPI classifiers per
+# https://pypi.org/classifiers/. These shape PyPI search results
+# and signal the project's maturity / audience / OS-support /
+# license to anyone browsing the index.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
 dependencies = [
     "fastapi>=0.115,<0.120",
     "uvicorn[standard]>=0.27,<0.35",
@@ -82,13 +110,49 @@ mcp = [
     "mcp>=1.0,<2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/nah414/Phoenix"
+Repository = "https://github.com/nah414/Phoenix"
+Changelog = "https://github.com/nah414/Phoenix/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/nah414/Phoenix/blob/main/PHOENIX_ARCHITECTURE_v1.md"
+Issues = "https://github.com/nah414/Phoenix/issues"
+
 [project.scripts]
 phoenix = "phoenix.cli.entry:main"
 
+# Phase 12 Step 1 -- vendor/ also discovered as a second package-root.
+# Per Section 11.7.1, vendored modules retain their upstream import
+# paths (synthesis.equations.base, not phoenix.vendor.synthesis.*).
+# In editable mode (`pip install -e .`), phoenix/__init__.py injects
+# <repo>/vendor into sys.path and those names resolve from there.
+# In wheel mode, vendor/ doesn't exist next to phoenix in site-packages,
+# so we make setuptools install the vendored packages as siblings of
+# phoenix. The result: `pip install phoenix-middleware` puts
+# site-packages/{synthesis, wobble, grammar, actor, omega, ml}/ at the
+# top level, and the upstream-shaped imports keep working. `namespaces =
+# true` is required because actor/ and synthesis/ are PEP 420 implicit
+# namespace packages (no __init__.py at their root).
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["phoenix*"]
-exclude = ["vendor*", "tests*", "evals*", "scripts*", "docs*"]
+where = [".", "vendor"]
+include = [
+    "phoenix*",
+    "synthesis*",
+    "wobble*",
+    "grammar*",
+    "actor*",
+    "omega*",
+    "ml*",
+]
+exclude = ["tests*", "evals*", "scripts*", "docs*", "vendor*"]
+namespaces = true
+
+# Phase 12 Step 1 -- ship the per-section README files inside the
+# wheel so `pip install phoenix-middleware` users can introspect the
+# subsystem docs. The architecture spec stays out of the wheel (it's
+# a 2700-line doc; users who need it read it from the repo); only
+# the package-internal READMEs travel with the install.
+[tool.setuptools.package-data]
+phoenix = ["README.md", "**/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "evals"]
