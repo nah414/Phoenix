@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0.dev9"
-description = "Production-grade quantum-accuracy middleware (Phase 8 -- Admin dev-ops backdoor)"
+version = "1.0.0.dev12"
+description = "Production-grade quantum-accuracy middleware (Phase 11 -- v1 acceptance)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
@@ -23,13 +23,17 @@ dependencies = [
     # disk/RSS). GPU/VRAM/NPU/thermal fields land later when the cloud-GPU
     # adapter ships in Phase 9+.
     "psutil>=5.9,<8.0",
+    # Phase 9 Step 6 -- CLI HTTP client. Locked OPEN-5 (2026-05-12):
+    # httpx (not requests + urllib3) so the CLI shares the same client
+    # surface FastAPI's TestClient is built on. Moves from dev-only
+    # to main deps when the CLI lands as a first-class surface.
+    "httpx>=0.27,<0.29",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-asyncio>=0.23,<0.25",
-    "httpx>=0.27,<0.29",
     "ruff>=0.3,<0.10",
     "mypy>=1.8,<2.0",
     "pre-commit>=3.6,<4.0",
@@ -68,6 +72,15 @@ otel = [
     "opentelemetry-sdk>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
 ]
+# Phase 9 Step 9 -- MCP server for Claude Code / Cursor / Cline / etc.
+# Opt-in: the CLI works without MCP; only `phoenix mcp serve`
+# requires this extra. Install via:
+#     pip install phoenix-middleware[mcp]
+# Locked OPEN-3 (2026-05-12): stdio transport only in Phase 9.
+# Locked OPEN-4 (2026-05-12): official Anthropic `mcp` SDK.
+mcp = [
+    "mcp>=1.0,<2.0",
+]
 
 [project.scripts]
 phoenix = "phoenix.cli.entry:main"
@@ -81,6 +94,10 @@ exclude = ["vendor*", "tests*", "evals*", "scripts*", "docs*"]
 testpaths = ["tests", "evals"]
 python_files = ["test_*.py", "eval_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "smoke: minimal sanity checks runnable in <5s (pre-commit gate).",
+    "acceptance: v1 acceptance gate per architecture v1 Section 10.7 -- compositional fail-closed test + long-window replay test.",
+]
 
 [tool.ruff]
 line-length = 100

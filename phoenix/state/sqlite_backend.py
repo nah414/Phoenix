@@ -34,7 +34,7 @@ from typing import Any
 
 from phoenix.state.migrations import runner
 
-_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev9"
+_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev12"
 
 
 def _default_db_path() -> Path:
@@ -84,9 +84,21 @@ class SQLiteStateBackend:
                 self._conn = None
 
     def _require_conn(self) -> sqlite3.Connection:
-        """Return the active connection or raise if the backend was closed."""
+        """Return the active connection or raise if the backend was closed.
+
+        Phase 11 Step 1 (Section 10.7 fail-closed contract): raises
+        :class:`StateBackendUnavailable` rather than the prior
+        generic :class:`RuntimeError`. Callers (admin endpoints,
+        ledger writer, audit sink, kill switch) can now pattern-
+        match on the typed error and fail-closed deterministically.
+        """
         if self._conn is None:
-            raise RuntimeError("SQLiteStateBackend has been closed; construct a new instance")
+            from phoenix.state.errors import StateBackendUnavailable
+
+            raise StateBackendUnavailable(
+                "SQLiteStateBackend has been closed; construct a new instance",
+                backend_kind="sqlite",
+            )
         return self._conn
 
     # --- Phase 6a: kill switch ---
@@ -183,6 +195,147 @@ class SQLiteStateBackend:
                     record.get("completed_at_unix"),
                 ),
             )
+
+    # --- Phase 10: cost-ledger 24h-window queries + budget overrides ---
+
+    def record_solve_cost(
+        self,
+        *,
+        request_id: str,
+        actor_name: str,
+        org_id: str | None,
+        timestamp_unix: float,
+        actual_cost_usd: float,
+        reproducibility_mode: str,
+        provenance_json: str = "{}",
+    ) -> None:
+        with self._lock:
+            self._require_conn().execute(
+                """INSERT INTO solve_cost_ledger
+                       (solve_id, actor_id, cost_usd_estimate,
+                        cost_usd_actual, provider, submitted_at_unix,
+                        completed_at_unix, org_id, reproducibility_mode,
+                        provenance_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(solve_id) DO UPDATE SET
+                       actor_id = excluded.actor_id,
+                       cost_usd_actual = excluded.cost_usd_actual,
+                       submitted_at_unix = excluded.submitted_at_unix,
+                       org_id = excluded.org_id,
+                       reproducibility_mode = excluded.reproducibility_mode,
+                       provenance_json = excluded.provenance_json""",
+                (
+                    request_id,
+                    actor_name,
+                    0.0,  # cost_usd_estimate -- not used by Phase 10 writer
+                    actual_cost_usd,
+                    "",  # provider -- captured in provenance_json
+                    timestamp_unix,
+                    timestamp_unix,  # completed_at_unix == submitted_at for post-solve writes
+                    org_id,
+                    reproducibility_mode,
+                    provenance_json,
+                ),
+            )
+
+    def query_actor_24h_spend(
+        self,
+        actor_name: str,
+        *,
+        as_of_unix: float,
+    ) -> float:
+        floor = as_of_unix - 86400.0
+        with self._lock:
+            cur = self._require_conn().execute(
+                """SELECT COALESCE(SUM(cost_usd_actual), 0.0)
+                   FROM solve_cost_ledger
+                   WHERE actor_id = ?
+                     AND submitted_at_unix >= ?
+                     AND submitted_at_unix <= ?""",
+                (actor_name, floor, as_of_unix),
+            )
+            row = cur.fetchone()
+        return float(row[0] or 0.0)
+
+    def query_org_24h_spend(
+        self,
+        org_id: str,
+        *,
+        as_of_unix: float,
+    ) -> float:
+        floor = as_of_unix - 86400.0
+        with self._lock:
+            cur = self._require_conn().execute(
+                """SELECT COALESCE(SUM(cost_usd_actual), 0.0)
+                   FROM solve_cost_ledger
+                   WHERE org_id = ?
+                     AND submitted_at_unix >= ?
+                     AND submitted_at_unix <= ?""",
+                (org_id, floor, as_of_unix),
+            )
+            row = cur.fetchone()
+        return float(row[0] or 0.0)
+
+    def insert_budget_override(
+        self,
+        *,
+        actor_name: str,
+        scope: str,
+        new_ceiling_usd: float,
+        expires_at_unix: float,
+        created_by: str,
+        rationale: str | None = None,
+    ) -> int:
+        with self._lock:
+            cur = self._require_conn().execute(
+                """INSERT INTO budget_overrides
+                       (actor_name, scope, new_ceiling_usd,
+                        expires_at_unix, created_by, created_at_unix,
+                        rationale)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    actor_name,
+                    scope,
+                    new_ceiling_usd,
+                    expires_at_unix,
+                    created_by,
+                    time.time(),
+                    rationale,
+                ),
+            )
+            override_id = cur.lastrowid
+        return int(override_id or 0)
+
+    def list_active_budget_overrides(
+        self,
+        actor_name: str,
+        *,
+        as_of_unix: float,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            cur = self._require_conn().execute(
+                """SELECT override_id, scope, new_ceiling_usd,
+                          expires_at_unix, created_by, created_at_unix,
+                          rationale
+                   FROM budget_overrides
+                   WHERE actor_name = ?
+                     AND expires_at_unix > ?
+                   ORDER BY created_at_unix ASC""",
+                (actor_name, as_of_unix),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "override_id": row[0],
+                "scope": row[1],
+                "new_ceiling_usd": row[2],
+                "expires_at_unix": row[3],
+                "created_by": row[4],
+                "created_at_unix": row[5],
+                "rationale": row[6],
+            }
+            for row in rows
+        ]
 
     # --- Phase 6b: audit events ---
 

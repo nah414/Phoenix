@@ -15,6 +15,430 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0.dev12] — 2026-05-14
+
+Phase 11 closes v1: compositional acceptance tests + per-directory READMEs.
+
+### Section 10.7 acceptance battery (`@pytest.mark.acceptance`)
+
+Five canonical tests now green under `pytest -m acceptance`:
+
+- **Three panic-mode isolation tests** (Steps 2-4): each fail-closed
+  branch exercised in isolation. NATS subsystem unreachable, state
+  backend unreachable, drift detector unreachable -- each surfaces
+  the typed `QueueUnavailable` / `StateBackendUnavailable` /
+  `DriftStateUnavailable` exception cleanly through `pipeline.solve`
+  and the front door without partial-state corruption.
+- **Combined three-failure panic test** (Step 5): all three
+  subsystems simultaneously down. Phoenix refuses-to-start cleanly
+  with the kill-switch posture rather than silently degrading. The
+  load-bearing acceptance contract from Section 7.6.
+- **Long-window bit-exact replay test** (Steps 6-7): hand-built
+  `SolveEntry` fixture played back through `pipeline.replay` after
+  monkey-patched system clock advances 180 days; the replayed
+  `Result.value` matches the recorded value bit-exactly. The
+  acceptance contract for Section 1 Decision 15's hashchained ledger
+  surviving real time drift.
+
+### Typed-error audit + panic-mode harness scaffolding (Step 1)
+
+Inventoried every fail-closed boundary in Phoenix per OPEN-7 LOCKED:
+created missing typed exceptions (`QueueUnavailable`,
+`StateBackendUnavailable`) where prior phases relied on generic
+`Exception`. The panic-mode test harness at `tests/acceptance/`
+exercises each boundary via dependency injection (no global monkey-
+patching beyond the clock helper).
+
+### Per-directory READMEs (Steps 8-9)
+
+OPEN-4 LOCKED ("rich-for-top, minimal-for-leaves") audit + fill:
+
+- Every directory under `phoenix/` and `vendor/` has a README.
+- Top-level `phoenix/README.md` ships the request-flow ASCII trace
+  from `POST /v1/tasks` down through audit + ledger; links to each
+  subsystem's README.
+- Top-level `vendor/README.md` already documented the vendoring
+  contract (Section 10.2 + 11.7.1); per-vendored-package READMEs
+  filled for `actor/`, `ml/`, `omega/`, `synthesis/`, and
+  `synthesis/quantum/`.
+- Repo-root `README.md` rolling ship line bumped to "All v1 phases
+  shipped 2026-05-06 → 2026-05-14".
+
+### Version + manifest
+
+- `pyproject.toml`, `phoenix/_internal/version.py`: `1.0.0.dev11` ->
+  `1.0.0.dev12`.
+- `_DEFAULT_PHOENIX_RELEASE` constants in `sqlite_backend.py`,
+  `postgres_backend.py`, and the drift detector's `phoenix_release`
+  default kwarg all bumped in lockstep so newly-initialized state
+  backends + freshly-spawned drift detectors stamp the right
+  release.
+- Test version assertions updated: `tests/unit/test_smoke.py`,
+  `tests/integration/test_health.py`,
+  `tests/integration/test_adapters_step6.py`.
+
+### Out of scope for Phase 11 (locked at draft time)
+
+- Distribution / packaging beyond `pip install phoenix-middleware`
+  (PyInstaller binaries, container images, system-package descriptors)
+  -- OPEN-5 LOCKED deferral to Phase 12.
+- Repo-root README status-table backfill for Phases 6b-10. Phase 11's
+  acceptance contract is the ship-line + Phase 11 row; the per-phase
+  rows accumulated docs debt while Phase 6b-10 shipped which v1.1 can
+  close.
+
+### Refs
+
+- `PHOENIX_ARCHITECTURE_v1.md` Section 7.6 (fail-closed posture),
+  Section 10.7 (acceptance criteria), Section 1 Decision 15 (ledger
+  replay).
+- `BUILDGUIDE_phoenix_v1_phase11_acceptance_composition.md` (all 10
+  steps + 7 OPEN items locked at draft).
+
+---
+
+## [1.0.0.dev11] — 2026-05-13
+
+Phase 10 shipped — **cost-ceiling enforcement + Phoenix Cloud
+abstraction seams** per architecture v1 Section 4.7 + 10.3.1. Two
+tightly-coupled architectural pieces close the biggest remaining
+gap in v1's §10.7 acceptance criteria.
+
+1. **Cost-ceiling enforcement (§4.7).** Phase 4 shipped the
+   `cost_ceiling_usd` field + `CostCeilingExceeded` error + Stage 2
+   per-solve filter. Phase 10 adds the 24h-window accumulators
+   (per-actor + per-org), the post-solve accounting writer, the
+   verification gate's pre-promotion check with
+   `budget_bound_skipped_axis` provenance, and the
+   `POST /v1/admin/budget/override` admin endpoint.
+
+2. **Phoenix Cloud abstraction seams (§10.3.1).** Three thin
+   `typing.Protocol` definitions (`HttpAuthExtractor`,
+   `AuditLogExporter`, `JobBudgetController`) plus a generic
+   `CloudSeams` name-keyed registry plus local default
+   implementations. The default `LocalJobBudgetController` IS the
+   v1 cost-ceiling engine — Phoenix Cloud (a future product) swaps
+   in tenant-aware impls via one `register("budget", ...)` call
+   with zero changes to Phoenix core.
+
+The two pieces compose because Phase 10's cost-ceiling code lives
+**behind the seam from day one**, not retrofitted later.
+
+### Locked scope decisions (2026-05-13)
+
+The six open items surfaced during BUILDGUIDE authoring were
+locked at draft time with autonomous-execution defaults (per
+Adam's 2026-05-13 direction: "keep building for a while before we
+create a PR"). Recorded back into the BUILDGUIDE; summarized here:
+
+1. **OPEN-1 LOCKED**: new migration file
+   `phase10_cost_ledger.py` (not extending Phase 6b's initial) so
+   replay against a Phase-6b-era backend stays unambiguous.
+2. **OPEN-2 LOCKED**: `record_solve_cost` is last-write-wins
+   on `request_id` via `INSERT ... ON CONFLICT DO UPDATE`. Single
+   writer (Orchestrate post-solve); duplicate writes only on
+   retry, where last write IS the authoritative outcome.
+3. **OPEN-3 LOCKED**: `budget_bound_skipped_axis` lives on
+   `VerificationProvenance` (verification-gate decision, not
+   routing-layer). Mixing it onto `RoutingProvenance` would muddy
+   the layer boundary.
+4. **OPEN-4 LOCKED**: admin override scope = three explicit
+   canonical values (`per_solve` / `per_actor_24h` /
+   `per_org_24h`). An admin override at the per-org level is
+   qualitatively different from a per-actor one; the audit log
+   needs to distinguish them.
+5. **OPEN-5 LOCKED**: org_id resolution = `actor.org_id` if
+   present, else `None`. Solo developers (no org_id) get no
+   per-org enforcement; Phoenix Cloud will populate org_id on
+   the Actor payload and exercise the per-org path.
+6. **OPEN-6 LOCKED**: new `BudgetOverrideEntry` ledger kind
+   (distinct from Phase 8's `OverrideByOperatorEntry` for
+   HUMAN_REVIEW solve disposition). Sharing a kind would obscure
+   the audit story.
+
+### What landed (commits efd4a9f → 9b6b706 → 0722784 → e8a35c3 → d723751 → c9e49fa → ecaec90 → b672620 → 3e58957 → 1eae092 → this commit, 11 commits)
+
+- **BUILDGUIDE drafted + locked (`efd4a9f`).** Six open items
+  surfaced and resolved at draft time.
+- **Step 1 (`9b6b706`) — cloud_seams Protocol shells + registry.**
+  Three `typing.Protocol` definitions, `BudgetDecision` frozen
+  dataclass, generic `CloudSeams` name-keyed registry (not
+  hardcoded three slots), `UnknownSeam(KeyError)`, module-level
+  singleton via `get_seams()` / `reset_seams()`. Step 1 stubs
+  registered for all three names; replaced at Steps 4 + 9.
+- **Step 2 (`0722784`) — solve_cost_ledger 24h-window + budget_overrides.**
+  New migration `phase10_cost_ledger.py` (VERSION 3) extends the
+  Phase 6b `solve_cost_ledger` with `org_id` / `reproducibility_mode` /
+  `provenance_json` columns and creates the `budget_overrides`
+  table. Four new `StateBackend` methods:
+  `record_solve_cost` (idempotent on request_id),
+  `query_actor_24h_spend` / `query_org_24h_spend`,
+  `insert_budget_override` / `list_active_budget_overrides`.
+- **Step 3 (`e8a35c3`) — cost-ceiling defaults + resolver.**
+  `phoenix/safety/cost_ceilings.py` implements the §4.7 default
+  ladder (per-solve $5/$25/$50, per-actor $50/$500/None,
+  per-org $2000) plus env-var overrides (`$PHOENIX_PER_SOLVE_CEILING_USD`
+  etc.) with invalid-value tolerance.
+- **Step 4 (`d723751`) — LocalJobBudgetController default impl.**
+  Composes cost_ceilings.resolve_ceilings + state-backend 24h-window
+  queries + admin-override list. Stateless; every call resolves
+  fresh. `_apply_override` helper enforces §4.7's "override only
+  raises" rule via `max(base, override)`.
+- **Step 5 (`c9e49fa`) — Router Stage 2 consults the seam.**
+  When `task.actor` is set, Router calls
+  `cloud_seams.get("budget").check_solve_budget` before per-
+  candidate filtering. Seam denial → `CostCeilingExceeded` with
+  rationale embedded; seam allowance → effective ceiling =
+  min(user, seam). Backward compat: `task.actor=None` skips the
+  seam (existing fixtures + tier-1 stay green). Defense-in-depth:
+  buggy seam doesn't take down the Router.
+- **Step 6 (`ecaec90`) — post-solve accounting hook.**
+  `pipeline._record_post_solve_cost` runs after every solve;
+  computes actual cost via `router.pricing.estimate_cost_usd` and
+  calls `seam.record_solve_cost`. Fire-and-forget: any exception
+  swallowed + logged. Skipped when `task.actor=None` or no
+  orchestrate provenance.
+- **Step 7 (`b672620`) — verification gate pre-promotion check.**
+  `_axis_3_would_exceed_ceiling` helper estimates the second
+  routing request's cost; if `primary_cost + cheapest_alt > per_solve_ceiling`,
+  Axis 3 is skipped, `budget_bound=True`,
+  `budget_bound_skipped_axis="cross_provider_axis"`. The user
+  still gets their primary-only Result with a clear marker.
+- **Step 8 (`3e58957`) — POST /v1/admin/budget/override.**
+  New `BudgetOverrideEntry` ledger kind (locked OPEN-6).
+  Validates: scope in canonical set, `expires_at > now`,
+  `new_ceiling_usd > 0` (override only raises per §4.7).
+  Appends ledger entry + writes state-backend row + emits
+  `admin.budget.override.success` audit. Non-admin gets 403
+  before the registry write.
+- **Step 9 (`1eae092`) — LocalHttpAuthExtractor + LocalAuditLogExporter +
+  acceptance test.** Real auth/audit seam impls replace the Step 1
+  stubs. `tests/integration/test_cloud_seams.py` is the §10.3.1
+  acceptance test: 5 tests proving (1) synthesized Actor flows
+  through safety gate, (2) audit events fan out to BOTH default
+  JSONL + mock cloud sink, (3) tenant-scoped budget denial
+  surfaces as CostCeilingExceeded with no tenant-state leak,
+  (4) extension discipline accepts `canonical_library` without
+  breaking core, (5) v1 defaults satisfy all three Protocols.
+- **Step 10 (this commit) — Version bump + CHANGELOG.** Bumps
+  `1.0.0.dev10 → 1.0.0.dev11` in pyproject + version.py + the
+  three `_DEFAULT_PHOENIX_RELEASE` call sites + drift detector
+  default + test version assertions.
+
+### Test coverage
+
+Phase 10 adds 99 tests bringing the suite from 636 (after Phase 9)
+to 735 passing + 39 skipped. New test files:
+
+- `test_cloud_seams_step1.py` (19) — Protocol shells + registry
+  + singleton lifecycle.
+- `test_cost_ledger_step2.py` (15) — record + query round trip,
+  last-write-wins, 24h-window semantics, budget-override CRUD.
+- `test_cost_ceilings_step3.py` (19) — Section 4.7 default
+  ladder, unknown-mode/tier fallbacks, env-var overrides,
+  invalid-value tolerance.
+- `test_local_budget_controller_step4.py` (20) — happy path,
+  per-solve / per-actor-24h / per-org-24h denials, admin tier,
+  override only-raises, expired-override invisible.
+- `test_router_budget_seam_step5.py` (5) — backward compat,
+  per-actor / per-org denials surface via Router, seam-narrows-
+  ceiling, buggy seam fault tolerance.
+- `test_post_solve_accounting_step6.py` (6) — hook records via
+  seam, skips when actor=None or no provenance, buggy seam
+  swallowed, e2e through pipeline.solve.
+- `test_gate_budget_check_step7.py` (6) — VerificationProvenance
+  field + `_axis_3_would_exceed_ceiling` predicate edges.
+- `test_admin_budget_override_step8.py` (11) — happy path,
+  state-backend row, ledger entry, validation (422 + 400),
+  non-admin 403, e2e override-raises-ceiling.
+- `test_cloud_seams.py` (5) — §10.3.1 acceptance: 3 seam compose
+  tests + extension discipline + Protocol satisfaction regression.
+
+### Limitations explicitly documented
+
+- **Compositional fail-closed test ("panic mode")**: §10.7
+  acceptance item; not yet shipped. Phase 11 target.
+- **Long-window replay test**: §10.7 acceptance item; not yet
+  shipped. Phase 11 target.
+- **Distribution artifacts** (pip wheel, Docker image, Nuitka
+  binary): release-time work; v1 release candidate.
+- **Per-directory READMEs**: §10.7 acceptance item; Phase 11
+  docs pass.
+- **`phoenix admin pricing-update` CLI**: §11.2.2 disposition
+  defers to v1.x. Phase 10 surfaces stale pricing via the
+  Result envelope's existing soft-warn path.
+
+---
+
+## [1.0.0.dev10] — 2026-05-12
+
+Phase 9 shipped — **LoRA adapter hot-swap interface + CLI + MCP**
+per architecture v1 Section 2.7 + 3.5 + 5.4 + 5.5. Three new
+surfaces land on top of the Phase 8 substrate:
+
+1. **LoRA adapter subsystem** — Protocol + reference identity
+   adapter + subprocess sandbox + in-process registry + inference-
+   time round-trip validator + loader. POST/GET/DELETE
+   `/v1/adapters` is the public surface; `POST /v1/admin/adapters/
+   {id}/force-revalidate` and `GET .../round-trip-history` are the
+   admin surfaces (Phase 8 Step 9's 501 stub is now a real
+   handler).
+2. **`phoenix` CLI** — `pyproject.toml`'s console-script entry
+   wires up. Eight command groups: `task`, `lora`, `identity`,
+   `providers` (Step 7) and `audit`, `calibration`, `admin`
+   (Step 8), plus `health` (Step 6 smoke) and `mcp serve`
+   (Step 9). httpx is now a main dependency.
+3. **MCP server** — `phoenix mcp serve` boots an MCP (Model
+   Context Protocol) server on stdio per Section 5.5 +
+   locked OPEN-3 + OPEN-4. Eight canonical task-lifecycle tools
+   bridge IDE-integrated clients (Claude Code, Cursor, Cline)
+   into the Phoenix REST surface.
+
+Plus a new `POST /v1/identity/enroll` endpoint (admin-only) that
+writes ActorPermissions through the registry and appends an
+EnrollmentEntry to the Omega Ledger.
+
+### Locked scope decisions (2026-05-12)
+
+The six open items surfaced during BUILDGUIDE authoring were
+locked on 2026-05-12 after Adam reviewed recommendations. Recorded
+back into the BUILDGUIDE; summarized here:
+
+1. **OPEN-1 LOCKED: Reference adapter = identity adapter shipped
+   as built-in.** `phoenix/adapters/identity_adapter.py` is a
+   weights-free echo adapter usable by tests AND by client
+   integrators as a starting template.
+2. **OPEN-2 LOCKED: Sandbox isolation = subprocess + timeout +
+   restricted env + per-call tempdir.** Middle ground; catches the
+   80% case (runaway adapters that loop forever) without claiming
+   OS-level ACL guarantees Phoenix v1 can't deliver portably.
+3. **OPEN-3 LOCKED: MCP transport = stdio only in Phase 9.**
+   Covers Claude Code + Cursor + Cline. HTTP+SSE deferred to v1.x.
+4. **OPEN-4 LOCKED: MCP SDK = official Anthropic `mcp` SDK.**
+   Stable, well-supported. `pyproject.toml` adds `[mcp]` optional
+   extra.
+5. **OPEN-5 LOCKED: CLI HTTP client = httpx.** Matches FastAPI's
+   TestClient internals so the CLI shares one client surface with
+   tests. Moved from dev-only to main deps.
+6. **OPEN-6 LOCKED: MCP tools = 8 canonical task-lifecycle tools.**
+   `phoenix_task_submit / get / replay`, `phoenix_provenance_get`,
+   `phoenix_providers_list`, `phoenix_calibration_status`,
+   `phoenix_health`, `phoenix_audit_verify`. Adapter / kill-switch
+   / enroll deferred to v1.x.
+
+### What landed (commits 4c1c265 → b3b8d9a → f800f8a → this commit, 12 commits)
+
+- **BUILDGUIDE drafted (`4c1c265`) + locked (`b3b8d9a`).** Six
+  open items surfaced and resolved at session start.
+- **Step 1 (`f800f8a`) — LoRA Protocol + sandbox + identity adapter +
+  errors.** `phoenix/adapters/protocol.py` (@runtime_checkable
+  Protocol), `sandbox.py` (medium-isolation subprocess sandbox
+  with timeout + restricted env + tempdir per locked OPEN-2),
+  `identity_adapter.py` (reference echo adapter with constant
+  SHA-256 fingerprint per OPEN-1), `errors.py` (5 typed errors
+  mapping to HTTP 503/504/412/404/409).
+- **Step 2 (`1bb9ace`) — Adapter loader + validator + in-process
+  registry.** Thread-safe (RLock) `AdapterRegistry` singleton +
+  per-adapter `ValidationHistoryEntry` ring buffer (cap 50).
+  `run_round_trip_validation` drives 5 canonical inputs (ASCII,
+  whitespace, unicode); always returns an entry (loader checks
+  `passed` and raises). `load_adapter(spec)` is the
+  spec→import→validate→register chokepoint; file-path specs
+  raise NotImplementedError (v1.x).
+- **Step 3 (`cdf3476`) — REST adapter endpoints.** POST/GET/
+  DELETE `/v1/adapters` wired through the 9-stage safety gate.
+  POST/DELETE require `can_load_adapter` / `can_unload_adapter`;
+  GET is open. AdapterError family maps to HTTP per Section 2.7.
+- **Step 4 (`26fbd79`) — Force-revalidate filler + round-trip-
+  history.** Phase 8 501 stub becomes a real handler that drives
+  the validator + appends to history. `GET /v1/admin/adapters/
+  {id}/round-trip-history` returns the per-adapter ring snapshot.
+  Auth chain runs BEFORE registry lookup (prevents "adapter
+  exists" leakage via HTTP code).
+- **Step 5 (`64a5531`) — `POST /v1/identity/enroll`.** Admin-only
+  enrollment of new actor permissions. Writes through the
+  permissions registry, appends an `EnrollmentEntry` to the Omega
+  Ledger (operator history matters; idempotent on actor_name
+  always appends a fresh ledger entry). Cost: `identity_enroll`
+  (5 tokens). Validates actor_name regex + rate_limit_tier.
+- **Step 6 (`d0ce87f`) — CLI scaffold.** `phoenix/cli/
+  config_loader.py` (YAML + env-var overrides, ConfigError on
+  malformed), `output_formats.py` (json / text / table / auto
+  with TTY detection), `http_client.py` (httpx wrapper with
+  actor signing + CLIHTTPError mapping), `entry.py` (argparse
+  dispatcher with global flags + group-based subcommand routing).
+  `phoenix health` is the Step-6 end-to-end smoke command.
+- **Step 7 (`1515457`) — CLI task / lora / identity / providers
+  groups.** `phoenix/cli/commands/_shared.py` (spec parsing,
+  payload printing, per-user task cache helpers), plus four
+  command modules. `task submit` caches the Result envelope so
+  `task get` surfaces it offline (Phase 9 v1 has no daemon GET
+  endpoint). `identity enroll --permission key=value` with
+  boolean coercion. `providers list` routes to
+  `/v1/admin/providers/health-history` (the only public read
+  surface for the provider registry in v1).
+- **Step 8 (`5f6bdb8`) — CLI audit / calibration / admin
+  groups.** `audit tail / verify`, `calibration status / run`,
+  `admin kill-switch engage|release|status`, `admin health /
+  governor / budget`, `admin override <task-id>
+  --disposition --reason`. Argparse enforces `--reason` and
+  `--disposition` BEFORE dispatch.
+- **Step 9 (`00fcad4`) — MCP server + 8 v1 tools.** FastMCP wiring
+  (`phoenix/mcp/server.py`) + pure-function tool implementations
+  (`tools.py`) registered with typed signatures FastMCP can
+  introspect. `phoenix mcp serve` boots stdio transport. The
+  `mcp` SDK is an optional `[mcp]` extra so installs without
+  IDE integration stay lean. CLIHTTPError translated to an
+  in-payload `{error, status_code, body}` blob.
+- **Step 10 (this commit) — Version bump + CHANGELOG.** Bumps
+  `1.0.0.dev9 → 1.0.0.dev10` in pyproject + version.py + the
+  three `_DEFAULT_PHOENIX_RELEASE` call sites + drift detector
+  default + test version assertions.
+
+### Test coverage
+
+Phase 9 adds 162 tests bringing the suite from 521 (after Phase 8)
+to 636 passing + 39 skipped. New test files:
+
+- `test_adapters_step1.py` (22) — Protocol shape, identity
+  round-trip, sandbox timeout / env / tempdir, error family.
+- `test_adapters_step2.py` (31) — Registry CRUD, history ring,
+  thread-safety, validator pass/fail, loader spec resolution.
+- `test_adapters_step3.py` (17) — REST adapter endpoints (POST/
+  GET/DELETE), error paths, permission gating, OpenAPI shape.
+- `test_admin_adapters.py` (12, rewritten) — force-revalidate
+  happy + broken paths, history, permission gating before
+  lookup, OpenAPI advertising.
+- `test_adapters_step5.py` (16) — Enrollment endpoint happy +
+  idempotency + ledger EnrollmentEntry shape + permission gate
+  + validation + audit emit.
+- `test_adapters_step6.py` (33) — Config loader edges, output
+  formats, http_client wiring, main dispatcher exit codes.
+- `test_adapters_step7.py` (19) — task / lora / identity /
+  providers groups against the in-process FastAPI app.
+- `test_adapters_step8.py` (10) — audit / calibration / admin
+  groups + kill-switch round trip + argparse required flags.
+- `test_adapters_step9.py` (13) — 8 tool implementations,
+  FastMCP wiring, end-to-end `call_tool('phoenix_health')`.
+
+### Limitations explicitly documented
+
+- **Real LoRA weights**: not shipped. Phase 9 ships the
+  capability (Protocol + sandbox + validator + REST + admin);
+  users bring their own weights per Decision 8.
+- **WebSocket streaming in the CLI**: `phoenix task stream`
+  prints the `ws://...` URL + token-mint hint rather than
+  embedding a WS client (httpx doesn't ship sync WS support).
+- **File-path adapter specs**: 501 from the REST surface + a
+  clear NotImplementedError from the loader. v1.x can layer
+  filesystem-discovery on top of the existing spec format
+  without breaking the contract.
+- **MCP HTTP+SSE transport**: deferred to v1.x per OPEN-3.
+  Phase 9 ships stdio only — covers Claude Code / Cursor /
+  Cline (the 80% case).
+
+---
+
 ## [1.0.0.dev9] — 2026-05-12
 
 Phase 8 shipped — the **admin dev-ops backdoor** under `/v1/admin/...`

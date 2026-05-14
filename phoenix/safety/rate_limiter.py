@@ -58,6 +58,7 @@ _COST_CATALOGUE: dict[str, int] = {
     "tasks_submit_r5": 25,
     "tasks_replay": 50,
     "adapters_post": 10,
+    "identity_enroll": 5,  # Phase 9 Step 5: admin-only, high-trust mutation
     "ws_token": 1,
     # Phase 8: admin endpoints. Read calls are 1 (matches tasks_get);
     # mutation calls (kill switch, quarantine/restore, override,

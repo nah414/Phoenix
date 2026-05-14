@@ -170,11 +170,16 @@ async def test_setup_streams_tolerates_existing_stream(
 async def test_publish_submit_requires_setup_streams(
     fake_nc: _FakeNATSClient,
 ) -> None:
-    """publish_submit before setup_streams raises a clear RuntimeError."""
+    """publish_submit before setup_streams raises a clear typed error.
+
+    Phase 11 Step 1: was RuntimeError pre-Phase-11; now QueueUnavailable
+    per the Section 10.7 fail-closed contract.
+    """
+    from phoenix.queue.errors import QueueUnavailable
     from phoenix.queue.task_queue import TaskQueue
 
     tq = TaskQueue(fake_nc)  # type: ignore[arg-type]
-    with pytest.raises(RuntimeError, match="setup_streams"):
+    with pytest.raises(QueueUnavailable, match="setup_streams"):
         await tq.publish_submit("batch_realtime", b"payload")
 
 

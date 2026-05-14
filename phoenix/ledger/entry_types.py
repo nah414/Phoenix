@@ -209,6 +209,37 @@ class KillSwitchEntry:
 
 
 @dataclass(frozen=True)
+class BudgetOverrideEntry:
+    """Payload schema for Section 4.7 admin-issued budget overrides
+    (Phase 10 Step 8).
+
+    Per locked OPEN-6 (Phase 10): a separate ledger kind from
+    :class:`OverrideByOperatorEntry`. The latter records HUMAN_REVIEW
+    solve disposition overrides; this one records cost-ceiling
+    bumps. Sharing a kind would obscure the audit story.
+
+    Fields:
+
+    - ``granted_actor_name`` -- the actor whose ceiling is raised.
+    - ``granted_by`` -- admin actor that issued the override.
+    - ``scope`` -- one of ``per_solve`` | ``per_actor_24h`` |
+      ``per_org_24h`` (Section 4.7 three canonical ceiling scopes).
+    - ``new_ceiling_usd`` -- the raised ceiling (Section 4.7:
+      overrides only RAISE, never lower).
+    - ``expires_at_unix`` -- the override stops applying at this
+      wall-clock time.
+    - ``rationale`` -- optional free-form note recorded for audit.
+    """
+
+    granted_actor_name: str
+    granted_by: str
+    scope: str
+    new_ceiling_usd: float
+    expires_at_unix: float
+    rationale: str | None = None
+
+
+@dataclass(frozen=True)
 class EnrollmentEntry:
     """Payload schema for Section 7.3's new-actor enrollment events.
 
@@ -305,6 +336,25 @@ def kill_switch_to_ledger_entry(
     )
 
 
+def budget_override_to_ledger_entry(
+    override: BudgetOverrideEntry,
+    *,
+    timestamp_unix: float | None = None,
+) -> LedgerEntry:
+    """Convert a :class:`BudgetOverrideEntry` to a :class:`LedgerEntry`.
+
+    The admin who issued the override (``granted_by``) is the ledger
+    entry's actor_id -- audit responsibility tracks the operator who
+    bumped the ceiling, not the actor whose ceiling was bumped.
+    """
+    return _new_ledger_entry(
+        entry_kind="budget_override",
+        actor_id=override.granted_by,
+        payload_dict=asdict(override),
+        timestamp_unix=timestamp_unix,
+    )
+
+
 def enrollment_to_ledger_entry(
     enrollment: EnrollmentEntry,
     *,
@@ -324,11 +374,13 @@ def enrollment_to_ledger_entry(
 
 
 __all__ = [
+    "BudgetOverrideEntry",
     "EnrollmentEntry",
     "KillSwitchEntry",
     "LedgerEntry",
     "OverrideByOperatorEntry",
     "SolveEntry",
+    "budget_override_to_ledger_entry",
     "enrollment_to_ledger_entry",
     "kill_switch_to_ledger_entry",
     "override_to_ledger_entry",

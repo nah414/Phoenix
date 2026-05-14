@@ -200,8 +200,11 @@ class NATSEventBroker:
         ImportError: ``nats-py`` is not installed. The message names
             the ``[nats]`` extra so the caller has a clear recovery
             step.
-        TimeoutError: NATS connection does not establish within
-            ``connect_timeout_seconds``.
+        QueueUnavailable: NATS connection does not establish within
+            ``connect_timeout_seconds``, OR the connect coroutine
+            raised (network unreachable, auth failure, etc.). Phase 11
+            Step 2 (§10.7 fail-closed contract) wraps the inner
+            driver error as ``__cause__``.
     """
 
     def __init__(
@@ -242,12 +245,26 @@ class NATSEventBroker:
         self._thread.start()
 
         if not self._ready_event.wait(timeout=connect_timeout_seconds):
-            raise TimeoutError(
+            from phoenix.queue.errors import QueueUnavailable
+
+            raise QueueUnavailable(
                 f"NATSEventBroker did not connect to {self._url!r} "
-                f"within {connect_timeout_seconds}s"
+                f"within {connect_timeout_seconds}s",
+                subject=None,
             )
         if self._error is not None:
-            raise self._error
+            # Phase 11 Step 2: wrap the inner driver error so callers
+            # see a typed QueueUnavailable rather than nats-py's
+            # internal exception types leaking through. The original
+            # error is chained as __cause__.
+            from phoenix.queue.errors import QueueUnavailable
+
+            inner = self._error
+            self._error = None  # don't re-raise on subsequent reads
+            raise QueueUnavailable(
+                f"NATSEventBroker connect to {self._url!r} failed: {inner}",
+                subject=None,
+            ) from inner
 
     # ----- loop / connect lifecycle -----
 

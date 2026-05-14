@@ -341,6 +341,35 @@ class VerificationGate:
             RungDepth.R5_REPLICATED,
         ) and CrossProviderAxis().applies_to(task)
         axis_3_result: AxisResult | None = None
+        budget_bound_skipped_axis: str | None = None
+
+        # Phase 10 Step 7: pre-promotion budget check (Section 4.7
+        # enforcement point 2). When the rung would trigger Axis 3,
+        # estimate the additional cost of the second routing request.
+        # If the cumulative solve cost would exceed the per-solve
+        # ceiling, skip Axis 3 and classify as DEGRADED_BUDGET_BOUND.
+        # The user still gets their primary-only result with a clear
+        # ``budget_bound_skipped_axis`` marker on the provenance.
+        if run_axis_3 and self._axis_3_would_exceed_ceiling(
+            task, primary_decision, primary_orch_prov
+        ):
+            run_axis_3 = False
+            budget_bound = True
+            budget_bound_skipped_axis = "cross_provider_axis"
+            log.info(
+                "Axis 3 skipped: per-solve ceiling would be exceeded (request_id=%r, mode=%r)",
+                task.request_id,
+                task.tolerance.reproducibility_mode,
+            )
+            _emit_verification_audit(
+                task,
+                "verification.gate.axis_3_budget_skipped",
+                {
+                    "primary_provider_id": primary_decision.primary.provider_id,
+                    "reproducibility_mode": task.tolerance.reproducibility_mode,
+                },
+            )
+
         if run_axis_3:
             try:
                 alt_request = RoutingRequest(
@@ -443,6 +472,7 @@ class VerificationGate:
             distance_matrix=distance_matrix,
             wobble_score_sigma=sigma,
             budget_bound=budget_bound,
+            budget_bound_skipped_axis=budget_bound_skipped_axis,
             phase="phase_5_verification_gate",
         )
 
@@ -584,6 +614,67 @@ class VerificationGate:
         except ValueError:
             repro_mode = ReproducibilityMode.DEFAULT
         return RoutingRequest(task=task, reproducibility_mode=repro_mode)
+
+    def _axis_3_would_exceed_ceiling(
+        self,
+        task: PhysicsTask,
+        primary_decision: Any,
+        primary_orch_prov: Any,
+    ) -> bool:
+        """Phase 10 Step 7: pre-promotion check for Axis 3 cost.
+
+        Returns True iff (primary actual cost + alt provider estimated
+        cost) would exceed the per-solve ceiling resolved from the
+        task's reproducibility mode. False otherwise (proceed with
+        Axis 3 as usual).
+
+        The alt provider estimate uses the cheapest available
+        non-primary provider via the existing pricing model;
+        :func:`phoenix.router.pricing.estimate_cost_usd` returns 0.0
+        for unknown providers, which conservatively underestimates
+        rather than overestimates (we err toward running Axis 3
+        when the data is fuzzy).
+
+        Any failure in the cost-lookup path falls back to ``False``
+        (proceed with Axis 3) -- the budget pre-check is an additive
+        guarantee, not the safety floor. Cost-ceiling enforcement
+        also fires post-solve via :func:`pipeline._record_post_solve_cost`,
+        so a missed pre-check costs at most one extra Axis 3 run.
+        """
+        try:
+            from phoenix.router.pricing import estimate_cost_usd, load_pricing
+            from phoenix.safety.cost_ceilings import resolve_ceilings
+
+            mode = task.tolerance.reproducibility_mode
+            triple = resolve_ceilings(
+                reproducibility_mode=mode,
+                actor_tier="default",  # tier doesn't affect per-solve ceiling
+            )
+            per_solve_ceiling = triple.per_solve_usd
+
+            primary_cost = estimate_cost_usd(primary_orch_prov.provider_id)
+
+            # Cheapest alt: pick the lowest non-primary entry in the
+            # pricing table. v1's small provider set means a flat scan
+            # is fine; future phases can index by quantum_technology.
+            pricing = load_pricing()
+            providers = pricing.get("providers", {})
+            primary_id = primary_orch_prov.provider_id
+            alt_costs = [
+                float(entry.get("estimate_per_solve_usd", 0.0))
+                for pid, entry in providers.items()
+                if pid != primary_id
+            ]
+            cheapest_alt_cost = min(alt_costs) if alt_costs else 0.0
+
+            return (primary_cost + cheapest_alt_cost) > per_solve_ceiling
+        except Exception:
+            log.exception(
+                "axis-3 budget pre-check failed for request_id=%r; "
+                "proceeding with Axis 3 (post-solve accounting still fires)",
+                task.request_id,
+            )
+            return False
 
     def _compute_wobble_sigma(self, distance_matrix: list[list[float]]) -> float:
         """sigma = sqrt(Var(distance_matrix_upper_triangle)).

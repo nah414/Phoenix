@@ -327,23 +327,71 @@ class Router:
         request: RoutingRequest,
         per_stage_filters: list[dict[str, Any]],
     ) -> list[ProviderEntry]:
+        # Phase 10: budget seam pre-check (Section 4.7 cost-ceiling
+        # enforcement). When the task carries an Actor, consult the
+        # JobBudgetController seam BEFORE per-candidate filtering --
+        # the seam knows about per-actor-24h and per-org-24h scoping
+        # that no individual candidate estimate would catch. The seam's
+        # ceiling_applied_usd narrows the effective per-solve ceiling
+        # the per-candidate filter then enforces.
+        effective_cost_ceiling = request.cost_ceiling_usd
+        if candidates and request.task.actor is not None:
+            min_estimate = min(estimate_all(c)[2] for c in candidates)
+            from phoenix._internal.cloud_seams import get_seams
+
+            budget_seam = get_seams().get("budget")
+            mode_str = request.reproducibility_mode.value.lower()
+            try:
+                budget_decision = budget_seam.check_solve_budget(
+                    actor=request.task.actor,
+                    estimated_cost_usd=min_estimate,
+                    reproducibility_mode=mode_str,
+                )
+            except Exception:
+                # Defense-in-depth: a buggy seam impl must not take
+                # down the Router; the cost-ceiling enforcement is
+                # an additive guarantee, not the safety floor.
+                budget_decision = None
+            if budget_decision is not None and not budget_decision.allowed:
+                raise CostCeilingExceeded(
+                    (
+                        f"Cost-ceiling seam denied: {budget_decision.rationale}. "
+                        f"Cheapest candidate estimate was "
+                        f"${min_estimate:.4f}; ceiling applied "
+                        f"${budget_decision.ceiling_applied_usd:.4f}."
+                    ),
+                    ceiling_usd=budget_decision.ceiling_applied_usd,
+                    cheapest_estimate_usd=min_estimate,
+                    provider_id="",
+                )
+            if budget_decision is not None:
+                seam_ceiling = budget_decision.ceiling_applied_usd
+                # An infinite seam ceiling (admin-tier no-cap) doesn't
+                # constrain; the existing user ceiling stays as-is.
+                if seam_ceiling != float("inf"):
+                    effective_cost_ceiling = (
+                        seam_ceiling
+                        if effective_cost_ceiling is None
+                        else min(effective_cost_ceiling, seam_ceiling)
+                    )
+
         survivors: list[ProviderEntry] = []
         dropped: list[dict[str, Any]] = []
         cheapest_violation: tuple[str, float] | None = None
-        cost_filter_active = request.cost_ceiling_usd is not None
+        cost_filter_active = effective_cost_ceiling is not None
 
         for c in candidates:
             if c.provider_id in request.excluded_providers:
                 dropped.append({"provider_id": c.provider_id, "reason": "in excluded_providers"})
                 continue
             fid, lat, cost = estimate_all(c)
-            if cost_filter_active and cost > request.cost_ceiling_usd:  # type: ignore[operator]
+            if cost_filter_active and cost > effective_cost_ceiling:  # type: ignore[operator]
                 if cheapest_violation is None or cost < cheapest_violation[1]:
                     cheapest_violation = (c.provider_id, cost)
                 dropped.append(
                     {
                         "provider_id": c.provider_id,
-                        "reason": f"estimated_cost ${cost:.4f} > ceiling ${request.cost_ceiling_usd:.4f}",
+                        "reason": f"estimated_cost ${cost:.4f} > ceiling ${effective_cost_ceiling:.4f}",
                     }
                 )
                 continue
@@ -387,10 +435,10 @@ class Router:
                     f"rejected by cost ceiling. Cheapest cost-rejected "
                     f"estimate was ${cheapest_violation[1]:.4f} from "
                     f"{cheapest_violation[0]!r} vs ceiling "
-                    f"${request.cost_ceiling_usd:.4f}. Other filters may also "
+                    f"${effective_cost_ceiling:.4f}. Other filters may also "
                     f"have contributed; see Stage 2's dropped entries."
                 ),
-                ceiling_usd=request.cost_ceiling_usd or 0.0,
+                ceiling_usd=effective_cost_ceiling or 0.0,
                 cheapest_estimate_usd=cheapest_violation[1],
                 provider_id=cheapest_violation[0],
             )

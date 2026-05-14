@@ -47,8 +47,10 @@ def test_migrations_apply_idempotently(db_path: Path) -> None:
     b2.close()
 
     # Phase 6b shipped version 1; Phase 7 Step 5 adds version 2
-    # (ledger_entries table). The runner applies both on a fresh DB.
-    assert versions_first == {1, 2}
+    # (ledger_entries table); Phase 10 Step 2 adds version 3
+    # (solve_cost_ledger Phase-10 columns + budget_overrides table).
+    # The runner applies all three on a fresh DB.
+    assert versions_first == {1, 2, 3}
     assert versions_first == versions_second
 
 
@@ -250,8 +252,11 @@ def test_actor_permissions_shadow_round_trip(backend: SQLiteStateBackend) -> Non
 
 
 def test_close_then_use_raises(backend: SQLiteStateBackend) -> None:
+    """Phase 11 Step 1: raises StateBackendUnavailable (was RuntimeError pre-Phase-11)."""
+    from phoenix.state.errors import StateBackendUnavailable
+
     backend.close()
-    with pytest.raises(RuntimeError, match="closed"):
+    with pytest.raises(StateBackendUnavailable, match="closed"):
         backend.get_kill_switch_state()
 
 

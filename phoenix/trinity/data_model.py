@@ -238,6 +238,10 @@ class VerificationProvenance:
     distance_matrix: list[list[float]] = field(default_factory=list)
     wobble_score_sigma: float = 0.0
     budget_bound: bool = False
+    # Phase 10 Step 7: when budget_bound=True, names which verification
+    # axis was skipped (e.g., "cross_provider_axis"). None when budget
+    # was not the trigger or when the skipped axis isn't surfaced.
+    budget_bound_skipped_axis: str | None = None
     phase: str = "phase_5_verification_gate"
 
 

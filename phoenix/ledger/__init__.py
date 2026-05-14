@@ -21,11 +21,13 @@ composition; Step 7 lands the replay engine.
 """
 
 from phoenix.ledger.entry_types import (
+    BudgetOverrideEntry,
     EnrollmentEntry,
     KillSwitchEntry,
     LedgerEntry,
     OverrideByOperatorEntry,
     SolveEntry,
+    budget_override_to_ledger_entry,
     enrollment_to_ledger_entry,
     kill_switch_to_ledger_entry,
     override_to_ledger_entry,
@@ -50,6 +52,7 @@ from phoenix.ledger.replay_engine import (
 from phoenix.ledger.solve_composer import compose_and_append_solve_entry
 
 __all__ = [
+    "BudgetOverrideEntry",
     "ChainVerificationReport",
     "EnrollmentEntry",
     "KillSwitchEntry",
@@ -64,6 +67,7 @@ __all__ = [
     "ReplayProviderUnavailable",
     "ReplayReport",
     "SolveEntry",
+    "budget_override_to_ledger_entry",
     "compose_and_append_solve_entry",
     "enrollment_to_ledger_entry",
     "get_ledger",
