@@ -161,6 +161,7 @@ asyncio_mode = "auto"
 markers = [
     "smoke: minimal sanity checks runnable in <5s (pre-commit gate).",
     "acceptance: v1 acceptance gate per architecture v1 Section 10.7 -- compositional fail-closed test + long-window replay test.",
+    "distribution: Phase 12 distribution acceptance -- builds wheel / sdist / docker / nuitka artifacts and smokes each. Slow; runs in CI release workflow, opt-in locally.",
 ]
 
 [tool.ruff]
