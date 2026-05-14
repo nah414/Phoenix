@@ -250,6 +250,26 @@ Adam approved all six recommendations on 2026-05-14 via AskUserQuestion at phase
 
 **Choice:** Mark the new panic-mode + long-window-replay tests with `@pytest.mark.acceptance`. **Rationale:** CI can run the §10.7 acceptance gate as a discrete suite (separate from smoke / integration / tier1). Local dev runs `pytest -m acceptance` to verify the v1 acceptance gate in <30 seconds. The marker is registered in `pyproject.toml`'s pytest config to avoid the unknown-marker warning.
 
+### 4.7 — OPEN-7 LOCKED — Missing typed errors created in Step 1
+
+**Choice:** Step 1's audit surfaced that two of the three §10.7-named typed errors don't exist yet:
+
+- `DriftStateUnavailable` ships in `phoenix/verification/drift_state.py` (Phase 6b Step 7).
+- `QueueUnavailable` did NOT exist → created in `phoenix/queue/errors.py` (Phase 11 Step 1).
+- `StateBackendUnavailable` did NOT exist → created in `phoenix/state/errors.py` (Phase 11 Step 1).
+
+**Rationale:** The §10.7 acceptance text names all three typed errors as if they shipped. The previous 10 phases got away with a half-shipped typed-error contract because the happy path didn't exercise these failure modes — drift state was the only subsystem that wired fail-closed (Section 6.8). Phase 11's panic-mode tests are exactly what would catch this gap, so creating the typed errors IS Phase 11 work.
+
+The Step 1 implementation is minimal:
+
+- New `phoenix/state/errors.py` with `StateBackendUnavailable(Exception)` carrying `backend_kind` ("sqlite" | "postgres" | "unknown").
+- New `phoenix/queue/errors.py` with `QueueUnavailable(Exception)` carrying `subject` (NATS subject of the failing op).
+- `SQLiteStateBackend._require_conn` raises `StateBackendUnavailable` instead of the prior generic `RuntimeError`.
+- `PostgresStateBackend._require_pool` raises `StateBackendUnavailable`.
+- `TaskQueue.publish_submit` / `TaskQueue.subscribe_submit` raise `QueueUnavailable` when `setup_streams` wasn't called (previously `RuntimeError`).
+
+The class shape matches `DriftStateUnavailable`'s pattern (Exception subclass + structured attribute carrying actionable subsystem-specific context). Future v1.x phases can extend the raise coverage (e.g., NATS connection-loss-mid-flight catches `nats.errors.ConnectionClosedError` → translates to `QueueUnavailable` with subject populated).
+
 ---
 
 ## 5 — Verification (end to end)

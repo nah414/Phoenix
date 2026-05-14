@@ -113,9 +113,22 @@ class PostgresStateBackend:
                 self._pool = None
 
     def _require_pool(self) -> ConnectionPool:
-        """Return the active pool or raise if the backend was closed."""
+        """Return the active pool or raise if the backend was closed.
+
+        Phase 11 Step 1 (Section 10.7 fail-closed contract): raises
+        :class:`StateBackendUnavailable` rather than the prior
+        generic :class:`RuntimeError`. Matches the
+        :class:`SQLiteStateBackend` typed-error contract so admin
+        + audit + ledger code can fail-closed deterministically
+        regardless of backend choice.
+        """
         if self._pool is None:
-            raise RuntimeError("PostgresStateBackend has been closed; construct a new instance")
+            from phoenix.state.errors import StateBackendUnavailable
+
+            raise StateBackendUnavailable(
+                "PostgresStateBackend has been closed; construct a new instance",
+                backend_kind="postgres",
+            )
         return self._pool
 
     # --- Phase 6a: kill switch ---

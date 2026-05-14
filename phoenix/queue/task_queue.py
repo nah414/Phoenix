@@ -146,10 +146,17 @@ class TaskQueue:
         """Publish a task submission to the durable ingress queue.
 
         Raises:
-            RuntimeError: :meth:`setup_streams` was not called first.
+            QueueUnavailable: :meth:`setup_streams` was not called
+                first, or the JetStream connection is unreachable
+                at publish time.
         """
         if self._js is None:
-            raise RuntimeError("TaskQueue.setup_streams() must be called before publish_submit")
+            from phoenix.queue.errors import QueueUnavailable
+
+            raise QueueUnavailable(
+                "TaskQueue.setup_streams() must be called before publish_submit",
+                subject=submit_subject(latency_tier),
+            )
         await self._js.publish(submit_subject(latency_tier), payload)
 
     async def publish_event(self, task_id: str, payload: bytes) -> None:
@@ -183,7 +190,12 @@ class TaskQueue:
         override only when running multiple isolated worker pools.
         """
         if self._js is None:
-            raise RuntimeError("TaskQueue.setup_streams() must be called before subscribe_submit")
+            from phoenix.queue.errors import QueueUnavailable
+
+            raise QueueUnavailable(
+                "TaskQueue.setup_streams() must be called before subscribe_submit",
+                subject=submit_subject(latency_tier),
+            )
         durable = durable_name or f"phoenix_worker_{latency_tier}"
         return await self._js.subscribe(
             submit_subject(latency_tier),

@@ -84,9 +84,21 @@ class SQLiteStateBackend:
                 self._conn = None
 
     def _require_conn(self) -> sqlite3.Connection:
-        """Return the active connection or raise if the backend was closed."""
+        """Return the active connection or raise if the backend was closed.
+
+        Phase 11 Step 1 (Section 10.7 fail-closed contract): raises
+        :class:`StateBackendUnavailable` rather than the prior
+        generic :class:`RuntimeError`. Callers (admin endpoints,
+        ledger writer, audit sink, kill switch) can now pattern-
+        match on the typed error and fail-closed deterministically.
+        """
         if self._conn is None:
-            raise RuntimeError("SQLiteStateBackend has been closed; construct a new instance")
+            from phoenix.state.errors import StateBackendUnavailable
+
+            raise StateBackendUnavailable(
+                "SQLiteStateBackend has been closed; construct a new instance",
+                backend_kind="sqlite",
+            )
         return self._conn
 
     # --- Phase 6a: kill switch ---

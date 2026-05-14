@@ -94,6 +94,10 @@ exclude = ["vendor*", "tests*", "evals*", "scripts*", "docs*"]
 testpaths = ["tests", "evals"]
 python_files = ["test_*.py", "eval_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "smoke: minimal sanity checks runnable in <5s (pre-commit gate).",
+    "acceptance: v1 acceptance gate per architecture v1 Section 10.7 -- compositional fail-closed test + long-window replay test.",
+]
 
 [tool.ruff]
 line-length = 100
