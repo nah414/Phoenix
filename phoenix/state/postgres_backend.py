@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from psycopg_pool import ConnectionPool
 
 
-_DEFAULT_PHOENIX_RELEASE = "1.0.0.dev12"
+_DEFAULT_PHOENIX_RELEASE = "1.0.0rc1"
 
 
 def _default_dsn() -> str | None:

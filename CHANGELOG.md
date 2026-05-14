@@ -15,6 +15,166 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0rc1] — 2026-05-14
+
+Phase 12 closes the v1 release-artifact surface. Phoenix's logical
+surface stabilized at `1.0.0.dev12` (Phase 11); `1.0.0rc1` is the
+release-candidate cut that ships **three distribution artifacts** per
+architecture v1 Section 1 Decision 29:
+
+### Three release artifacts
+
+- **pip wheel + sdist** (`phoenix-middleware`). The wheel now
+  correctly bundles the six vendored namespace packages (`synthesis`,
+  `wobble`, `grammar`, `actor`, `omega`, `ml`) as siblings of
+  `phoenix`, so `pip install phoenix-middleware` works in non-editable
+  mode (prior phases relied on the sys.path injection that only fires
+  in editable installs). Wheel size: ~500 KB. Sdist size: ~540 KB
+  (includes `PHOENIX_ARCHITECTURE_v1.md` + `CHANGELOG.md`).
+
+- **Docker image**. Multi-stage `python:3.12-slim` Dockerfile:
+  builder stage fetches the nats-server v2.10.22 release with SHA256
+  verification + builds the Phoenix wheel; runtime stage drops to a
+  non-root `phoenix` user (UID 1000), copies the wheel + nats-server,
+  exposes ports 8003 (Phoenix) + 4222 (NATS), `HEALTHCHECK` via httpx
+  against `/v1/health`. Target image size: < 300 MB compressed.
+
+- **Nuitka standalone binary** (Linux + Windows). `scripts/build_standalone.py`
+  wraps Nuitka with the explicit `--include-package` flags Phoenix needs
+  (FastAPI + Uvicorn + Pydantic + the vendored namespace packages
+  whose import paths come from the runtime sys.path injection).
+  Output: `dist/phoenix-<os>-<arch>(.exe)` -- a self-extracting onefile
+  binary with the launcher + daemon + vendor tree.
+
+### Launcher orchestration
+
+`phoenix/launcher.py` is the Nuitka build target and the
+`python -m phoenix` entry. Per Section 1 Decision 33, a solo Phoenix
+install boots **two processes** (Phoenix daemon + NATS JetStream)
+under one launcher. Per Section 11.3.3 RESOLVED, the launcher bundles
+the daemon by default; `--external-daemon` + `--external-nats` are
+the opt-outs for installs running the components separately.
+
+Five CLI flags:
+
+- `--port` / `--host` -- daemon-side bind (default `127.0.0.1:8003`).
+- `--external-daemon` -- skip spawning the daemon; health-probe one
+  reachable at `--host:--port` before opening the docs URL.
+- `--external-nats` -- skip spawning NATS; the queue module reads
+  `$PHOENIX_NATS_URL` (default `nats://127.0.0.1:4222`).
+- `--no-browser` -- don't open the docs URL after boot.
+- `--version` -- print version + exit 0.
+
+Shutdown: `signal.SIGINT` + `signal.SIGTERM` handlers escalate
+`terminate()` (5s grace) -> `kill()` for both NATS + daemon children.
+
+### GitHub Actions CI matrix
+
+`.github/workflows/ci.yml` and `.github/workflows/release.yml` ship
+the always-on CI + tag-triggered release pipelines. Matrix:
+`ubuntu-latest + windows-latest x py3.11/3.12/3.13` (macOS deferred
+to v1.1). Five jobs:
+
+- `lint` -- ruff check + ruff format + mypy strict + shellcheck on
+  the bash launchers.
+- `tests` -- pytest unit + integration + acceptance (`-m acceptance`
+  collects the Section 10.7 panic-mode + long-window-replay battery
+  across all OS x Python combinations).
+- `build-wheel` -- `python -m build`, smoke-installs in a fresh
+  venv, verifies all six vendored namespace imports + the `phoenix`
+  console script + `phoenix --version`.
+- `build-docker` -- `docker build`, container healthcheck within
+  60s, image size < 300 MB sentinel.
+- `build-standalone` (matrix: ubuntu + windows) -- install nuitka,
+  run `scripts/build_standalone.py`, smoke `--version` on the
+  produced binary.
+
+Release workflow additionally pushes the Docker image to
+`ghcr.io/nah414/phoenix:<tag>` + `:latest` (smoke-tested before
+push) and attaches all artifacts to the GitHub Release via
+`softprops/action-gh-release`.
+
+### Distribution + reproducibility docs
+
+- `docs/distribution/README.md` -- three-artifact overview.
+- `docs/distribution/install.md` -- step-by-step install for each
+  artifact (with pip extras: `[postgres]`, `[nats]`, `[otel]`, `[mcp]`;
+  Docker volume mount for state persistence; SmartScreen + glibc-floor
+  + NATS-not-bundled caveats on the standalone binary).
+- `docs/distribution/run.md` -- runtime topology, port/path tables,
+  `--external-daemon` + `--external-nats` semantics, healthcheck
+  endpoints, log locations, configuration-file precedence.
+- `docs/reproducibility/README.md` -- the cloud-shots-recorded
+  asterisk from Section 11 RESOLVED: cloud-quantum shots are
+  intrinsically nondeterministic; Phoenix records them in the Omega
+  Ledger so post-shot pipeline reproduces bit-exactly under strict /
+  replay mode. The `cloud_shots_recorded` provenance field is the
+  consumer's explicit hint about which guarantee applies.
+
+### Distribution acceptance battery
+
+`tests/distribution/` under the new `@pytest.mark.distribution`
+marker (registered alongside `smoke` + `acceptance`). 18 tests:
+
+- `test_wheel_install.py` (6 tests) -- builds wheel + sdist, installs
+  in a fresh venv, asserts wheel + sdist size < 2 MB, asserts all six
+  vendored namespace packages resolve from site-packages (not the dev
+  tree), asserts the `phoenix` console-script entry-point works.
+- `test_docker_smoke.py` (9 tests) -- Dockerfile + .dockerignore
+  shape sanity (python:slim base, non-root user, NATS checksum
+  verification, EXPOSE 8003 4222, HEALTHCHECK on /v1/health, .dockerignore
+  excludes caches + tests). Optional `docker buildx --check` syntax
+  validation when docker is locally installed.
+- `test_standalone_binary.py` (5 tests) -- build_standalone.py
+  loads + constructs the right Nuitka invocation (all six vendored
+  namespace packages explicitly --include-package'd). Optional full
+  Nuitka compile + binary smoke when Nuitka is locally installed.
+
+Default `pytest tests/` collects but the build steps in CI exercise
+the actual artifact builds independently.
+
+### Locked deferrals to v1.0 release prep + v1.1
+
+- **Code signing.** v1.0.rc ships unsigned artifacts; SmartScreen on
+  Windows shows the "Unrecognized app" warning on first launch.
+  Certificate provisioning + signing pipelines land in v1.0 release
+  prep as a separate workstream.
+- **macOS standalone binary.** Deferred to v1.1; Apple-Silicon native
+  build chain doubles the CI matrix complexity for minimal initial
+  user base. Community can contribute via the Apache 2.0 surface.
+- **Remote-daemon CLI.** `--external-daemon` is local-only in Phase
+  12; the CLI talks to localhost. v1.1 will let `phoenix --rest-url
+  https://prod.phoenix.example.com task submit ...` work, turning
+  the CLI itself into a "remote" client.
+- **NATS bundling in standalone binary.** The Linux + Windows
+  standalone binaries do NOT bundle nats-server in v1.0.rc; users
+  install nats-server separately if they want the two-process model
+  (`winget install NATSAuthors.NATSServer` on Windows, static binary
+  from GitHub release on Linux). Bundling lands in v1.0 final once
+  signing is in place.
+
+### Version bump
+
+`1.0.0.dev12` -> `1.0.0rc1` (PEP 440 canonical spelling: no period
+before `rc`). Bumped in lockstep:
+
+- `pyproject.toml` (`version`, `description`)
+- `phoenix/_internal/version.py` (`__version__`)
+- `phoenix/state/sqlite_backend.py` (`_DEFAULT_PHOENIX_RELEASE`)
+- `phoenix/state/postgres_backend.py` (`_DEFAULT_PHOENIX_RELEASE`)
+- `phoenix/verification/drift_detector.py` (`phoenix_release` default)
+- `tests/unit/test_smoke.py` (version assertions)
+- `tests/integration/test_health.py` (`phoenix_version` + OpenAPI version)
+- `tests/integration/test_adapters_step6.py` (mocked response body)
+- `README.md` (status paragraph)
+- `CHANGELOG.md` (this entry)
+
+`vendor/VENDOR_VERSION.txt` `phoenix_release` field stays at
+`1.0.0.dev6` (it represents the Phoenix release that LAST ran the
+vendor sync; vendoring is frozen at sync time, not bumped per release).
+
+---
+
 ## [1.0.0.dev12] — 2026-05-14
 
 Phase 11 closes v1: compositional acceptance tests + per-directory READMEs.
