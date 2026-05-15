@@ -54,12 +54,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The checksum is verified against the SHA256SUMS file published with
 # each release; if the upstream URL drifts, the build fails loudly.
 WORKDIR /tmp/nats-fetch
-RUN curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" \
-        -o nats-server.tar.gz \
+# Use `curl -O` (capital O) to save with the upstream filename so the
+# downloaded tarball's name matches what's listed in SHA256SUMS --
+# `sha256sum -c` reads the filename from the checksum line and looks
+# for it on disk. A `curl -o nats-server.tar.gz` rename here would
+# cause `No such file or directory` at verification time.
+RUN curl -fsSLO "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" \
     && curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/SHA256SUMS" \
         -o SHA256SUMS \
     && grep "nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" SHA256SUMS | sha256sum -c - \
-    && tar -xzf nats-server.tar.gz \
+    && tar -xzf "nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" \
     && mv "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server \
     && chmod +x /usr/local/bin/nats-server
 
