@@ -113,20 +113,30 @@ jobs:
           pip install --upgrade pip
           pip install -e ".[dev,mcp]" "nuitka>=2.0,<3.0"
       - name: Build standalone
-        run: python scripts/build_standalone.py
+        # --no-onefile -> multi-file distribution (~half the compile
+        # time vs --onefile, which times out on CI runners for
+        # Phoenix's full transitive closure). See ci.yml inline
+        # comment for the trade-off rationale.
+        run: python scripts/build_standalone.py --no-onefile
       - name: Smoke --version
         shell: bash
         run: |
-          binary=$(ls dist/phoenix-* | grep -v '.dist' | head -1)
-          "$binary" --version
+          dist_dir=$(ls -d dist/phoenix-*.dist | head -1)
+          binary_base=$(basename "$dist_dir" .dist)
+          for candidate in "$dist_dir/${binary_base}.exe" "$dist_dir/$binary_base"; do
+            if [ -x "$candidate" ] || [ -f "$candidate" ]; then
+              "$candidate" --version
+              exit 0
+            fi
+          done
+          echo "ERROR: no binary found in $dist_dir" >&2
+          ls -la "$dist_dir" >&2
+          exit 1
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: phoenix-standalone-${{ matrix.os }}
-          path: |
-            dist/phoenix-*
-            !dist/*.whl
-            !dist/*.tar.gz
+          path: dist/phoenix-*.dist/**
           retention-days: 30
           if-no-files-found: error
 

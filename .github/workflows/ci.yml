@@ -178,21 +178,38 @@ jobs:
           pip install --upgrade pip
           pip install -e ".[dev,mcp]" "nuitka>=2.0,<3.0"
       - name: Build standalone binary
-        run: python scripts/build_standalone.py
+        # --no-onefile produces a multi-file distribution under
+        # dist/phoenix-<os>-<arch>.dist/ instead of a single .exe.
+        # Multi-file builds compile in ~half the time because Nuitka
+        # skips the self-extracting-binary wrap stage; the trade-off
+        # is the artifact ships as a directory rather than one file.
+        # For CI validation that the compile succeeds + the binary
+        # runs, multi-file is equivalent. release.yml mirrors this.
+        run: python scripts/build_standalone.py --no-onefile
       - name: "Smoke: --version"
         shell: bash
         run: |
-          # Find the produced binary (platform-dependent name + extension).
-          binary=$(ls dist/phoenix-* | grep -v '.dist' | head -1)
-          echo "running: $binary --version"
-          "$binary" --version
+          # Multi-file output: dist/phoenix-<os>-<arch>.dist/phoenix-<os>-<arch>(.exe)
+          # The .dist directory is named after the binary, and the binary
+          # lives inside it.
+          dist_dir=$(ls -d dist/phoenix-*.dist | head -1)
+          binary_base=$(basename "$dist_dir" .dist)
+          # Try both Windows (.exe) and Unix names.
+          for candidate in "$dist_dir/${binary_base}.exe" "$dist_dir/$binary_base"; do
+            if [ -x "$candidate" ] || [ -f "$candidate" ]; then
+              echo "running: $candidate --version"
+              "$candidate" --version
+              exit 0
+            fi
+          done
+          echo "ERROR: no binary found in $dist_dir" >&2
+          ls -la "$dist_dir" >&2
+          exit 1
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: phoenix-standalone-${{ matrix.os }}
-          path: |
-            dist/phoenix-*
-            !dist/*.whl
-            !dist/*.tar.gz
+          # Multi-file mode: the whole .dist directory is the artifact.
+          path: dist/phoenix-*.dist/**
           retention-days: 7
           if-no-files-found: error
