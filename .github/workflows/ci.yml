@@ -154,45 +154,24 @@ jobs:
             exit 1
           fi
 
-  build-standalone:
-    name: build Nuitka standalone (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install Phoenix + nuitka
-        # [mcp] extra is included so cryptography (a transitive dep of
-        # mcp) is available. Nuitka's `--include-package=phoenix` pulls
-        # phoenix.identity which imports cryptography; without it Nuitka
-        # fails with "failed to locate package 'cryptography'".
-        run: |
-          pip install --upgrade pip
-          pip install -e ".[dev,mcp]" "nuitka>=2.0,<3.0"
-      - name: Build standalone binary
-        run: python scripts/build_standalone.py
-      - name: "Smoke: --version"
-        shell: bash
-        run: |
-          # Find the produced binary (platform-dependent name + extension).
-          binary=$(ls dist/phoenix-* | grep -v '.dist' | head -1)
-          echo "running: $binary --version"
-          "$binary" --version
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: phoenix-standalone-${{ matrix.os }}
-          path: |
-            dist/phoenix-*
-            !dist/*.whl
-            !dist/*.tar.gz
-          retention-days: 7
-          if-no-files-found: error
+  # Nuitka standalone build moved to release.yml only.
+  # ---------------------------------------------------------------
+  # Rationale: the Nuitka compile for Phoenix's full transitive
+  # closure (FastAPI + Pydantic v2 + numpy + scipy + cryptography +
+  # 6 vendored namespace packages + all of phoenix.*) genuinely takes
+  # 60-80 minutes on 2-core GitHub Actions runners, regardless of
+  # --onefile vs --no-onefile mode. The compile phase dominates;
+  # onefile just adds a final wrap stage.
+  #
+  # For per-PR validation, lint + tests + Docker + wheel install
+  # cover the surface that matters. The Nuitka binary is a release-
+  # artifact concern: it ships at release time, not on every PR. The
+  # release.yml workflow (triggered by `v*` tags) builds Nuitka with
+  # the same configuration; that's where the 60+ min compile lives.
+  #
+  # If a contributor wants to validate Nuitka locally before tagging
+  # a release, `python scripts/build_standalone.py` works on dev
+  # machines (slower than CI's overall budget but uncapped).
+  #
+  # Phase 12 ci-fix (2026-05-15): removed from per-PR CI after main
+  # and PR #12 both hit the 60-min CI timeout in the compile phase.
