@@ -77,8 +77,13 @@ class TestMonkeypatchClock:
         target = 1_900_000_000.0
         with monkeypatch_clock(monkeypatch, target_unix=target):
             m1 = time.monotonic()
-            # Small sleep to confirm monotonic ticks
-            time.sleep(0.001)
+            # Sleep just above one Windows pre-3.13 scheduler tick (~15.6 ms)
+            # so the test holds on Windows py3.11/3.12 where time.monotonic()
+            # resolution is coarse. Python 3.13 moved Windows monotonic to
+            # QueryPerformanceCounter (sub-µs); Linux + macOS have always had
+            # sub-µs monotonic. 20 ms gives every platform headroom while
+            # keeping the test fast.
+            time.sleep(0.02)
             m2 = time.monotonic()
         assert m2 > m1  # monotonic still ticking; advance applied to wall-clock only
 

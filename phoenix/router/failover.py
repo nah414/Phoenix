@@ -206,6 +206,6 @@ class FailoverProtocol:
             return raw, fallback_selection
 
         raise AllAlternatesExhausted(
-            (f"All {len(candidates)} alternates failed and " f"allow_simulator_fallback=False."),
+            (f"All {len(candidates)} alternates failed and allow_simulator_fallback=False."),
             attempts=attempts,
         )

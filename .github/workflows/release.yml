@@ -105,9 +105,13 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install Phoenix + nuitka
+        # [mcp] extra brings in cryptography (transitive). Nuitka's
+        # --include-package=phoenix recurses into phoenix.identity
+        # which imports cryptography; without [mcp] the build fails
+        # with "failed to locate package 'cryptography'".
         run: |
           pip install --upgrade pip
-          pip install -e ".[dev]" "nuitka>=2.0,<3.0"
+          pip install -e ".[dev,mcp]" "nuitka>=2.0,<3.0"
       - name: Build standalone
         run: python scripts/build_standalone.py
       - name: Smoke --version

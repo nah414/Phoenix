@@ -104,8 +104,7 @@ def extract_actor_from_header(authorization_header: str) -> Actor:
     """
     if not authorization_header.startswith("Phoenix-Actor "):
         raise IdentityError(
-            "Authorization header must start with 'Phoenix-Actor ' "
-            "for Phoenix Actor verification."
+            "Authorization header must start with 'Phoenix-Actor ' for Phoenix Actor verification."
         )
     encoded = authorization_header[len("Phoenix-Actor ") :].strip()
     if not encoded:

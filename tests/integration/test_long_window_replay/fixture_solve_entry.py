@@ -118,9 +118,9 @@ def build_strict_mode_qho_fixture(runtime: Path) -> FixtureSolve:
         body = resp.json()
         task_id = body["task_id"]
         ledger_entry_id = body.get("provenance", {}).get("omega_ledger_entry_id")
-        assert (
-            ledger_entry_id is not None
-        ), f"fixture solve missing omega_ledger_entry_id; got: {body}"
+        assert ledger_entry_id is not None, (
+            f"fixture solve missing omega_ledger_entry_id; got: {body}"
+        )
 
     return FixtureSolve(
         task_id=task_id,

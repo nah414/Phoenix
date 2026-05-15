@@ -58,9 +58,9 @@ def test_ho1_quantum_harmonic_oscillator_ground_state() -> None:
     result = solver.solve_stationary(ctx, n_states=5)
     expected_e0 = HBAR * omega * 0.5
     actual_e0 = float(result.eigenvalues[0])
-    assert math.isclose(
-        actual_e0, expected_e0, rel_tol=0.01
-    ), f"QHO ground state: expected {expected_e0:.4e}, got {actual_e0:.4e}"
+    assert math.isclose(actual_e0, expected_e0, rel_tol=0.01), (
+        f"QHO ground state: expected {expected_e0:.4e}, got {actual_e0:.4e}"
+    )
 
 
 def test_isw1_infinite_square_well_level_ratios() -> None:
@@ -108,9 +108,9 @@ def test_h1s1_dirac_rest_energy_reduction() -> None:
     expected_rest = M_ELECTRON * C_LIGHT**2
     actual_e0 = float(result.eigenvalues[0])
     ratio = actual_e0 / expected_rest
-    assert (
-        abs(ratio - 1.0) < 0.20
-    ), f"Dirac rest energy: expected {expected_rest:.4e}, got {actual_e0:.4e} (ratio {ratio:.4f})"
+    assert abs(ratio - 1.0) < 0.20, (
+        f"Dirac rest energy: expected {expected_rest:.4e}, got {actual_e0:.4e} (ratio {ratio:.4f})"
+    )
 
 
 def test_rabi1_pauli_zeeman_splitting() -> None:
@@ -134,9 +134,9 @@ def test_rabi1_pauli_zeeman_splitting() -> None:
     g_factor = 2.0023
     expected_split = g_factor * MU_BOHR * b_field
     actual_split = abs(e1 - e0)
-    assert math.isclose(
-        actual_split, expected_split, rel_tol=0.05
-    ), f"Zeeman split: expected {expected_split:.4e} J, got {actual_split:.4e} J"
+    assert math.isclose(actual_split, expected_split, rel_tol=0.05), (
+        f"Zeeman split: expected {expected_split:.4e} J, got {actual_split:.4e} J"
+    )
 
 
 def test_scg1_semiclassical_gravity_weak_field() -> None:
@@ -159,6 +159,6 @@ def test_scg1_semiclassical_gravity_weak_field() -> None:
     correction = abs(e0_sc - e0_tise) / abs(e0_tise) if e0_tise != 0 else float("inf")
     # Weak-field correction for an electron is parts per ~10^40; finite-grid
     # numerics give a much larger residual but it stays below 10%.
-    assert (
-        correction < 0.10
-    ), f"SCG weak-field correction {correction:.4e} should be < 0.10 for an electron"
+    assert correction < 0.10, (
+        f"SCG weak-field correction {correction:.4e} should be < 0.10 for an electron"
+    )

@@ -224,3 +224,24 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["omega", "omega.*"]
 ignore_missing_imports = true
+
+# Phase 9 Step 9 -- mcp ships in the `mcp` optional extra (the MCP
+# server for Claude Code / Cursor / Cline / etc.). Same pattern as the
+# nats / opentelemetry overrides: the lint job + most contributor
+# environments don't install the [mcp] extra, but phoenix/mcp/server.py
+# imports from `mcp.server.fastmcp` at module top-level. With this
+# override, mypy treats mcp imports as ignored-missing; the decorator
+# call sites use `# type: ignore[untyped-decorator]` to cover the
+# now-Any-returning decorator strictly-typed-decorator complaint.
+[[tool.mypy.overrides]]
+module = ["mcp", "mcp.*"]
+ignore_missing_imports = true
+
+# Phase 12 ci-fix (2026-05-15) -- psutil ships type-less. mypy 1.20+
+# emits `import-untyped` for the bare module import in
+# phoenix/admin/health.py. The runtime contract for psutil is well-known
+# and stable; rather than pull in types-psutil (an extra dep) we treat
+# psutil like the other optional/extra modules.
+[[tool.mypy.overrides]]
+module = ["psutil"]
+ignore_missing_imports = true

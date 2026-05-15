@@ -54,9 +54,9 @@ from phoenix.audit.otel_adapter import (  # noqa: E402
 
 
 @pytest.fixture
-def memory_exporter_and_provider() -> (
-    Iterator[tuple[InMemoryLogRecordExporter, LoggerProvider, LogRecordProcessor]]
-):
+def memory_exporter_and_provider() -> Iterator[
+    tuple[InMemoryLogRecordExporter, LoggerProvider, LogRecordProcessor]
+]:
     """Build a real OTel LoggerProvider with an in-memory recording exporter.
 
     Tests inject this provider into the OTelExporter constructor via
