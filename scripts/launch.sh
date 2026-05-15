@@ -32,5 +32,9 @@ esac
 echo "Phoenix v1 (Phase 0) running (daemon PID $DAEMON_PID). Press Ctrl+C to stop."
 
 # Wait for the daemon and clean up on Ctrl+C.
-trap "kill $DAEMON_PID 2>/dev/null || true; exit 0" INT TERM
-wait $DAEMON_PID
+# Single-quoted trap body so $DAEMON_PID expands at signal time, not
+# at trap-install time (shellcheck SC2064). With double quotes the
+# variable would have been captured statically and refactors that
+# move the PID assignment around could silently break the trap.
+trap 'kill $DAEMON_PID 2>/dev/null || true; exit 0' INT TERM
+wait "$DAEMON_PID"

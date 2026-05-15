@@ -34,6 +34,16 @@ repos:
         additional_dependencies: [pydantic, fastapi, "mcp>=1.0,<2.0"]
         exclude: ^(vendor/|tests/|evals/)
 
+  # Phase 12 ci-fix (2026-05-15) -- shellcheck on the launcher
+  # scripts, mirroring what CI's `lint` job does. Without this, SC2064
+  # and friends only get caught in CI; this hook closes the loop so
+  # local commits surface the same warnings.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        files: ^scripts/.*\.sh$
+
   - repo: local
     hooks:
       - id: smoke-test
