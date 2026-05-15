@@ -32,9 +32,9 @@ def test_health_returns_200_and_expected_shape() -> None:
     assert vendor is not None
     assert vendor["phoenix_release"], "phoenix_release must be set"
     assert vendor["vendor_synced_at"], "vendor_synced_at must be set after vendor sync runs"
-    assert vendor[
-        "dr_frank_and_eddy_commit"
-    ], "dr_frank_and_eddy_commit must be set after vendor sync runs"
+    assert vendor["dr_frank_and_eddy_commit"], (
+        "dr_frank_and_eddy_commit must be set after vendor sync runs"
+    )
 
 
 def test_openapi_schema_served() -> None:

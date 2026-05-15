@@ -27,12 +27,12 @@ def test_internal_version_module() -> None:
     assert vendor is not None
     assert vendor["phoenix_release"], "phoenix_release must be set"
     assert vendor["vendor_synced_at"], "vendor_synced_at must be set after vendor sync runs"
-    assert vendor[
-        "dr_frank_and_eddy_commit"
-    ], "dr_frank_and_eddy_commit must be set after vendor sync runs"
-    assert vendor[
-        "calibration_profile_hash"
-    ], "calibration_profile_hash must be set after Phase 1 Step 5 calibration generation"
+    assert vendor["dr_frank_and_eddy_commit"], (
+        "dr_frank_and_eddy_commit must be set after vendor sync runs"
+    )
+    assert vendor["calibration_profile_hash"], (
+        "calibration_profile_hash must be set after Phase 1 Step 5 calibration generation"
+    )
 
 
 def test_vendored_imports_resolve_from_vendor_dir() -> None:
@@ -50,9 +50,9 @@ def test_vendored_imports_resolve_from_vendor_dir() -> None:
     # Each module's __file__ should live under vendor/.
     for module in (vendored_actor, vendored_parser, vendored_solver_base, vendored_wobble_types):
         assert module.__file__ is not None
-        assert "vendor" in module.__file__.replace("\\", "/").split(
-            "/"
-        ), f"{module.__name__} resolved from {module.__file__} -- expected under vendor/"
+        assert "vendor" in module.__file__.replace("\\", "/").split("/"), (
+            f"{module.__name__} resolved from {module.__file__} -- expected under vendor/"
+        )
 
 
 def test_all_section_subpackages_import() -> None:

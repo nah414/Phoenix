@@ -5,7 +5,12 @@
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9  # Pin specific version; bump deliberately, never via auto-update
+    # Pin specific version; bump deliberately, never via auto-update.
+    # Must stay in sync with the upper bound of `ruff` in pyproject.toml's
+    # [dev] extra, or CI's fresh ruff install will find formatting drift
+    # that pre-commit considered fine. Phase 12 CI-fixes (2026-05-15)
+    # bumped this from v0.6.9 to v0.9.10 after exactly that scenario.
+    rev: v0.9.10
     hooks:
       - id: ruff
         args: [--fix]

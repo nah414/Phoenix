@@ -103,9 +103,9 @@ def test_cross_precision_r2_runs_full_n_plus_2n_comparison_on_qho() -> None:
     # Ground-state cross-precision disagreement should be small relative to
     # the ground-state energy itself (HBAR * omega / 2 ~= 5.27e-20 J).
     expected_e0 = 1.054571817e-34 * 1e15 * 0.5
-    assert (
-        result.error_bar_contribution < 0.05 * expected_e0
-    ), f"QHO cross-precision disagreement {result.error_bar_contribution:.4e} J too large vs E0={expected_e0:.4e} J"
+    assert result.error_bar_contribution < 0.05 * expected_e0, (
+        f"QHO cross-precision disagreement {result.error_bar_contribution:.4e} J too large vs E0={expected_e0:.4e} J"
+    )
 
     # PERF win: high_grid_result stashed in metadata so the pipeline orchestrator
     # can extract CandidateAnswer.value without re-running the solver.

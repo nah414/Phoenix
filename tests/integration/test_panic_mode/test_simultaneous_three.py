@@ -172,9 +172,9 @@ def test_simultaneous_three_failures_are_deterministic(
 
     # All three runs surfaced the SAME typed error class -- the
     # request-path ordering is deterministic.
-    assert (
-        len(set(observed_error_types)) == 1
-    ), f"non-deterministic typed-error surfacing: {observed_error_types}"
+    assert len(set(observed_error_types)) == 1, (
+        f"non-deterministic typed-error surfacing: {observed_error_types}"
+    )
 
 
 # ---------------------------------------------------------------------

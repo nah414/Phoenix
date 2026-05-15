@@ -42,3 +42,14 @@ phoenix-vendor-source/
 # OS
 Thumbs.db
 .DS_Store
+
+# Claude Code agent harness state -- subagent worktrees, scratch
+# files, MCP outputs, test-runtime artifacts. Sometimes contains
+# nested git repos (worktrees); never belongs in commits.
+.claude/
+
+# Local virtualenvs created for distribution-acceptance tests
+.venv-*/
+
+# One-off scratch artifacts at repo root (never tracked)
+dist-*/

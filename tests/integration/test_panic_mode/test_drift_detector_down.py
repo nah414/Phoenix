@@ -223,9 +223,9 @@ def test_post_tasks_with_drift_down_fails_closed(
         # Must not be a clean HEDGED_CONSENSUS Result when verification
         # couldn't actually run.
         agreement = body.get("agreement_type", "")
-        assert (
-            "degraded" in agreement.lower() or "error" in body or "drift" in resp.text.lower()
-        ), f"200 response must surface drift failure; got: {resp.text[:500]}"
+        assert "degraded" in agreement.lower() or "error" in body or "drift" in resp.text.lower(), (
+            f"200 response must surface drift failure; got: {resp.text[:500]}"
+        )
     else:
         # 5xx response: the typed error propagated to the front door.
         # No assertion on shape -- just that the failure didn't get

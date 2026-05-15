@@ -153,7 +153,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="phoenix",
         description=(
-            "Phoenix v1 launcher -- bundled daemon + NATS bootstrap " "per Section 1 Decision 33."
+            "Phoenix v1 launcher -- bundled daemon + NATS bootstrap per Section 1 Decision 33."
         ),
     )
     parser.add_argument("--version", action="version", version=f"phoenix {__version__}")
@@ -228,8 +228,7 @@ def _spawn_nats(
 
     store_dir.mkdir(parents=True, exist_ok=True)
     print(
-        f"phoenix launcher: starting NATS (port {port}, "
-        f"monitor {monitor_port}, store {store_dir})"
+        f"phoenix launcher: starting NATS (port {port}, monitor {monitor_port}, store {store_dir})"
     )
     return subprocess.Popen(
         [

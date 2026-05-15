@@ -140,9 +140,9 @@ def test_vendor_manifest_pinned_in_ledger_entry(
     vendor_manifest = payload.get("vendor_manifest")
     assert isinstance(vendor_manifest, dict)
     # The phoenix_release field is the most stable indicator
-    assert vendor_manifest.get(
-        "phoenix_release"
-    ), f"vendor_manifest must record phoenix_release; got: {vendor_manifest}"
+    assert vendor_manifest.get("phoenix_release"), (
+        f"vendor_manifest must record phoenix_release; got: {vendor_manifest}"
+    )
 
 
 # ---------------------------------------------------------------------
