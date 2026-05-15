@@ -37,9 +37,13 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dev deps
+        # [mcp] extra ensures mypy sees FastMCP.tool's typed decorator
+        # return; without it, phoenix/mcp/server.py fires untyped-decorator
+        # under strict mypy. Other optional extras are handled by
+        # ignore_missing_imports overrides in pyproject.toml.
         run: |
           pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,mcp]"
       - name: ruff check
         run: ruff check .
       - name: ruff format

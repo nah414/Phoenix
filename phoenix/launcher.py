@@ -63,6 +63,16 @@ DEFAULT_NATS_MONITOR_PORT = 8222
 HEALTH_POLL_TIMEOUT_S = 30.0
 HEALTH_POLL_INTERVAL_S = 0.5
 
+# Windows-only stdlib attributes accessed via getattr so mypy-on-Linux
+# doesn't flag them as missing (the typeshed stubs gate them behind
+# sys.platform == "win32"). On non-Windows we substitute safe no-op
+# values: 0 for subprocess.Popen's creationflags (documented no-op on
+# POSIX) and SIGTERM for the signal fallback (never invoked because
+# the call site is sys.platform-gated, but mypy needs a type-compatible
+# default).
+_CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+_CTRL_BREAK_EVENT: signal.Signals = getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM)
+
 
 def main(argv: list[str] | None = None) -> int:
     """Top-level launcher.
@@ -242,9 +252,9 @@ def _spawn_nats(
             str(monitor_port),
         ],
         # On Windows, CREATE_NEW_PROCESS_GROUP lets us send Ctrl-Break to
-        # the child without killing our own process. On Unix the default
-        # process group behavior is fine.
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        # the child without killing our own process. On Unix the
+        # constant is 0 (no-op for subprocess.Popen on POSIX).
+        creationflags=_CREATE_NEW_PROCESS_GROUP,
     )
 
 
@@ -262,7 +272,7 @@ def _spawn_daemon(
     return subprocess.Popen(
         [sys.executable, "-m", "phoenix.api", "--host", host, "--port", str(port)],
         env=env,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        creationflags=_CREATE_NEW_PROCESS_GROUP,
     )
 
 
@@ -290,8 +300,11 @@ def _stop_children(children: list[subprocess.Popen[bytes]]) -> None:
         if proc.poll() is not None:
             continue  # already exited
         try:
-            if os.name == "nt":
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            if sys.platform == "win32":
+                # sys.platform narrowing here (not os.name) so mypy
+                # sees this branch as Windows-only and the
+                # CTRL_BREAK_EVENT fallback is never reached.
+                proc.send_signal(_CTRL_BREAK_EVENT)
             else:
                 proc.terminate()
         except Exception as exc:  # pragma: no cover - terminate-side failure

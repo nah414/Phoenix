@@ -17,10 +17,21 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
+    # Pin specific version; bump deliberately, never via auto-update.
+    # Must stay in sync with the upper bound of `mypy` in pyproject.toml's
+    # [dev] extra, or CI's fresh mypy install will catch errors that
+    # pre-commit considered fine. Phase 12 ci-fixes (2026-05-15) bumped
+    # this from v1.11.2 to v1.20.2 after exactly that scenario.
+    rev: v1.20.2
     hooks:
       - id: mypy
-        additional_dependencies: [pydantic, fastapi]
+        # phoenix/mcp/server.py uses @FastMCP.tool decorators that mypy
+        # sees as untyped without the [mcp] extra installed in the hook
+        # venv. The other optional extras (postgres, nats, otel) are
+        # already covered by ignore_missing_imports overrides in
+        # pyproject.toml; mcp needs the typed mcp package present so
+        # the decorator return type isn't Any.
+        additional_dependencies: [pydantic, fastapi, "mcp>=1.0,<2.0"]
         exclude: ^(vendor/|tests/|evals/)
 
   - repo: local

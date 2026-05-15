@@ -100,23 +100,29 @@ def build_server(
 
     # FastMCP introspects each tool's signature for argument validation,
     # so we register typed per-tool wrappers (kwargs blob isn't accepted).
-    # The FastMCP @tool decorator is untyped upstream; the # type: ignore
-    # silences pre-commit mypy without dropping our local type checks.
-    @server.tool(  # type: ignore[misc]
+    # The pre-commit + CI lint environments install the [mcp] extra so
+    # mypy sees the real (typed) @tool decorator return type. Without
+    # the extra, mcp.* is ignore_missing_imports'd per pyproject.toml
+    # and the decorator returns Any -- which would fire
+    # `untyped-decorator` under strict mypy. The "install [mcp] where
+    # mypy runs" discipline (see .github/workflows/ci.yml lint job +
+    # .pre-commit-config.yaml additional_dependencies) is what lets
+    # this stay clean without per-line type: ignore comments.
+    @server.tool(
         name="phoenix_task_submit",
         description=_TOOL_DESCRIPTIONS["phoenix_task_submit"],
     )
     async def _task_submit(spec: dict[str, Any]) -> dict[str, Any]:
         return _invoke_safely(TOOL_REGISTRY["phoenix_task_submit"], client, {"spec": spec})
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_task_get",
         description=_TOOL_DESCRIPTIONS["phoenix_task_get"],
     )
     async def _task_get(task_id: str) -> dict[str, Any]:
         return _invoke_safely(TOOL_REGISTRY["phoenix_task_get"], client, {"task_id": task_id})
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_task_replay",
         description=_TOOL_DESCRIPTIONS["phoenix_task_replay"],
     )
@@ -127,35 +133,35 @@ def build_server(
             {"task_id": task_id, "reproducibility_mode": reproducibility_mode},
         )
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_provenance_get",
         description=_TOOL_DESCRIPTIONS["phoenix_provenance_get"],
     )
     async def _provenance_get(task_id: str) -> dict[str, Any]:
         return _invoke_safely(TOOL_REGISTRY["phoenix_provenance_get"], client, {"task_id": task_id})
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_providers_list",
         description=_TOOL_DESCRIPTIONS["phoenix_providers_list"],
     )
     async def _providers_list() -> dict[str, Any]:
         return _invoke_safely(TOOL_REGISTRY["phoenix_providers_list"], client, {})
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_calibration_status",
         description=_TOOL_DESCRIPTIONS["phoenix_calibration_status"],
     )
     async def _calibration_status() -> dict[str, Any]:
         return _invoke_safely(TOOL_REGISTRY["phoenix_calibration_status"], client, {})
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_health",
         description=_TOOL_DESCRIPTIONS["phoenix_health"],
     )
     async def _health() -> dict[str, Any]:
         return _invoke_safely(TOOL_REGISTRY["phoenix_health"], client, {})
 
-    @server.tool(  # type: ignore[misc]
+    @server.tool(
         name="phoenix_audit_verify",
         description=_TOOL_DESCRIPTIONS["phoenix_audit_verify"],
     )
