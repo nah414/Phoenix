@@ -82,10 +82,14 @@ FROM python:${PYTHON_VERSION}-slim AS runtime
 COPY --from=builder /usr/local/bin/nats-server /usr/local/bin/nats-server
 
 # Install the Phoenix wheel + nats extra (the runtime needs nats-py).
-# --no-deps + the wheel's own dependency closure are pulled from PyPI
-# in one shot via the [nats] extra.
+# Two-step to handle the `*.whl[nats]` shell-glob-vs-pip-extras
+# collision: bash treats `[nats]` as a character class for globbing,
+# so `*.whl[nats]` tries to match files like "foo.whlN" and fails to
+# expand. Resolve the wheel path first via `ls`, then append the
+# `[nats]` extras suffix as a literal string passed to pip.
 COPY --from=builder /wheels/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl[nats] \
+RUN WHEEL_PATH="$(ls /tmp/phoenix_middleware-*.whl | head -1)" \
+    && pip install --no-cache-dir "${WHEEL_PATH}[nats]" \
     && rm /tmp/*.whl \
     && pip cache purge
 
