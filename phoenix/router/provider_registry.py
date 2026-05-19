@@ -34,6 +34,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from phoenix.providers.cognition.protocol import CognitionProvider
     from phoenix.trinity.orchestrate.provider_client import BaseProviderClient
 
 
@@ -78,7 +79,7 @@ class ProviderEntry:
         registered_at_utc: ISO 8601 of when this entry joined the registry.
     """
 
-    client: BaseProviderClient
+    client: BaseProviderClient | CognitionProvider
     health: ProviderHealth = ProviderHealth.HEALTHY
     degraded_until: str | None = None
     queue_depth_estimate: int | None = None
@@ -131,6 +132,19 @@ class ProviderRegistry:
         """Snapshot of entries with ``health == HEALTHY``. Stage 3
         consumes this for filter."""
         return [e for e in self._entries.values() if e.health is ProviderHealth.HEALTHY]
+
+    def cognition_entries(self) -> list[ProviderEntry]:
+        """Snapshot of entries whose client is a :class:`CognitionProvider`.
+
+        Phase 13 Step 2 helper: the Router's ``task.kind == "cognition"``
+        branch (lands in Step 4+ when cognition routing concretizes)
+        consults this to find candidates for cognition dispatch. Returns
+        all entries regardless of health; callers compose with
+        :meth:`healthy_entries` when health filtering is desired.
+        """
+        from phoenix.providers.cognition.protocol import CognitionProvider
+
+        return [e for e in self._entries.values() if isinstance(e.client, CognitionProvider)]
 
     def mark_degraded(
         self,

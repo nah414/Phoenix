@@ -109,6 +109,30 @@ otel = [
 mcp = [
     "mcp>=1.0,<2.0",
 ]
+# Phase 13 Step 2 -- Anthropic Claude SDK for the cognition substrate.
+# Opt-in: install only if you need to call Anthropic from Phoenix.
+#     pip install phoenix-middleware[anthropic]
+anthropic = [
+    "anthropic>=0.40,<0.60",
+]
+# Phase 13 Step 2 -- OpenAI Chat Completions SDK.
+#     pip install phoenix-middleware[openai]
+openai = [
+    "openai>=1.50,<2.0",
+]
+# Phase 13 Step 2 -- Google Gemini SDK.
+#     pip install phoenix-middleware[google]
+google = [
+    "google-generativeai>=0.8,<1.0",
+]
+# Phase 13 Step 2 -- umbrella extra that pulls all three cognition
+# adapters' SDKs. Convenience for installs that want any LLM:
+#     pip install phoenix-middleware[cognition]
+cognition = [
+    "anthropic>=0.40,<0.60",
+    "openai>=1.50,<2.0",
+    "google-generativeai>=0.8,<1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/nah414/Phoenix"
@@ -244,4 +268,22 @@ ignore_missing_imports = true
 # psutil like the other optional/extra modules.
 [[tool.mypy.overrides]]
 module = ["psutil"]
+ignore_missing_imports = true
+
+# Phase 13 Step 2 -- cognition SDKs ship in optional extras. Adapters
+# import lazily inside __init__ so installs without the extras import
+# cleanly; constructing the adapter without the SDK installed raises
+# CognitionError with the install hint. Tests inject mocks at the
+# adapter's __init__(client=...) seam.
+[[tool.mypy.overrides]]
+module = [
+    "anthropic",
+    "anthropic.*",
+    "openai",
+    "openai.*",
+    "google",
+    "google.generativeai",
+    "google.api_core",
+    "google.api_core.*",
+]
 ignore_missing_imports = true
