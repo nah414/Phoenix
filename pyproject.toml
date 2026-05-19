@@ -133,6 +133,16 @@ cognition = [
     "openai>=1.50,<2.0",
     "google-generativeai>=0.8,<1.0",
 ]
+# Phase 13 Step 3 -- LiteLLM passthrough for the long tail (~130
+# providers via the unified API: Ollama, vLLM, AWS Bedrock, Azure,
+# Mistral, Cohere, xAI, Perplexity, etc.). Opt-in deliberately --
+# LiteLLM is a large dependency (~50 MB installed). Users who only
+# need Anthropic + OpenAI + Google should not be forced to pull it in.
+# LiteLLM is MIT-licensed (Apache-2.0 compatible).
+#     pip install phoenix-middleware[litellm]
+litellm = [
+    "litellm>=1.50,<2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/nah414/Phoenix"
@@ -285,5 +295,7 @@ module = [
     "google.generativeai",
     "google.api_core",
     "google.api_core.*",
+    "litellm",
+    "litellm.*",
 ]
 ignore_missing_imports = true

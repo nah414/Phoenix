@@ -71,6 +71,12 @@ class _CognitionAdapterBase(ABC):
     _api_key_env_var: str
     """Name of the environment variable that holds the API key."""
 
+    _requires_api_key: bool = True
+    """Class flag — when ``False``, the base skips the env-var auth
+    check at ``__init__``. Phase 13 Step 3's LiteLLM passthrough sets
+    this to ``False`` because LiteLLM reads provider-specific keys
+    from the environment internally (no single ``LITELLM_API_KEY``)."""
+
     def __init__(
         self,
         *,
@@ -99,12 +105,18 @@ class _CognitionAdapterBase(ABC):
         self._max_retries = max_retries
         self._backoff_base_sec = backoff_base_sec
         self._backoff_max_sec = backoff_max_sec
-        self._api_key = api_key if api_key is not None else os.environ.get(self._api_key_env_var)
-        if not self._api_key:
-            raise CognitionAuthError(
-                f"{self.provider_id}: no API key found. Set the "
-                f"{self._api_key_env_var} environment variable."
+        if self._requires_api_key:
+            self._api_key = (
+                api_key if api_key is not None else os.environ.get(self._api_key_env_var)
             )
+            if not self._api_key:
+                raise CognitionAuthError(
+                    f"{self.provider_id}: no API key found. Set the "
+                    f"{self._api_key_env_var} environment variable."
+                )
+        else:
+            # LiteLLM-style providers manage their own credential resolution.
+            self._api_key = api_key
 
     def complete(
         self,

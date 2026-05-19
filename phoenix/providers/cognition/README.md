@@ -8,22 +8,23 @@ This directory was a Phase-0 placeholder reserved for v1.x extension; Phase 13 f
 
 **Step 1 (shipped):** `CognitionProvider` Protocol + payload dataclasses (`Prompt`, `Tool`, `CognitionResult`, `TokenUsage`, `ToolCall`, `ToolResult`) + `CognitionCapabilities`.
 
-**Step 2 (current):** three concrete adapters (Anthropic, OpenAI, Google Gemini) + typed-error hierarchy + shared `_CognitionAdapterBase` (P13-2 default) + minimal `ProviderRegistry` widening.
+**Step 2 (shipped):** three concrete adapters (Anthropic, OpenAI, Google Gemini) + typed-error hierarchy + shared `_CognitionAdapterBase` (P13-2 default) + minimal `ProviderRegistry` widening.
 
-**Step 3 (next):** optional `LiteLLMPassthroughProvider` behind the `[litellm]` pip extra.
+**Step 3 (current):** optional `LiteLLMPassthroughProvider` behind the `[litellm]` pip extra; covers the long tail (~130 providers via the unified API: Ollama, vLLM, AWS Bedrock, Azure, Mistral, Cohere, xAI, Perplexity, etc.). Adds `MissingOptionalDependency` and `PricingUnavailable` typed errors. Adds `_requires_api_key` flag on the base class so LiteLLM bypasses the env-var auth check.
+
+**Step 4 (next):** three new `WobbleAxis` implementations for cognition (cross-model agreement, self-consistency, prompt-perturbation).
 
 ## Files
 
 - [`protocol.py`](protocol.py) — `CognitionProvider` Protocol (PEP 544, `@runtime_checkable`) + `CognitionError` base.
 - [`capabilities.py`](capabilities.py) — `CognitionCapabilities` advertised feature dataclass.
 - [`types.py`](types.py) — payload dataclasses (`Prompt`, `Tool`, `TokenUsage`, `ToolCall`, `ToolResult`, `CognitionResult`).
-- [`errors.py`](errors.py) — typed-error hierarchy (`CognitionAuthError`, `CognitionRateLimitError`, `CognitionContextLengthError`, `CognitionContentPolicyError`, `CognitionTimeoutError`, `CognitionUnavailable`).
-- [`_base.py`](_base.py) — `_CognitionAdapterBase` abstract base. Shared retry-with-backoff, API-key env-var SAFETY contract, exception-mapping hook.
+- [`errors.py`](errors.py) — typed-error hierarchy (six adapter errors + `MissingOptionalDependency` + `PricingUnavailable`).
+- [`_base.py`](_base.py) — `_CognitionAdapterBase` abstract base. Shared retry-with-backoff, API-key env-var SAFETY contract (gated on `_requires_api_key`), exception-mapping hook.
 - [`anthropic.py`](anthropic.py) — `AnthropicProvider` (Anthropic Claude API).
 - [`openai.py`](openai.py) — `OpenAIProvider` (OpenAI Chat Completions API).
 - [`google.py`](google.py) — `GoogleGeminiProvider` (Google Gemini API).
-
-Step 3 will add `litellm_passthrough.py`.
+- [`litellm_passthrough.py`](litellm_passthrough.py) — `LiteLLMPassthroughProvider` (any of ~130 providers via LiteLLM's unified API).
 
 ## Installing the SDKs
 
@@ -33,7 +34,8 @@ Each adapter's underlying SDK ships as an optional extra (heavy deps; opt-in onl
 pip install phoenix-middleware[anthropic]   # AnthropicProvider
 pip install phoenix-middleware[openai]      # OpenAIProvider
 pip install phoenix-middleware[google]      # GoogleGeminiProvider
-pip install phoenix-middleware[cognition]   # umbrella: all three
+pip install phoenix-middleware[cognition]   # umbrella: above three
+pip install phoenix-middleware[litellm]     # LiteLLMPassthroughProvider (long-tail)
 ```
 
 Constructing an adapter without the SDK installed raises `CognitionError` with the install hint. Tests inject mocks via the `client=` constructor kwarg, so the test suite runs cleanly without any of the SDKs installed.

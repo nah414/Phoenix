@@ -96,6 +96,29 @@ class CognitionUnavailable(CognitionError):
     """
 
 
+class MissingOptionalDependency(CognitionError):
+    """A required optional dependency is not installed.
+
+    Phase 13 Step 3 raises this when constructing the LiteLLM
+    passthrough provider without the ``[litellm]`` pip extra. The
+    message carries the install instruction (e.g. ``pip install
+    phoenix-middleware[litellm]``). Maps to HTTP 501 (Not Implemented)
+    when surfaced at the front door — the provider truly isn't
+    available in this Phoenix install, not just temporarily.
+    """
+
+
+class PricingUnavailable(CognitionError):
+    """No pricing rate exists for this ``(provider, model)``.
+
+    Raised by the cost-ceiling lookup chain when neither the
+    provider's built-in cost catalogue (e.g., LiteLLM's
+    ``cost_per_token``) nor Phoenix's v2 pricing table has a rate.
+    The router's Stage 2 check skips the candidate rather than fail
+    the solve.
+    """
+
+
 __all__ = [
     "CognitionError",
     "CognitionAuthError",
@@ -104,4 +127,6 @@ __all__ = [
     "CognitionContentPolicyError",
     "CognitionTimeoutError",
     "CognitionUnavailable",
+    "MissingOptionalDependency",
+    "PricingUnavailable",
 ]
