@@ -1,0 +1,82 @@
+{
+  "_metadata": {
+    "schema_version": "v2",
+    "phase": "phase-13-step-1",
+    "last_updated_utc": "2026-05-18",
+    "notes": "Initial Phase 13 pricing table. Rates are best-effort as of 2026-05-18 based on publicly published provider rate cards; ops refresh via the pricing-update admin endpoint when providers update their rates. Per Section 11.2.2 (RESOLVED), stale pricing emits a soft warn but never hard-errors."
+  },
+  "providers": [
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-7-20260315",
+      "usd_per_1m_input_tokens": 15.0,
+      "usd_per_1m_output_tokens": 75.0,
+      "prompt_cache_discount_factor": 0.1,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-7-20260418",
+      "usd_per_1m_input_tokens": 3.0,
+      "usd_per_1m_output_tokens": 15.0,
+      "prompt_cache_discount_factor": 0.1,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "usd_per_1m_input_tokens": 1.0,
+      "usd_per_1m_output_tokens": 5.0,
+      "prompt_cache_discount_factor": 0.1,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5",
+      "usd_per_1m_input_tokens": 5.0,
+      "usd_per_1m_output_tokens": 15.0,
+      "prompt_cache_discount_factor": 0.5,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "usd_per_1m_input_tokens": 2.5,
+      "usd_per_1m_output_tokens": 10.0,
+      "prompt_cache_discount_factor": 0.5,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "usd_per_1m_input_tokens": 0.15,
+      "usd_per_1m_output_tokens": 0.6,
+      "prompt_cache_discount_factor": 0.5,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "google",
+      "model": "gemini-2.5-pro",
+      "usd_per_1m_input_tokens": 1.25,
+      "usd_per_1m_output_tokens": 10.0,
+      "prompt_cache_discount_factor": 0.25,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    },
+    {
+      "provider": "google",
+      "model": "gemini-2.0-flash",
+      "usd_per_1m_input_tokens": 0.1,
+      "usd_per_1m_output_tokens": 0.4,
+      "prompt_cache_discount_factor": 0.25,
+      "batch_discount_factor": 0.5,
+      "vision_token_multiplier": 1.0
+    }
+  ]
+}
