@@ -1458,6 +1458,33 @@ def unregister_mcp_server(
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase 13 Step 9: identity-permission grant endpoint.
+#
+# Mounted at /v1/identity/permissions/grant-prompt-verbatim per the build
+# guide; admin_router has prefix "/v1/admin" so we register here on the
+# main FastAPI app to keep the URL exactly as specified. The handler
+# itself lives in phoenix.admin.grant_prompt_verbatim; this seam exists
+# only to attach the route at the right URL prefix.
+
+from phoenix.admin.grant_prompt_verbatim import (  # noqa: E402
+    GrantPromptVerbatimPayload,
+    post_grant_prompt_verbatim,
+)
+
+
+@app.post(
+    "/v1/identity/permissions/grant-prompt-verbatim",
+    tags=["Identity"],
+)
+def grant_prompt_verbatim_route(
+    payload: GrantPromptVerbatimPayload,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    return post_grant_prompt_verbatim(payload, request, authorization)
+
+
 @app.websocket("/v1/ws/tasks/{task_id}/stream")
 async def task_stream(
     websocket: WebSocket,

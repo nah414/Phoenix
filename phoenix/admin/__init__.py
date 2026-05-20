@@ -36,6 +36,13 @@ from phoenix.admin import kill_switch as _kill_switch  # noqa: F401
 from phoenix.admin import router_inspect as _router_inspect  # noqa: F401
 from phoenix.admin import verification_inspect as _verification_inspect  # noqa: F401
 
+# Phase 13 Step 9: cognition + privacy permission endpoints.
+from phoenix.admin import cognition_audit as _cognition_audit  # noqa: F401
+from phoenix.admin import (
+    cognition_budget_override as _cognition_budget_override,  # noqa: F401
+)
+from phoenix.admin import grant_prompt_verbatim as _grant_prompt_verbatim  # noqa: F401
+
 __all__ = [
     "AdapterNotLoaded",
     "AdminError",
