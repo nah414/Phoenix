@@ -1,86 +1,42 @@
-"""Tests for the Step 2 ProviderRegistry extension for cognition providers."""
+"""Step 2's ProviderEntry widening was reverted at Step 6.
+
+Background: Step 2 widened :class:`ProviderEntry.client` from
+:class:`BaseProviderClient` to the union with
+:class:`CognitionProvider`, plus a :meth:`ProviderRegistry.cognition_entries`
+filter helper. The widening lacked narrow-on-use guards at the
+existing physics-only call sites in
+``phoenix/router/{decision,intelligence,equivalence_registry}.py``;
+the full ``mypy --strict phoenix/`` gate surfaced 11 union-attr
+errors at Step 6's pre-commit hook.
+
+Resolution: revert the widening. Step 4's cognition axes take
+providers as constructor args directly, so no Phase 13 code actually
+consumed the registry's cognition view. When Step 9 needs a
+cognition-provider lookup surface (for the gate's
+``task.kind == "cognition"`` branch), the right shape is a separate
+``CognitionProviderRegistry`` rather than overloading the physics
+:class:`ProviderRegistry` — the data shapes are different
+(physics: provider_id + backend_name + quantum_technology;
+cognition: provider_id + model + capabilities()).
+
+This module stays as a placeholder documenting the reversal, so the
+git history carries the rationale. The test removed: the original
+``test_cognition_provider_registers`` would have asserted the union
+type works, which is no longer the architectural intent.
+"""
 
 from __future__ import annotations
 
-from phoenix.providers.cognition.capabilities import CognitionCapabilities
-from phoenix.providers.cognition.protocol import CognitionProvider
-from phoenix.providers.cognition.types import (
-    CognitionResult,
-    Prompt,
-    TokenUsage,
-    Tool,
-)
-from phoenix.router.provider_registry import ProviderEntry, ProviderRegistry
 
+def test_reversal_is_documented() -> None:
+    """Placeholder test — see module docstring for the reversal rationale."""
+    # The actual assertion: ProviderEntry.client is annotated as
+    # BaseProviderClient, NOT the union with CognitionProvider.
+    from dataclasses import fields
 
-class _FakeCognitionProvider:
-    """Minimal CognitionProvider conformant for registry registration."""
+    from phoenix.router.provider_registry import ProviderEntry
 
-    provider_id = "fake.cognition"
-    model = "fake-model"
-
-    def complete(
-        self,
-        prompt: Prompt,
-        *,
-        max_tokens: int,
-        temperature: float,
-        tools: list[Tool] | None = None,
-        stream: bool = False,
-    ) -> CognitionResult:
-        del prompt, max_tokens, temperature, tools, stream
-        return CognitionResult(
-            text="",
-            tool_calls=[],
-            usage=TokenUsage(input_tokens=0, output_tokens=0),
-            latency_ms=0.0,
-            provider_fingerprint="fake.cognition|fake-model",
-        )
-
-    def capabilities(self) -> CognitionCapabilities:
-        return CognitionCapabilities(
-            streaming=False,
-            tool_use=False,
-            vision=False,
-            max_context_tokens=4096,
-            supports_prompt_cache=False,
-            supports_batch=False,
-        )
-
-    def fingerprint(self) -> str:
-        return "fake.cognition|fake-model"
-
-
-def test_cognition_provider_registers() -> None:
-    """A CognitionProvider can be wrapped in a ProviderEntry and registered."""
-    registry = ProviderRegistry()
-    entry = ProviderEntry(client=_FakeCognitionProvider())
-    registry.register(entry)
-    assert registry.get("fake.cognition") is entry
-    assert "fake.cognition" in registry
-
-
-def test_cognition_entries_filters() -> None:
-    """cognition_entries() returns only entries whose client is a CognitionProvider."""
-    from phoenix.providers.classical.local_simulator import LocalClassicalSimulator
-
-    registry = ProviderRegistry()
-    registry.register(ProviderEntry(client=LocalClassicalSimulator()))
-    registry.register(ProviderEntry(client=_FakeCognitionProvider()))
-
-    cognition = registry.cognition_entries()
-    all_entries = registry.all_entries()
-
-    assert len(all_entries) == 2
-    assert len(cognition) == 1
-    assert isinstance(cognition[0].client, CognitionProvider)
-
-
-def test_cognition_entries_empty_for_physics_only_registry() -> None:
-    """cognition_entries() is [] when no cognition providers registered."""
-    from phoenix.providers.classical.local_simulator import LocalClassicalSimulator
-
-    registry = ProviderRegistry()
-    registry.register(ProviderEntry(client=LocalClassicalSimulator()))
-
-    assert registry.cognition_entries() == []
+    client_field = next(f for f in fields(ProviderEntry) if f.name == "client")
+    # The type annotation is stringified under `from __future__ import annotations`;
+    # we just check it doesn't mention CognitionProvider.
+    assert "CognitionProvider" not in str(client_field.type)
