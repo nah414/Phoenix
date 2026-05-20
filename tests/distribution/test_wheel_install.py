@@ -109,7 +109,7 @@ def test_phoenix_import_works(fresh_venv: Path) -> None:
         check=True,
     )
     version = result.stdout.strip()
-    assert version.startswith("1.0.0"), f"unexpected version: {version!r}"
+    assert version.startswith("1.1.0"), f"unexpected version: {version!r}"
 
 
 def test_vendored_namespace_packages_resolve_from_site_packages(

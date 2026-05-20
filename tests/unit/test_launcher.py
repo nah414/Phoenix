@@ -57,7 +57,7 @@ def test_parse_args_version_exits(capsys: pytest.CaptureFixture[str]) -> None:
     assert excinfo.value.code == 0
     captured = capsys.readouterr()
     assert "phoenix" in captured.out
-    assert "1.0.0" in captured.out  # don't pin to .dev12 -- test survives version bumps
+    assert "1.1.0" in captured.out  # don't pin to .dev0 -- test survives version bumps
 
 
 def test_spawn_nats_returns_none_when_missing(
