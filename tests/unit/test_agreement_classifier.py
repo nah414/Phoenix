@@ -33,6 +33,10 @@ def test_phoenix_disagreement_type_extends_vendored_values() -> None:
         "provider_divergent",
         "degraded",
         "degraded_budget_bound",
+        # Phase 13 Step 4 cognition extension (per Phase 13 build guide
+        # Section 4.4): cognition wobble axes default to this when the
+        # classifier hasn't been wired in yet.
+        "cognition_unclassified",
     }
     actual = {m.value for m in PhoenixDisagreementType}
     assert actual == expected_values
