@@ -192,6 +192,143 @@ class AnthropicProvider(_CognitionAdapterBase):
             prompt_cache_hit=(cache_read > 0) if usage_obj is not None else None,
         )
 
+    async def astream(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float,
+        tools: list[Tool] | None = None,
+    ) -> Any:  # AsyncIterator[StreamEvent]; relaxed for mypy on lazy SDK
+        """Stream completion events for ``prompt`` (Phase 13 Step 7).
+
+        Yields :class:`StreamTokenDelta` / :class:`StreamToolCallStart`
+        / :class:`StreamFinal` events as the Anthropic SDK reports
+        them. The dispatch site bridges these to the WebSocket via
+        :class:`phoenix.api.streaming_events.StreamingTokenEmitter`.
+
+        **Implementation note:** uses the async ``AsyncAnthropic`` SDK
+        client (lazy-imported on first call). Tests inject a fake
+        async client via the ``client`` kwarg at construction (the
+        same client kwarg the sync ``complete`` uses; the streaming
+        path calls ``client.messages.stream(...)``, which must be an
+        async context manager that yields events with a ``.delta`` or
+        ``.content_block`` attribute as documented in the SDK).
+        """
+        # Late import of the StreamEvent types to avoid module-import-
+        # time cycles with cognition.streaming → cognition.protocol →
+        # cognition.types (transitive).
+        from phoenix.providers.cognition.streaming import (
+            StreamFinal,
+            StreamTokenDelta,
+            StreamToolCallStart,
+        )
+
+        # Build the request payload (mirrors _do_complete's prep).
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": list(prompt.messages),
+        }
+        if prompt.system is not None:
+            kwargs["system"] = prompt.system
+        if tools:
+            kwargs["tools"] = [self._tool_to_anthropic(t) for t in tools]
+
+        t0 = time.perf_counter()
+        cumulative_tokens = 0
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+
+        # Cast to Any at the stream-call seam: the Anthropic SDK has
+        # separate sync (Anthropic) and async (AsyncAnthropic) client
+        # classes with different stream() return types. The sync
+        # client's MessageStreamManager has __enter__/__exit__; the
+        # async client's has __aenter__/__aexit__. Production deployments
+        # construct with AsyncAnthropic for the streaming path; tests
+        # inject async-capable fakes via duck typing. The cast isolates
+        # the type-loose seam to this one line.
+        async_client: Any = self._client
+        try:
+            async with async_client.messages.stream(**kwargs) as stream:
+                async for event in stream:
+                    # Anthropic event types (duck-typed for SDK
+                    # decoupling): RawContentBlockStartEvent carries a
+                    # .content_block with .type "text" or "tool_use";
+                    # RawContentBlockDeltaEvent carries a .delta with
+                    # .type "text_delta" or "input_json_delta".
+                    etype = getattr(event, "type", None)
+                    if etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block is not None and getattr(block, "type", None) == "tool_use":
+                            yield StreamToolCallStart(
+                                call_id=getattr(block, "id", ""),
+                                tool_name=getattr(block, "name", ""),
+                                partial_args={},
+                            )
+                    elif etype == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta is not None and getattr(delta, "type", None) == "text_delta":
+                            text = getattr(delta, "text", "")
+                            text_parts.append(text)
+                            # Rough cumulative-token estimate; the
+                            # authoritative count comes from final
+                            # message usage. ~4 chars/token average.
+                            cumulative_tokens += max(1, len(text) // 4)
+                            yield StreamTokenDelta(
+                                delta_text=text,
+                                cumulative_tokens=cumulative_tokens,
+                            )
+
+                # End of stream — get the final aggregate message for
+                # accurate usage + tool_calls. SDK's get_final_message
+                # is awaitable.
+                final = await stream.get_final_message()
+        except Exception as exc:
+            # Map SDK exceptions through the same path complete uses.
+            mapped = self._map_sdk_exception(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        # Extract tool_use blocks from the final message for the
+        # aggregate CognitionResult (the StreamToolCallStart events
+        # carry the announcement; the final result carries the
+        # parsed arguments).
+        final_content = getattr(final, "content", []) or []
+        for block in final_content:
+            if getattr(block, "type", None) == "tool_use":
+                tool_calls.append(
+                    ToolCall(
+                        call_id=getattr(block, "id", ""),
+                        name=getattr(block, "name", ""),
+                        arguments=dict(getattr(block, "input", {}) or {}),
+                    )
+                )
+
+        usage_obj = getattr(final, "usage", None)
+        input_tokens = int(getattr(usage_obj, "input_tokens", 0)) if usage_obj else 0
+        output_tokens = int(getattr(usage_obj, "output_tokens", 0)) if usage_obj else 0
+        cache_read = int(getattr(usage_obj, "cache_read_input_tokens", 0) or 0) if usage_obj else 0
+
+        result = CognitionResult(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            usage=TokenUsage(
+                input_tokens=input_tokens + cache_read,
+                output_tokens=output_tokens,
+                cached_input_tokens=cache_read,
+            ),
+            latency_ms=latency_ms,
+            provider_fingerprint=self.fingerprint(),
+            prompt_cache_hit=(cache_read > 0) if usage_obj is not None else None,
+        )
+
+        yield StreamFinal(result=result)
+
     def capabilities(self) -> CognitionCapabilities:
         caps = _STATIC_CAPABILITIES.get(self.model)
         if caps is None:

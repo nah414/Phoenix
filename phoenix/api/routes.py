@@ -55,6 +55,7 @@ from phoenix.admin.auth import require_admin
 from phoenix.admin.errors import AdminPrivilegeRequired
 from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
+from phoenix.api.streaming_events import event_type_matches_filter, parse_event_filter
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
 from phoenix.audit import AuditEvent, get_emitter
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
@@ -1458,7 +1459,12 @@ def unregister_mcp_server(
 
 
 @app.websocket("/v1/ws/tasks/{task_id}/stream")
-async def task_stream(websocket: WebSocket, task_id: str, token: str | None = None) -> None:
+async def task_stream(
+    websocket: WebSocket,
+    task_id: str,
+    token: str | None = None,
+    events: str | None = None,
+) -> None:
     """Stream verification-gate events for a single task.
 
     Per architecture v1 Section 5.3: the client opens this WS after
@@ -1472,10 +1478,21 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
     polling loop (100ms cadence). Phase 6b's NATS JetStream consumer
     replaces this with a push-based subscription.
 
+    **Phase 13 Step 7 — event-type filter:** the optional ``events``
+    query parameter accepts a comma-separated list of event-type
+    names with optional trailing wildcard, e.g.
+    ``?events=token.delta,cognition.*``. Events not matching any
+    pattern are skipped (cursor advances; no JSON sent). Terminal
+    events (``task.complete`` / ``task.failed``) ALWAYS close the
+    connection regardless of filter — they're the close signal, not
+    just a filtered event.
+
     Close codes:
     - 1000 (normal): task completed (task.complete event sent).
     - 1008 (policy violation): token invalid / expired / used.
     """
+    # Phase 13 Step 7: parse the optional events= query parameter.
+    filter_patterns = parse_event_filter(events)
     # Phase 7 Step 2: WS handlers bypass HTTP middleware, so mint a
     # fresh per-connection request_id here for audit correlation.
     request_id = f"req_{uuid.uuid4().hex}"
@@ -1531,9 +1548,20 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
         for _ in range(max_iterations):
             new_events = broker.get_events(task_id, since_index=cursor)
             for event in new_events:
-                await websocket.send_json(to_dict(event))
                 cursor += 1
-                if event.type in ("task.complete", "task.failed"):
+                # Phase 13 Step 7: skip events that don't match the
+                # optional events= filter. Terminal events
+                # (task.complete / task.failed) bypass the filter —
+                # they're the connection-close signal.
+                is_terminal = event.type in ("task.complete", "task.failed")
+                if (
+                    filter_patterns
+                    and not is_terminal
+                    and not event_type_matches_filter(event.type, filter_patterns)
+                ):
+                    continue
+                await websocket.send_json(to_dict(event))
+                if is_terminal:
                     close_reason = "task finished"
                     await websocket.close(code=1000, reason=close_reason)
                     return
