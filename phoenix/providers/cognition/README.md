@@ -1,10 +1,56 @@
 # `phoenix/providers/cognition/`
 
-Cloud cognition (LLM API) provider stubs for v1.x routing-layer
-extensions. Empty package in v1 -- reserved for the Phoenix-as-
-orchestrator-of-LLM-calls workloads sketched in Section 2.5 but not
-yet user-driven.
+Cognition substrate — native adapters for cloud LLM providers, per architecture v1 Section 4.2 + Decision 24 (v1.1 cognition extension).
 
-Architectural reference: `PHOENIX_ARCHITECTURE_v1.md` Section 2.5
-(Trinity Core's Orchestrate engine), Section 4 (routing layer's
-extensibility to non-quantum providers).
+This directory was a Phase-0 placeholder reserved for v1.x extension; Phase 13 fills it.
+
+## Phase 13 status
+
+**Step 1 (shipped):** `CognitionProvider` Protocol + payload dataclasses (`Prompt`, `Tool`, `CognitionResult`, `TokenUsage`, `ToolCall`, `ToolResult`) + `CognitionCapabilities`.
+
+**Step 2 (shipped):** three concrete adapters (Anthropic, OpenAI, Google Gemini) + typed-error hierarchy + shared `_CognitionAdapterBase` (P13-2 default) + minimal `ProviderRegistry` widening.
+
+**Step 3 (current):** optional `LiteLLMPassthroughProvider` behind the `[litellm]` pip extra; covers the long tail (~130 providers via the unified API: Ollama, vLLM, AWS Bedrock, Azure, Mistral, Cohere, xAI, Perplexity, etc.). Adds `MissingOptionalDependency` and `PricingUnavailable` typed errors. Adds `_requires_api_key` flag on the base class so LiteLLM bypasses the env-var auth check.
+
+**Step 4 (next):** three new `WobbleAxis` implementations for cognition (cross-model agreement, self-consistency, prompt-perturbation).
+
+## Files
+
+- [`protocol.py`](protocol.py) — `CognitionProvider` Protocol (PEP 544, `@runtime_checkable`) + `CognitionError` base.
+- [`capabilities.py`](capabilities.py) — `CognitionCapabilities` advertised feature dataclass.
+- [`types.py`](types.py) — payload dataclasses (`Prompt`, `Tool`, `TokenUsage`, `ToolCall`, `ToolResult`, `CognitionResult`).
+- [`errors.py`](errors.py) — typed-error hierarchy (six adapter errors + `MissingOptionalDependency` + `PricingUnavailable`).
+- [`_base.py`](_base.py) — `_CognitionAdapterBase` abstract base. Shared retry-with-backoff, API-key env-var SAFETY contract (gated on `_requires_api_key`), exception-mapping hook.
+- [`anthropic.py`](anthropic.py) — `AnthropicProvider` (Anthropic Claude API).
+- [`openai.py`](openai.py) — `OpenAIProvider` (OpenAI Chat Completions API).
+- [`google.py`](google.py) — `GoogleGeminiProvider` (Google Gemini API).
+- [`litellm_passthrough.py`](litellm_passthrough.py) — `LiteLLMPassthroughProvider` (any of ~130 providers via LiteLLM's unified API).
+
+## Installing the SDKs
+
+Each adapter's underlying SDK ships as an optional extra (heavy deps; opt-in only):
+
+```bash
+pip install phoenix-middleware[anthropic]   # AnthropicProvider
+pip install phoenix-middleware[openai]      # OpenAIProvider
+pip install phoenix-middleware[google]      # GoogleGeminiProvider
+pip install phoenix-middleware[cognition]   # umbrella: above three
+pip install phoenix-middleware[litellm]     # LiteLLMPassthroughProvider (long-tail)
+```
+
+Constructing an adapter without the SDK installed raises `CognitionError` with the install hint. Tests inject mocks via the `client=` constructor kwarg, so the test suite runs cleanly without any of the SDKs installed.
+
+## SAFETY
+
+API keys are read from environment variables only (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`); never from config files; never logged; never serialized into the ledger or audit. Missing-key situations raise `CognitionAuthError` at adapter construction time.
+
+## Open items carried forward
+
+- **`[OPEN: P13-1]`** — Raw provider response body storage. Step 1 default: `CognitionResult.raw_provider_body` reserves the field as `Optional[dict]`; populated only when `task.options.preserve_raw_provider_body=True` and the actor has `can_store_raw_provider_body`. Step 2 does not yet wire the gating into the adapters (that lands when `task.options` and the permission registry plumbing concretize in Step 9). The field is reserved as `None` in all Step 2 adapter returns.
+- **`[OPEN: P13-2]`** — Shared base class for cognition adapters. Step 2 ships the default: `_CognitionAdapterBase` carries retry-backoff + API-key SAFETY + exception-mapping hook; each provider's adapter inherits and implements `_do_complete`, `capabilities`, `fingerprint`, `_map_sdk_exception`. Reversible to independent adapters if the inheritance cost rises.
+- **Router cognition branch deferred** — the build guide mentions `Router.decide` gaining a `task.kind == "cognition"` branch in Step 2. Step 2 ships the registry helper (`ProviderRegistry.cognition_entries()`) but does NOT touch `Router.decide`. The full cognition dispatch path concretizes in Step 4+ when `WobbleAxis` impls need it.
+- **Live model discovery deferred** — adapters ship with static fallback capability lists. Live discovery from each provider's models endpoint is a Step 2 follow-up.
+
+See [`BUILDGUIDE_phoenix_v1_phase13_cognition_mcp_client.md`](../../../BUILDGUIDE_phoenix_v1_phase13_cognition_mcp_client.md) for full Phase 13 scope and [`DESIGN_DECISIONS_PHASE13_LOCKED_2026-05-18.md`](../../../DESIGN_DECISIONS_PHASE13_LOCKED_2026-05-18.md) for the five locked decisions.
+
+See [`BUILDGUIDE_phoenix_v1_phase13_cognition_mcp_client.md`](../../../BUILDGUIDE_phoenix_v1_phase13_cognition_mcp_client.md) for full Phase 13 scope and [`DESIGN_DECISIONS_PHASE13_LOCKED_2026-05-18.md`](../../../DESIGN_DECISIONS_PHASE13_LOCKED_2026-05-18.md) for the five locked decisions.

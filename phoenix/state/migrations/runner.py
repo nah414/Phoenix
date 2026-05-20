@@ -33,7 +33,12 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
-from phoenix.state.migrations import phase6b_initial, phase7_ledger, phase10_cost_ledger
+from phoenix.state.migrations import (
+    phase6b_initial,
+    phase7_ledger,
+    phase10_cost_ledger,
+    phase13_prompt_disposition,
+)
 
 
 class MigrationModule(Protocol):
@@ -59,6 +64,7 @@ ALL_MIGRATIONS: list[MigrationModule] = [
     cast(MigrationModule, phase6b_initial),
     cast(MigrationModule, phase7_ledger),
     cast(MigrationModule, phase10_cost_ledger),
+    cast(MigrationModule, phase13_prompt_disposition),
 ]
 
 

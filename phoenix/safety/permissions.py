@@ -48,6 +48,35 @@ class ActorPermissions:
     boundary + Phase 4 router defense-in-depth); the
     :attr:`frontier_physics` flag here is the Section 7-layer policy
     version (authority check above capability check).
+
+    **Phase 13 Step 9 extensions** (per 13-D2 + 13-D4 locked):
+
+    - :attr:`can_call_cognition` — gate for cognition-task dispatch.
+      Default ``True`` for ``default``-tier and above (cognition is a
+      first-class Phoenix capability); an admin can revoke per-actor
+      for compliance + cost-isolation scenarios.
+    - :attr:`can_call_mcp_server` — base capability; per-server access
+      controlled by Step 6's :class:`MCPServerRegistry` (specific
+      server name lookup happens in the dispatch helper). Default
+      ``False`` — the conservative posture: no MCP access without
+      admin grant.
+    - :attr:`can_register_mcp_server` — admin-only; required for
+      ``POST /v1/admin/mcp-servers/{name}``. Default ``False``.
+    - :attr:`can_store_prompt_verbatim` — required to dispatch a
+      cognition task with ``prompt_disposition=VERBATIM`` (13-D2).
+      Default ``False`` — the load-bearing privacy guarantee.
+    - :attr:`can_store_prompt_encrypted` — required for
+      ``ENCRYPTED_OPT_IN`` disposition. Default ``False``. Phase 13
+      ships the column + Protocol; the customer-key-management
+      ceremony lands later (see
+      :mod:`phoenix.ledger.encryption`).
+    - :attr:`can_store_raw_provider_body` — gates the
+      :attr:`CognitionResult.raw_provider_body` storage path
+      (P13-1 default). Default ``False``.
+    - :attr:`can_receive_token_stream` — required to subscribe to
+      ``token.delta`` WebSocket events (Phase 13 Step 7 streaming
+      surface). Default ``True`` — token streams are functional, not
+      privacy-bearing, so the conservative-stance is relaxed here.
     """
 
     can_submit_tasks: bool = True
@@ -58,13 +87,24 @@ class ActorPermissions:
     can_override_human_review: bool = False
     is_admin: bool = False
     rate_limit_tier: str = "default"
+    # ----- Phase 13 Step 9 extensions (cognition + MCP) -----
+    can_call_cognition: bool = True
+    can_call_mcp_server: bool = False
+    can_register_mcp_server: bool = False
+    can_store_prompt_verbatim: bool = False
+    can_store_prompt_encrypted: bool = False
+    can_store_raw_provider_body: bool = False
+    can_receive_token_stream: bool = True
 
 
 def _default_permissions_for(actor_name: str) -> ActorPermissions:
     """Return the default :class:`ActorPermissions` for a freshly-seen actor.
 
     Bootstrap actors (``adam``, ``ash``) get all-True + admin tier
-    per Section 7.3. Any other actor gets the safe minimum.
+    per Section 7.3 — including the Phase 13 cognition + MCP grants
+    so the development experience isn't gated on a permissions dance.
+    Any other actor gets the safe minimum (defaults documented on the
+    dataclass).
     """
     if actor_name.lower() in _BOOTSTRAP_ACTORS:
         return ActorPermissions(
@@ -76,6 +116,14 @@ def _default_permissions_for(actor_name: str) -> ActorPermissions:
             can_override_human_review=True,
             is_admin=True,
             rate_limit_tier="admin",
+            # ----- Phase 13 Step 9 bootstrap grants -----
+            can_call_cognition=True,
+            can_call_mcp_server=True,
+            can_register_mcp_server=True,
+            can_store_prompt_verbatim=True,
+            can_store_prompt_encrypted=True,
+            can_store_raw_provider_body=True,
+            can_receive_token_stream=True,
         )
     return ActorPermissions()
 

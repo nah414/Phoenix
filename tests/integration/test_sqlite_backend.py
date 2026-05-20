@@ -48,9 +48,10 @@ def test_migrations_apply_idempotently(db_path: Path) -> None:
 
     # Phase 6b shipped version 1; Phase 7 Step 5 adds version 2
     # (ledger_entries table); Phase 10 Step 2 adds version 3
-    # (solve_cost_ledger Phase-10 columns + budget_overrides table).
-    # The runner applies all three on a fresh DB.
-    assert versions_first == {1, 2, 3}
+    # (solve_cost_ledger Phase-10 columns + budget_overrides table);
+    # Phase 13 Step 8 adds version 4 (prompt_disposition columns on
+    # ledger_entries). The runner applies all four on a fresh DB.
+    assert versions_first == {1, 2, 3, 4}
     assert versions_first == versions_second
 
 

@@ -90,6 +90,12 @@ def verify_request(
     task_frontier_physics_flag: bool = False,
     request_id: str | None = None,
     skip_kill_switch_check: bool = False,
+    # ----- Phase 13 Step 9: cognition-task routing -----
+    task_kind: str = "physics",
+    cognition_prompt_disposition: str | None = None,
+    cognition_uses_raw_body: bool = False,
+    cognition_uses_token_stream: bool = False,
+    cognition_uses_mcp: bool = False,
 ) -> SafetyDecision:
     """Run the 9-stage pipeline over a request.
 
@@ -181,29 +187,46 @@ def verify_request(
             cost=cost,
         )
 
-        # Stage 6: frontier-physics authority check (Section 7.4 step 6).
-        if requested_regime is not None and requested_regime in FRONTIER_REGIME_NAMES:
-            if not permissions.frontier_physics:
-                raise FrontierPhysicsRefused(
-                    regime_name=requested_regime,
-                    reason=(
-                        f"Actor {actor.name!r} lacks frontier_physics permission "
-                        f"for regime {requested_regime!r}. Section 7.4 step 6 "
-                        f"authority check above Phase 2's engine-boundary "
-                        f"capability check."
-                    ),
-                )
-            # Defense-in-depth: caller intent must match the grant.
-            if not task_frontier_physics_flag:
-                raise FrontierPhysicsRefused(
-                    regime_name=requested_regime,
-                    reason=(
-                        f"Actor {actor.name!r} has frontier_physics permission "
-                        f"but task.tolerance.frontier_physics=False. Caller "
-                        f"intent must match the grant; opt in by setting "
-                        f"task.tolerance.frontier_physics=True."
-                    ),
-                )
+        # Stage 6 / 6b: kind-routed authority checks.
+        #
+        # Physics tasks → Stage 6 frontier-physics authority check
+        # (Section 7.4 step 6). Cognition tasks → Stage 6b cognition
+        # capability checks (Phase 13 Step 9 + 13-D2 + 13-D4). The
+        # frontier-physics check is irrelevant for cognition tasks;
+        # the cognition checks are irrelevant for physics tasks.
+        if task_kind == "cognition":
+            _check_cognition_capabilities(
+                actor,
+                permissions,
+                prompt_disposition=cognition_prompt_disposition,
+                uses_raw_body=cognition_uses_raw_body,
+                uses_token_stream=cognition_uses_token_stream,
+                uses_mcp=cognition_uses_mcp,
+            )
+        else:
+            # Stage 6: frontier-physics authority check.
+            if requested_regime is not None and requested_regime in FRONTIER_REGIME_NAMES:
+                if not permissions.frontier_physics:
+                    raise FrontierPhysicsRefused(
+                        regime_name=requested_regime,
+                        reason=(
+                            f"Actor {actor.name!r} lacks frontier_physics permission "
+                            f"for regime {requested_regime!r}. Section 7.4 step 6 "
+                            f"authority check above Phase 2's engine-boundary "
+                            f"capability check."
+                        ),
+                    )
+                # Defense-in-depth: caller intent must match the grant.
+                if not task_frontier_physics_flag:
+                    raise FrontierPhysicsRefused(
+                        regime_name=requested_regime,
+                        reason=(
+                            f"Actor {actor.name!r} has frontier_physics permission "
+                            f"but task.tolerance.frontier_physics=False. Caller "
+                            f"intent must match the grant; opt in by setting "
+                            f"task.tolerance.frontier_physics=True."
+                        ),
+                    )
 
         # Stage 7: reproducibility mode dispatch -- Phase 7 Step 7 fills in.
         # Stage 8: audit event -- handled in finally below.
@@ -312,3 +335,117 @@ def _has_capability(permissions: ActorPermissions, capability: str) -> bool:
     (not a SafetyError; a coding bug surfacing).
     """
     return bool(getattr(permissions, capability))
+
+
+def _check_cognition_capabilities(
+    actor: Actor,
+    permissions: ActorPermissions,
+    *,
+    prompt_disposition: str | None,
+    uses_raw_body: bool,
+    uses_token_stream: bool,
+    uses_mcp: bool,
+) -> None:
+    """Stage 6b — cognition-task authority checks (Phase 13 Step 9).
+
+    Per 13-D2 + 13-D4 (locked 2026-05-18): cognition tasks have
+    distinct permission surface from physics tasks. This helper
+    enforces the load-bearing capability gates in order:
+
+    1. ``can_call_cognition`` — base gate; without it, no cognition
+       dispatch at all.
+    2. ``can_store_prompt_verbatim`` — required if the task opts into
+       ``prompt_disposition=VERBATIM`` (13-D2 default is ``HASH_ONLY``
+       which is permission-free).
+    3. ``can_store_prompt_encrypted`` — required if the task opts into
+       ``prompt_disposition=ENCRYPTED_OPT_IN``.
+    4. ``can_store_raw_provider_body`` — required if the task opts
+       into raw-provider-body storage (P13-1 path; default off).
+    5. ``can_receive_token_stream`` — required for tasks that
+       subscribe to ``token.delta`` WebSocket events.
+    6. ``can_call_mcp_server`` — base gate when the task list any MCP
+       tools; per-server access is then enforced by Step 6's
+       dispatch helper :func:`phoenix.mcp.dispatch.check_mcp_dispatch`.
+
+    Each failure raises :class:`PermissionDenied` with the missing
+    capability name; the caller's ``finally`` block emits the audit
+    event labeled ``safety.gate.denied.permission``.
+
+    Defense-in-depth note: the cognition adapters + MCP dispatch
+    helper also check the relevant permissions at their own seams.
+    This stage is the policy-layer first-line check; the per-seam
+    checks are the defense-in-depth second line.
+    """
+    # 1. Base cognition gate.
+    if not permissions.can_call_cognition:
+        raise PermissionDenied(
+            f"Actor {actor.name!r} lacks 'can_call_cognition' capability.",
+            actor_name=actor.name,
+            missing_capability="can_call_cognition",
+        )
+
+    # 2. Prompt-disposition opt-ins (13-D2).
+    if prompt_disposition == "VERBATIM":
+        if not permissions.can_store_prompt_verbatim:
+            raise PermissionDenied(
+                (
+                    f"Actor {actor.name!r} lacks 'can_store_prompt_verbatim' "
+                    f"capability; cannot dispatch a cognition task with "
+                    f"prompt_disposition=VERBATIM. Default disposition "
+                    f"(HASH_ONLY) is permission-free; admin can grant "
+                    f"verbatim via POST /v1/identity/permissions/"
+                    f"grant-prompt-verbatim."
+                ),
+                actor_name=actor.name,
+                missing_capability="can_store_prompt_verbatim",
+            )
+    elif prompt_disposition == "ENCRYPTED_OPT_IN":
+        if not permissions.can_store_prompt_encrypted:
+            raise PermissionDenied(
+                (
+                    f"Actor {actor.name!r} lacks "
+                    f"'can_store_prompt_encrypted' capability; cannot "
+                    f"dispatch a cognition task with "
+                    f"prompt_disposition=ENCRYPTED_OPT_IN."
+                ),
+                actor_name=actor.name,
+                missing_capability="can_store_prompt_encrypted",
+            )
+
+    # 3. Raw-provider-body storage opt-in (P13-1).
+    if uses_raw_body and not permissions.can_store_raw_provider_body:
+        raise PermissionDenied(
+            (
+                f"Actor {actor.name!r} lacks "
+                f"'can_store_raw_provider_body' capability; cannot "
+                f"opt into raw-provider-body storage. Default off "
+                f"(P13-1 conservative default)."
+            ),
+            actor_name=actor.name,
+            missing_capability="can_store_raw_provider_body",
+        )
+
+    # 4. Token-stream subscription.
+    if uses_token_stream and not permissions.can_receive_token_stream:
+        raise PermissionDenied(
+            (
+                f"Actor {actor.name!r} lacks "
+                f"'can_receive_token_stream' capability; cannot "
+                f"subscribe to token.delta events."
+            ),
+            actor_name=actor.name,
+            missing_capability="can_receive_token_stream",
+        )
+
+    # 5. Base MCP-call gate (per-server check happens at dispatch time).
+    if uses_mcp and not permissions.can_call_mcp_server:
+        raise PermissionDenied(
+            (
+                f"Actor {actor.name!r} lacks 'can_call_mcp_server' "
+                f"capability; cannot dispatch a cognition task that "
+                f"references any MCP tool. Per-server access also "
+                f"requires the server to be registered (13-D4)."
+            ),
+            actor_name=actor.name,
+            missing_capability="can_call_mcp_server",
+        )

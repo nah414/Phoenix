@@ -15,6 +15,156 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.1.0.dev0] — 2026-05-20
+
+Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
+quantum + classical-cognition substrate. The same audit-grade guarantees
+(typed errors, hashchained ledger, three-axis wobble verification,
+permission-gated dispatch) now apply to LLM provider calls and MCP-server
+tool dispatch. Phoenix can verify cognition outputs the same way it
+verifies physics solutions.
+
+This release lands ten build-guide steps on the
+`phase-13-cognition-mcp-client` branch (draft PR #15).
+
+### Cognition substrate (Steps 1–5)
+
+- **`phoenix.providers.cognition`** — :class:`CognitionProvider` PEP 544
+  Protocol (`complete`, `capabilities`, `fingerprint`) + three concrete
+  adapters (`AnthropicProvider`, `OpenAIProvider`, `GoogleProvider`) +
+  a `LiteLLMPassthroughProvider` covering ~100 additional models.
+  Adapters share a `_CognitionAdapterBase` with retry/backoff +
+  cost-estimation seams. Typed errors:
+  `CognitionAuthError`, `CognitionRateLimited`, `CognitionUpstreamFailure`,
+  `MissingOptionalDependency`, `PricingUnavailable`.
+
+- **Three cognition wobble axes** (`phoenix.verification.axes`):
+  :class:`CrossModelAxis` (compare two providers; disagreement → wobble),
+  :class:`SelfConsistencyAxis` (same provider, N samples, temperature > 0;
+  intra-distribution spread → wobble),
+  :class:`PromptPerturbationAxis` (N rephrasings; sensitivity → wobble).
+  Each emits :class:`CognitionDisagreementMetric` with semantic-distance +
+  classifier-confidence + classifier-version.
+
+- **`vendor/cognition_wobble/`** — Phoenix-authored substrate parallel
+  to `vendor/wobble/` for physics. Includes
+  :class:`CognitionDisagreementType` enum (7 classes), the
+  `CognitionClassifier` Protocol with `GBMClassifier` /
+  `LLMJudgeClassifier` / `HybridClassifier` impls (the P13-4 default),
+  and a calibration eval framework. The full 200+-example labeled
+  corpus + trained GBM model + 22 MB embedding artifact land as
+  Adam's calibration data work.
+
+### MCP-client mode (Step 6) — 13-D4 enforced
+
+- **`phoenix.mcp`** — Phoenix-as-MCP-client subsystem with per-server
+  admin registration. :class:`MCPServerSpec` rejects `'*'` in
+  `allowed_tools` at construction. :class:`MCPServerRegistry` is
+  JSON-file-persisted (atomic-write tmp + replace).
+  `check_mcp_dispatch()` enforces **no TOFU, no empty-default-allows-all,
+  no discovery-based auto-add**. Async :class:`MCPClient` wraps the
+  `mcp` SDK (optional extra). Three admin endpoints under
+  `/v1/admin/mcp-servers/...`.
+
+### Streaming surface (Step 7)
+
+- :class:`StreamingCognitionProvider` Protocol — `astream()` async
+  iterator emitting `StreamTokenDelta` / `StreamToolCallStart` /
+  `StreamFinal` events. `AnthropicProvider.astream()` ships;
+  OpenAI/Google/LiteLLM streaming follows the same pattern in v1.1.x.
+- WebSocket extension to `/v1/ws/tasks/{task_id}/stream` with an
+  `events=` filter param; cognition `token.delta` events route through.
+- **P13-6 resolved**: `HASH_ONLY` disposition suppresses `token.delta`
+  emission (the prompt + raw deltas would be a privacy leak);
+  `tool_call` + `tool_result` events still flow. Rate-cap configurable
+  via `PHOENIX_STREAM_RATE_CAP` (default 100/sec).
+
+### Privacy controls (Step 8) — 13-D2 enforced
+
+- **Ledger schema v4** migration adds five columns to `ledger_entries`:
+  `prompt_disposition` NOT NULL DEFAULT 'HASH_ONLY', `prompt_hash`,
+  `prompt_verbatim`, `prompt_encrypted` BLOB, `cognition_provenance_json`.
+- **`phoenix.ledger.prompt_disposition`** — canonicalization with
+  sorted-keys JSON + whitespace normalization (cross-OS hash equality);
+  SHA-256 hex hash. Metadata excluded from the hash so audit-field
+  variation doesn't break replay verification.
+- **`phoenix.ledger.encryption`** — `PromptEncryptor` Protocol +
+  `NullPromptEncryptor` default (raises
+  `EncryptedDispositionNotConfigured`). Column ships; KMS ceremony
+  lands later.
+
+### Permission registry + admin endpoints (Step 9)
+
+- **`ActorPermissions` extended** with 7 new flags:
+  `can_call_cognition` (default True), `can_call_mcp_server`,
+  `can_register_mcp_server`, `can_store_prompt_verbatim`,
+  `can_store_prompt_encrypted`, `can_store_raw_provider_body`,
+  `can_receive_token_stream`. Bootstrap actors get all granted.
+- **Safety gate stage 6b** — `verify_request(..., task_kind="cognition")`
+  routes through cognition capability checks (skipping the
+  frontier-physics check). Each opt-in raises `PermissionDenied` with
+  the missing capability name when the gate is closed.
+- **Three new admin endpoints**:
+  - `POST /v1/identity/permissions/grant-prompt-verbatim` — updates
+    registry + appends `PermissionGrantEntry` to the Omega Ledger.
+  - `POST /v1/admin/budget/cognition-override` — cognition-specific
+    budget bump with three new scope tokens.
+  - `GET /v1/admin/audit/cognition-spend` — per-actor cognition spend
+    aggregation over rolling window.
+
+### Acceptance + closeout (Step 10)
+
+- Three new `@pytest.mark.acceptance` tests added to the Phase 11
+  acceptance battery: `test_cognition_panic_mode.py`,
+  `test_mcp_server_panic_mode.py`, `test_long_window_replay_cognition.py`.
+- Phoenix wheel size now ~520 KB (added cognition adapters + MCP
+  client).
+
+### Locked decisions (2026-05-18)
+
+- **13-D1** — License stays Apache 2.0. Conditionally locked at
+  draft-lock pending the frank-data root LICENSE declaration;
+  resolved 2026-05-18 with the Apache 2.0 grant on the frank-data repo.
+- **13-D2** — `HASH_ONLY` is the load-bearing default for prompt
+  storage; `VERBATIM` + `ENCRYPTED_OPT_IN` are explicit opt-ins
+  requiring admin grant.
+- **13-D3** — Cognition classifier is independent of any specific
+  model; the hybrid GBM + LLM-judge architecture (P13-4 default) is
+  swappable via the `CognitionClassifier` Protocol.
+- **13-D4** — MCP-client mode requires per-server admin
+  registration. No TOFU, no empty-default-allows-all, no discovery
+  auto-add, no `'*'` in `allowed_tools`.
+- **13-D5** — Phase 13 lands as an additive substrate; the existing
+  physics surface remains untouched.
+
+### Honesty notes
+
+- **Calibration data is bootstrap-only.** The classifier ships with 14
+  hand-crafted examples — enough to exercise the Protocol surface,
+  not enough to gate macro-F1 ≥ 0.70 in production. The full corpus
+  + trained model land as Adam's data work; the build guide's gate
+  is **not** load-bearing for Steps 6-10 (the privacy + permission
+  layer is independent of classifier quality).
+- **OpenAI / Google / LiteLLM streaming not yet implemented.** Only
+  `AnthropicProvider.astream()` ships. The Protocol surface exists
+  for the other three; the implementations are v1.1.x follow-up.
+- **Encryption ceremony deferred.** Phase 13 ships the
+  `prompt_encrypted` column + `PromptEncryptor` Protocol; the actual
+  KMS integration + key-rotation ceremony lands later. The default
+  `NullPromptEncryptor` raises rather than silently failing.
+- **No `solve_entries` table.** The build guide references a
+  `solve_entries` table; the actual hashchained provenance table is
+  `ledger_entries`. The Phase 13 migration extends `ledger_entries`;
+  the naming drift is documented in the migration's module docstring.
+
+### Test surface
+
+- 482 unit + cognition tests pass.
+- 678 integration tests pass (31 skipped for Postgres absence).
+- mypy --strict clean on 168 source files; ruff check clean.
+
+---
+
 ## [1.0.0rc1] — 2026-05-14
 
 Phase 12 closes the v1 release-artifact surface. Phoenix's logical
