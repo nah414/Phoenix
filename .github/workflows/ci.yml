@@ -104,7 +104,7 @@ jobs:
           /tmp/venv/bin/pip install dist/*.whl
           /tmp/venv/bin/python -c "
           import phoenix, synthesis.equations.base, wobble.disagreement_types, actor, omega, ml, grammar
-          assert phoenix.__version__.startswith('1.0.0')
+          assert phoenix.__version__.startswith('1.1.0')
           print('wheel smoke OK:', phoenix.__version__)
           "
           /tmp/venv/bin/phoenix --version
