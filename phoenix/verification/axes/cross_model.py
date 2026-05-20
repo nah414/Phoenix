@@ -5,23 +5,27 @@ more registered cognition providers (typically the primary plus the
 cheapest secondary from the same capability tier), then returns the
 raw pairwise distance metric.
 
-Step 4 ships the mechanism; the "primary + cheapest secondary"
-selection logic concretizes in Step 5+ when the cognition routing
-surface is in place. For Step 4, the caller passes the providers
-explicitly.
+**Step 5b update:** optional ``classifier`` kwarg. When provided, the
+axis calls the classifier on the (prompt, responses) tuple and
+populates ``CognitionDisagreementMetric.disagreement_type`` with the
+classifier's output class instead of the bare ``UNCLASSIFIED``. The
+classifier is structurally-typed (any
+:class:`cognition_wobble.classifier.CognitionClassifier`-conformant
+object) so the verification gate (Step 9+) can inject the hybrid
+GBM/judge classifier from cognition_wobble without coupling the
+axis to a specific classifier impl.
 
-The axis emits ``disagreement_type =
-PhoenixDisagreementType.COGNITION_UNCLASSIFIED`` per Step 4 spec; the
-Step 5 classifier replaces this with a real class (FACTUAL_AGREEMENT,
-STYLISTIC_DIVERGENCE, etc.).
+For multi-response axes the classifier is called on the first two
+responses; pairwise classification across N>2 responses is a
+Step 5c+ enhancement.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.providers.cognition.types import Prompt
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
 from phoenix.verification.axes._distance import mean_off_diagonal, pairwise_distance_matrix
 from phoenix.verification.axes._result import (
     CognitionAxisProvenance,
@@ -29,6 +33,7 @@ from phoenix.verification.axes._result import (
 )
 
 if TYPE_CHECKING:
+    from cognition_wobble.classifier import CognitionClassifier
     from phoenix.providers.cognition.protocol import CognitionProvider
 
 
@@ -43,7 +48,12 @@ class CrossModelAxis:
 
     name: str = "cognition_cross_model"
 
-    def __init__(self, *, providers: list[CognitionProvider]) -> None:
+    def __init__(
+        self,
+        *,
+        providers: list[CognitionProvider],
+        classifier: CognitionClassifier | None = None,
+    ) -> None:
         """Construct.
 
         Args:
@@ -51,8 +61,16 @@ class CrossModelAxis:
                 dispatch in parallel. The axis raises at :meth:`run` if
                 fewer than 2 are configured (the pairwise comparison is
                 undefined).
+            classifier: Optional cognition disagreement classifier. When
+                provided, the axis calls
+                :meth:`CognitionClassifier.classify` on the first two
+                responses and populates
+                ``CognitionDisagreementMetric.disagreement_type``
+                accordingly. When ``None``, the axis emits raw
+                ``UNCLASSIFIED`` (the Step 4 behavior).
         """
         self._providers: list[CognitionProvider] = list(providers)
+        self._classifier = classifier
 
     def applies_to(self, prompt: Prompt) -> bool:
         """At least 2 providers must be configured for the axis to apply."""
@@ -71,9 +89,8 @@ class CrossModelAxis:
 
         Returns a :class:`CognitionDisagreementMetric` with the full
         pairwise matrix, per-provider provenance, and the raw
-        responses. ``disagreement_type`` is always
-        :attr:`PhoenixDisagreementType.COGNITION_UNCLASSIFIED` at
-        Step 4; Step 5's classifier replaces it.
+        responses. If a classifier was configured, ``disagreement_type``
+        is the classifier's output; otherwise it is ``UNCLASSIFIED``.
         """
         if len(self._providers) < 2:
             raise ValueError(
@@ -100,15 +117,28 @@ class CrossModelAxis:
         matrix = pairwise_distance_matrix(texts)
         aggregate = mean_off_diagonal(matrix)
 
+        # Optional classifier integration (Step 5b).
+        disagreement_type = CognitionDisagreementType.UNCLASSIFIED
+        classifier_confidence: float | None = None
+        classifier_version: str | None = None
+        if self._classifier is not None:
+            classification = self._classifier.classify(prompt, responses[:2])
+            disagreement_type = classification.disagreement_type
+            classifier_confidence = classification.confidence
+            classifier_version = classification.classifier_version
+
         return CognitionDisagreementMetric(
             axis_name=self.name,
             distance=aggregate,
-            disagreement_type=PhoenixDisagreementType.COGNITION_UNCLASSIFIED,
+            disagreement_type=disagreement_type,
             pairwise_distance_matrix=matrix,
             provenance=provenance,
             responses=responses,
+            classifier_confidence=classifier_confidence,
+            classifier_version=classifier_version,
             metadata={
                 "n_providers": len(self._providers),
-                "distance_metric": "exact_string",  # Step 4 P13-3 default
+                "distance_metric": "semantic_with_fallback",  # Step 5b upgrade
+                "classifier_attached": self._classifier is not None,
             },
         )

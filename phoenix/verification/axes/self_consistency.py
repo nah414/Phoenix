@@ -9,16 +9,17 @@ Use case: a task with a single load-bearing factual claim should
 yield the same answer across temperatures; large pairwise distance
 indicates the provider hedges or hallucinates.
 
-The axis emits ``disagreement_type =
-PhoenixDisagreementType.COGNITION_UNCLASSIFIED`` per Step 4 spec.
+**Step 5b update:** optional ``classifier`` kwarg threads through
+the same way as :class:`CrossModelAxis`. The classifier classifies
+the first two responses (the lowest-temperature pair).
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.providers.cognition.types import Prompt
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
 from phoenix.verification.axes._distance import mean_off_diagonal, pairwise_distance_matrix
 from phoenix.verification.axes._result import (
     CognitionAxisProvenance,
@@ -26,6 +27,7 @@ from phoenix.verification.axes._result import (
 )
 
 if TYPE_CHECKING:
+    from cognition_wobble.classifier import CognitionClassifier
     from phoenix.providers.cognition.protocol import CognitionProvider
 
 
@@ -43,6 +45,7 @@ class SelfConsistencyAxis:
         *,
         provider: CognitionProvider,
         temperatures: list[float] | tuple[float, ...] | None = None,
+        classifier: CognitionClassifier | None = None,
     ) -> None:
         """Construct.
 
@@ -53,11 +56,15 @@ class SelfConsistencyAxis:
                 ``[0.0, 0.5, 0.7]`` per Step 4 spec. The list length
                 determines ``n``; a length of 1 is allowed (trivial
                 self-consistency check, distance always 0.0).
+            classifier: Optional cognition disagreement classifier
+                (Step 5b). See :class:`CrossModelAxis` for the same
+                semantics.
         """
         self._provider = provider
         self._temperatures: tuple[float, ...] = (
             tuple(temperatures) if temperatures is not None else _DEFAULT_TEMPERATURES
         )
+        self._classifier = classifier
 
     def applies_to(self, prompt: Prompt) -> bool:
         """The axis always applies for a non-empty temperature list."""
@@ -70,11 +77,7 @@ class SelfConsistencyAxis:
         *,
         max_tokens: int = 1024,
     ) -> CognitionDisagreementMetric:
-        """Dispatch the prompt at each configured temperature.
-
-        Returns a :class:`CognitionDisagreementMetric` with the full
-        pairwise matrix across responses.
-        """
+        """Dispatch the prompt at each configured temperature."""
         if not self._temperatures:
             raise ValueError(f"{self.name}: requires at least 1 temperature.")
 
@@ -98,16 +101,29 @@ class SelfConsistencyAxis:
         matrix = pairwise_distance_matrix(texts)
         aggregate = mean_off_diagonal(matrix)
 
+        # Optional classifier integration (Step 5b). Need >=2 responses.
+        disagreement_type = CognitionDisagreementType.UNCLASSIFIED
+        classifier_confidence: float | None = None
+        classifier_version: str | None = None
+        if self._classifier is not None and len(responses) >= 2:
+            classification = self._classifier.classify(prompt, responses[:2])
+            disagreement_type = classification.disagreement_type
+            classifier_confidence = classification.confidence
+            classifier_version = classification.classifier_version
+
         return CognitionDisagreementMetric(
             axis_name=self.name,
             distance=aggregate,
-            disagreement_type=PhoenixDisagreementType.COGNITION_UNCLASSIFIED,
+            disagreement_type=disagreement_type,
             pairwise_distance_matrix=matrix,
             provenance=provenance,
             responses=responses,
+            classifier_confidence=classifier_confidence,
+            classifier_version=classifier_version,
             metadata={
                 "n_samples": len(self._temperatures),
                 "temperatures": list(self._temperatures),
-                "distance_metric": "exact_string",
+                "distance_metric": "semantic_with_fallback",
+                "classifier_attached": self._classifier is not None,
             },
         )

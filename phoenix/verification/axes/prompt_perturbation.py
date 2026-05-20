@@ -23,7 +23,10 @@ than the underlying intent.
   a meta-prompt. Convenient but adds one LLM call to the axis cost.
 
 The axis emits ``disagreement_type =
-PhoenixDisagreementType.COGNITION_UNCLASSIFIED`` per Step 4 spec.
+CognitionDisagreementType.UNCLASSIFIED`` per Step 4 spec when no
+classifier is configured. **Step 5b update:** an optional
+``classifier`` kwarg threads the cognition disagreement classifier
+through the same pattern as :class:`CrossModelAxis`.
 """
 
 from __future__ import annotations
@@ -31,8 +34,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Callable
 
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.providers.cognition.types import Prompt
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
 from phoenix.verification.axes._distance import mean_off_diagonal, pairwise_distance_matrix
 from phoenix.verification.axes._result import (
     CognitionAxisProvenance,
@@ -40,6 +43,7 @@ from phoenix.verification.axes._result import (
 )
 
 if TYPE_CHECKING:
+    from cognition_wobble.classifier import CognitionClassifier
     from phoenix.providers.cognition.protocol import CognitionProvider
 
 
@@ -55,6 +59,7 @@ class PromptPerturbationAxis:
         provider: CognitionProvider,
         paraphraser: Callable[[Prompt, int], list[Prompt]] | None = None,
         n_perturbations: int = 3,
+        classifier: CognitionClassifier | None = None,
     ) -> None:
         """Construct.
 
@@ -68,10 +73,14 @@ class PromptPerturbationAxis:
                 provider with a meta-prompt.
             n_perturbations: Number of paraphrased prompts to
                 generate. Default 3.
+            classifier: Optional cognition disagreement classifier
+                (Step 5b). See :class:`CrossModelAxis` for the same
+                semantics.
         """
         self._provider = provider
         self._paraphraser = paraphraser
         self._n_perturbations = n_perturbations
+        self._classifier = classifier
 
     def applies_to(self, prompt: Prompt) -> bool:
         """At least 1 perturbation must be requested."""
@@ -133,17 +142,30 @@ class PromptPerturbationAxis:
         matrix = pairwise_distance_matrix(texts)
         aggregate = mean_off_diagonal(matrix)
 
+        # Optional classifier integration (Step 5b). Need >=2 responses.
+        disagreement_type = CognitionDisagreementType.UNCLASSIFIED
+        classifier_confidence: float | None = None
+        classifier_version: str | None = None
+        if self._classifier is not None and len(responses) >= 2:
+            classification = self._classifier.classify(prompt, responses[:2])
+            disagreement_type = classification.disagreement_type
+            classifier_confidence = classification.confidence
+            classifier_version = classification.classifier_version
+
         return CognitionDisagreementMetric(
             axis_name=self.name,
             distance=aggregate,
-            disagreement_type=PhoenixDisagreementType.COGNITION_UNCLASSIFIED,
+            disagreement_type=disagreement_type,
             pairwise_distance_matrix=matrix,
             provenance=provenance,
             responses=responses,
+            classifier_confidence=classifier_confidence,
+            classifier_version=classifier_version,
             metadata={
                 "n_perturbations": len(perturbations),
                 "perturbation_texts": perturbation_texts,
-                "distance_metric": "exact_string",
+                "distance_metric": "semantic_with_fallback",
+                "classifier_attached": self._classifier is not None,
             },
         )
 

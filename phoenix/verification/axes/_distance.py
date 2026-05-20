@@ -41,11 +41,26 @@ def _text_distance(text_a: str, text_b: str) -> float:
 def text_distance(text_a: str, text_b: str) -> float:
     """Public distance entry point used by the cognition axes.
 
-    Stays as a thin pass-through so Step 5 can replace
-    :func:`_text_distance` (or add a metric-selector) without
-    touching the axis classes.
+    Step 5b upgrade: routes through
+    :func:`cognition_wobble.embeddings.compute_semantic_distance`,
+    which uses the pinned ``all-MiniLM-L6-v2`` sentence-transformers
+    model when available. When the model isn't available (the
+    ``[ml-classifier]`` extra not installed OR the model artifact
+    not yet committed — Step 5c work), the cognition_wobble loader
+    falls back to exact-string distance via
+    :func:`_text_distance`. Net result: this function is
+    drop-in-compatible with the Step 4 behavior, with a free
+    upgrade once the embedding artifact lands.
     """
-    return _text_distance(text_a, text_b)
+    try:
+        from cognition_wobble.embeddings import compute_semantic_distance
+    except ImportError:
+        # cognition_wobble itself failed to import — fall back hard.
+        return _text_distance(text_a, text_b)
+    # Explicit float() cast: cognition_wobble is in mypy's
+    # ignore_missing_imports list, so its returns are Any-typed at
+    # this call site. The cast restores the strict float return type.
+    return float(compute_semantic_distance(text_a, text_b))
 
 
 def pairwise_distance_matrix(texts: list[str]) -> list[list[float]]:

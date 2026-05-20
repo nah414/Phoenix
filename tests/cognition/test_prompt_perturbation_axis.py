@@ -14,7 +14,7 @@ from phoenix.providers.cognition.types import (
     TokenUsage,
     Tool,
 )
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.verification.axes.prompt_perturbation import (
     PromptPerturbationAxis,
     _parse_paraphrase_list,
@@ -177,7 +177,7 @@ def test_disagreement_type_unclassified() -> None:
         Prompt(system=None, messages=[{"role": "user", "content": "b"}]),
     ]
     metric = axis.run(_prompt(), perturbations=perts)
-    assert metric.disagreement_type == PhoenixDisagreementType.COGNITION_UNCLASSIFIED
+    assert metric.disagreement_type == CognitionDisagreementType.UNCLASSIFIED
 
 
 def test_zero_n_perturbations_raises() -> None:

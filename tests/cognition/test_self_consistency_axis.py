@@ -13,7 +13,7 @@ from phoenix.providers.cognition.types import (
     TokenUsage,
     Tool,
 )
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.verification.axes.self_consistency import SelfConsistencyAxis
 
 
@@ -105,7 +105,7 @@ def test_disagreement_type_unclassified() -> None:
     provider = _DeterministicProvider(text_fn=lambda t: "x")
     axis = SelfConsistencyAxis(provider=provider, temperatures=[0.0, 0.5])
     metric = axis.run(_prompt())
-    assert metric.disagreement_type == PhoenixDisagreementType.COGNITION_UNCLASSIFIED
+    assert metric.disagreement_type == CognitionDisagreementType.UNCLASSIFIED
 
 
 def test_metadata_carries_temperatures() -> None:

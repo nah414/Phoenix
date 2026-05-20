@@ -2,8 +2,17 @@
 
 Per Phase 13 build guide Step 4: cognition axes return raw
 :class:`CognitionDisagreementMetric` instances with
-``disagreement_type = PhoenixDisagreementType.COGNITION_UNCLASSIFIED``.
-The Step 5 classifier replaces ``UNCLASSIFIED`` with a real class.
+``disagreement_type = CognitionDisagreementType.UNCLASSIFIED`` when
+no classifier is configured.
+
+**Step 5b type swap:** the ``disagreement_type`` field is now typed
+:class:`cognition_wobble.disagreement_types.CognitionDisagreementType`
+(was :class:`PhoenixDisagreementType` in Step 4). The cognition
+substrate owns its native enum end-to-end; the verification gate's
+cognition branch (Step 9+) decides the cross-enum integration with
+:class:`PhoenixDisagreementType` at that boundary. The earlier
+``PhoenixDisagreementType.COGNITION_UNCLASSIFIED`` value remains in
+the Phoenix-side enum for future gate-level use.
 """
 
 from __future__ import annotations
@@ -11,8 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.providers.cognition.types import CognitionResult, TokenUsage
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
 
 
 @dataclass(frozen=True)
@@ -56,9 +65,11 @@ class CognitionDisagreementMetric:
         distance: Aggregate disagreement scalar in [0, 1]. For
             multi-response axes, this is the mean of the off-diagonal
             entries of :attr:`pairwise_distance_matrix`.
-        disagreement_type: Per Step 4 spec, always
-            :attr:`PhoenixDisagreementType.COGNITION_UNCLASSIFIED`. The
-            Step 5 classifier replaces this with a real class.
+        disagreement_type: A :class:`CognitionDisagreementType` value.
+            When the axis ran without a classifier, this is
+            ``UNCLASSIFIED``. When a classifier was configured, this
+            is the classifier's output class (or ``UNCLASSIFIED`` if
+            the classifier's confidence fell below threshold).
         pairwise_distance_matrix: N×N matrix where ``[i][j]`` is the
             distance between response ``i`` and response ``j``.
             Diagonal entries are ``0.0``; the matrix is symmetric.
@@ -70,14 +81,23 @@ class CognitionDisagreementMetric:
             the axis's dispatches. The Omega Ledger entry references
             these by hash in Step 8+; Step 4 carries the objects
             directly for in-process consumers.
+        classifier_confidence: When a classifier was configured,
+            the classifier's reported confidence in
+            :attr:`disagreement_type`. ``None`` when no classifier
+            was used.
+        classifier_version: When a classifier was configured, the
+            classifier's version string for ledger provenance.
+            ``None`` when no classifier was used.
         metadata: Free-form axis-specific extras (e.g.
             ``"perturbation_prompts"`` for PromptPerturbationAxis).
     """
 
     axis_name: str
     distance: float
-    disagreement_type: PhoenixDisagreementType
+    disagreement_type: CognitionDisagreementType
     pairwise_distance_matrix: list[list[float]]
     provenance: list[CognitionAxisProvenance]
     responses: list[CognitionResult]
+    classifier_confidence: float | None = None
+    classifier_version: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

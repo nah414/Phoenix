@@ -13,7 +13,7 @@ from phoenix.providers.cognition.types import (
     TokenUsage,
     Tool,
 )
-from phoenix.verification.agreement_classifier import PhoenixDisagreementType
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.verification.axes.cross_model import CrossModelAxis
 
 
@@ -81,11 +81,11 @@ def test_all_responses_agree_yields_zero_distance() -> None:
     metric = axis.run(_make_prompt())
 
     assert metric.distance == 0.0
-    assert metric.disagreement_type == PhoenixDisagreementType.COGNITION_UNCLASSIFIED
+    assert metric.disagreement_type == CognitionDisagreementType.UNCLASSIFIED
     assert len(metric.responses) == 3
     assert len(metric.provenance) == 3
     assert metric.metadata["n_providers"] == 3
-    assert metric.metadata["distance_metric"] == "exact_string"
+    assert metric.metadata["distance_metric"] == "semantic_with_fallback"
 
 
 def test_all_responses_differ_yields_max_distance() -> None:

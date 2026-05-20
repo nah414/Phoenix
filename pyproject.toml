@@ -143,6 +143,17 @@ cognition = [
 litellm = [
     "litellm>=1.50,<2.0",
 ]
+# Phase 13 Step 5b -- ML deps for the cognition disagreement classifier:
+# lightgbm (GBM primary classifier) + sentence-transformers (semantic
+# distance metric for the cognition wobble axes). Both opt-in;
+# sentence-transformers ships the all-MiniLM-L6-v2 model lazily (Step 5c
+# commits a vendored copy at vendor/cognition_wobble/embeddings/).
+#     pip install phoenix-middleware[ml-classifier]
+# Both libraries are Apache 2.0 / MIT compatible.
+ml-classifier = [
+    "lightgbm>=4.0,<5.0",
+    "sentence-transformers>=2.5,<4.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/nah414/Phoenix"
@@ -216,21 +227,13 @@ extend-exclude = ["vendor"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-# Per-package excludes (not a blanket vendor/ exclude) so Phase 13's
-# Phoenix-authored cognition_wobble/ gets type-checked. The other
-# vendored modules (wobble, synthesis, etc.) come from upstream
-# without our typing conventions; the per-package excludes keep mypy
-# from complaining about them.
-exclude = [
-    "vendor/wobble/",
-    "vendor/synthesis/",
-    "vendor/grammar/",
-    "vendor/actor/",
-    "vendor/omega/",
-    "vendor/ml/",
-    "build/",
-    "dist/",
-]
+# Blanket vendor/ exclude (the original Phase 12 setup). Phase 13's
+# Phoenix-authored cognition_wobble/ is type-checked by passing
+# its files explicitly on the mypy CLI in CI / verification runs;
+# the auto-discovery exclude here keeps mypy from transitively
+# pulling in vendor/synthesis et al. when checking phoenix/ entry
+# points, which would surface unrelated type errors from upstream.
+exclude = ["vendor/", "build/", "dist/"]
 
 # Vendored module names resolve via sys.path injection (phoenix/__init__.py
 # per architecture v1 Section 11.7.1). The vendored code has no type stubs;
@@ -299,6 +302,17 @@ ignore_missing_imports = true
 module = ["psutil"]
 ignore_missing_imports = true
 
+# Phase 13 Step 5 -- cognition_wobble is Phoenix-authored substrate at
+# vendor/cognition_wobble/, but vendor/ is excluded from mypy's
+# auto-discovery (above). When phoenix/ files import cognition_wobble,
+# mypy can't find it on its module-search path. The override below
+# silences that "can't find module" error; cognition_wobble itself
+# gets full strict checking when its files are passed explicitly on
+# the mypy CLI.
+[[tool.mypy.overrides]]
+module = ["cognition_wobble", "cognition_wobble.*"]
+ignore_missing_imports = true
+
 # Phase 13 Step 2 -- cognition SDKs ship in optional extras. Adapters
 # import lazily inside __init__ so installs without the extras import
 # cleanly; constructing the adapter without the SDK installed raises
@@ -316,5 +330,9 @@ module = [
     "google.api_core.*",
     "litellm",
     "litellm.*",
+    "lightgbm",
+    "lightgbm.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
 ]
 ignore_missing_imports = true
