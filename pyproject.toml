@@ -176,6 +176,11 @@ include = [
     "actor*",
     "omega*",
     "ml*",
+    # Phase 13 Step 5a -- cognition_wobble is Phoenix-authored substrate
+    # (not vendored-from-upstream like the other namespace packages above)
+    # but lives at vendor/ to match the architectural convention that
+    # disagreement classifiers belong outside phoenix/.
+    "cognition_wobble*",
 ]
 exclude = ["tests*", "evals*", "scripts*", "docs*", "vendor*"]
 namespaces = true
@@ -211,7 +216,21 @@ extend-exclude = ["vendor"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-exclude = ["vendor/", "build/", "dist/"]
+# Per-package excludes (not a blanket vendor/ exclude) so Phase 13's
+# Phoenix-authored cognition_wobble/ gets type-checked. The other
+# vendored modules (wobble, synthesis, etc.) come from upstream
+# without our typing conventions; the per-package excludes keep mypy
+# from complaining about them.
+exclude = [
+    "vendor/wobble/",
+    "vendor/synthesis/",
+    "vendor/grammar/",
+    "vendor/actor/",
+    "vendor/omega/",
+    "vendor/ml/",
+    "build/",
+    "dist/",
+]
 
 # Vendored module names resolve via sys.path injection (phoenix/__init__.py
 # per architecture v1 Section 11.7.1). The vendored code has no type stubs;
