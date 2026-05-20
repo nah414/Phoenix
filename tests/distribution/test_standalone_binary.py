@@ -106,7 +106,7 @@ def test_full_nuitka_build_produces_executable(tmp_path: Path) -> None:
         timeout=30,
     )
     assert "phoenix" in result.stdout.lower()
-    assert "1.0.0" in result.stdout
+    assert "1.1.0" in result.stdout
 
 
 def test_check_nuitka_installed_function() -> None:

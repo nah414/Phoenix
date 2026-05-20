@@ -84,6 +84,15 @@ class PhoenixDisagreementType(Enum):
     Stage 5). Result ships at reduced verification depth; user can
     re-submit with a higher cost_ceiling_usd."""
 
+    # Phase 13 Step 4 -- cognition substrate's escape-hatch value.
+    COGNITION_UNCLASSIFIED = "cognition_unclassified"
+    """Phase 13 Step 4 default for cognition wobble axes (cross-model,
+    self-consistency, prompt-perturbation). Step 4 emits raw distances
+    only; the cognition disagreement classifier shipped in Step 5
+    replaces this with a real class (FACTUAL_AGREEMENT,
+    STYLISTIC_DIVERGENCE, FACTUAL_DISAGREEMENT, etc.) or keeps it as
+    UNCLASSIFIED when classifier confidence falls below threshold."""
+
 
 def classify(
     axis_results: list[AxisResult],

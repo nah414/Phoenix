@@ -55,6 +55,7 @@ from phoenix.admin.auth import require_admin
 from phoenix.admin.errors import AdminPrivilegeRequired
 from phoenix.api.drift_alerts import DRIFT_ALERTS_CHANNEL, install_drift_alert_emitter
 from phoenix.api.event_broker import get_broker, to_dict
+from phoenix.api.streaming_events import event_type_matches_filter, parse_event_filter
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
 from phoenix.audit import AuditEvent, get_emitter
 from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
@@ -1257,8 +1258,240 @@ def enroll_actor(
     }
 
 
+# ---------------------------------------------------------------------------
+# Phase 13 Step 6: MCP-server registration endpoints
+#
+# Per 13-D4 (locked 2026-05-18): Phoenix-as-MCP-client dispatches ONLY to
+# servers explicitly registered via these admin endpoints. No TOFU; no
+# empty-default-allows-all; no discovery-based auto-add; "*" forbidden
+# in allowed_tools. Step 6 ships the registration surface; Step 9 wires
+# new permission keys (can_register_mcp_server) for finer-grained gating.
+# Step 6 uses the existing "identity_enroll" action key on the safety
+# gate as a defensible placeholder (both are admin-only high-trust
+# operations); Step 9 swaps in mcp-specific keys.
+
+from phoenix.mcp.errors import MCPRegistrationError  # noqa: E402
+from phoenix.mcp.server_registry import get_registry as get_mcp_registry  # noqa: E402
+from phoenix.mcp.server_spec import MCPServerSpec  # noqa: E402
+
+
+class MCPServerRegistrationBody(BaseModel):
+    """JSON body for POST /v1/admin/mcp-servers/{server_name}."""
+
+    transport: str = Field(..., description='"stdio" or "http+sse"')
+    endpoint: str = Field(..., min_length=1)
+    allowed_tools: list[str] = Field(..., description="Explicit per-tool allowlist; '*' forbidden")
+    auth_config: dict[str, Any] = Field(default_factory=dict)
+    max_budget_usd_per_day: float = Field(default=10.0, gt=0)
+    audit_export_policy: str = Field(default="full", description='"full" or "hashes_only"')
+    prompt_disposition_override: str | None = Field(default=None)
+
+
+def _mcp_admin_gate(
+    authorization: str | None,
+    *,
+    action_key: str,
+    request_id: str,
+) -> Any:
+    """Common admin gate for the MCP-server endpoints.
+
+    Runs the standard safety chain (extract_or_bootstrap →
+    verify_request → require_admin) and surfaces typed exceptions as
+    appropriate HTTP status codes. Returns the validated Actor on
+    success.
+    """
+    try:
+        actor, _ = extract_or_bootstrap(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+
+    try:
+        verify_request(actor, action_key=action_key, request_id=request_id)
+    except KillSwitchEngaged as exc:
+        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
+    except (AuthError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
+        ) from exc
+
+    try:
+        require_admin(actor)
+    except AdminPrivilegeRequired as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    return actor
+
+
+@app.post("/v1/admin/mcp-servers/{server_name}")
+def register_mcp_server(
+    server_name: str,
+    req: MCPServerRegistrationBody,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Register (or replace) an MCP server. Admin-only per 13-D4.
+
+    Status codes:
+      - 200: registration succeeded; body echoes the redacted spec.
+      - 400: invalid registration (e.g., '*' in allowed_tools,
+        empty allowed_tools, invalid transport).
+      - 401/403/429/503: standard safety chain.
+    """
+    request_id: str = request.state.request_id
+    actor = _mcp_admin_gate(authorization, action_key="identity_enroll", request_id=request_id)
+
+    try:
+        spec = MCPServerSpec(
+            name=server_name,
+            transport=req.transport,  # type: ignore[arg-type]
+            endpoint=req.endpoint,
+            allowed_tools=tuple(req.allowed_tools),
+            auth_config=req.auth_config,
+            max_budget_usd_per_day=req.max_budget_usd_per_day,
+            audit_export_policy=req.audit_export_policy,  # type: ignore[arg-type]
+            prompt_disposition_override=req.prompt_disposition_override,  # type: ignore[arg-type]
+        )
+    except MCPRegistrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    get_mcp_registry().register(spec)
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.mcp_server.registered",
+        actor_id=actor.name,
+        parameters={
+            "server_name": server_name,
+            "transport": spec.transport,
+            "allowed_tools_count": len(spec.allowed_tools),
+            "max_budget_usd_per_day": spec.max_budget_usd_per_day,
+            "audit_export_policy": spec.audit_export_policy,
+        },
+        request_id=request_id,
+    )
+
+    return spec.to_dict()
+
+
+@app.get("/v1/admin/mcp-servers")
+def list_mcp_servers(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """List all registered MCP servers. Admin-only."""
+    request_id: str = request.state.request_id
+    actor = _mcp_admin_gate(authorization, action_key="identity_enroll", request_id=request_id)
+
+    servers = [spec.to_dict() for spec in get_mcp_registry().list_servers()]
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.mcp_server.list",
+        actor_id=actor.name,
+        parameters={"count": len(servers)},
+        request_id=request_id,
+    )
+
+    return {"servers": servers}
+
+
+@app.get("/v1/admin/mcp-servers/{server_name}")
+def get_mcp_server(
+    server_name: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Fetch one registered MCP server. Admin-only.
+
+    Returns 404 when the named server isn't registered.
+    """
+    request_id: str = request.state.request_id
+    _mcp_admin_gate(authorization, action_key="identity_enroll", request_id=request_id)
+
+    spec = get_mcp_registry().get(server_name)
+    if spec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"MCP server {server_name!r} not registered",
+        )
+
+    return spec.to_dict()
+
+
+@app.delete("/v1/admin/mcp-servers/{server_name}")
+def unregister_mcp_server(
+    server_name: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """De-register an MCP server. Admin-only. Immediate effect per 13-D4.
+
+    Idempotent on missing names: returns 200 with ``was_registered=False``
+    rather than 404, so admin scripts can safely re-run the de-register
+    step without conditional logic.
+    """
+    request_id: str = request.state.request_id
+    actor = _mcp_admin_gate(authorization, action_key="identity_enroll", request_id=request_id)
+
+    registry = get_mcp_registry()
+    existed = server_name in registry
+    registry.unregister(server_name)
+
+    _safe_audit_emit(
+        layer="api",
+        event_type="api.mcp_server.unregistered",
+        actor_id=actor.name,
+        parameters={"server_name": server_name, "was_registered": existed},
+        request_id=request_id,
+    )
+
+    return {
+        "server_name": server_name,
+        "unregistered": True,
+        "was_registered": existed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Step 9: identity-permission grant endpoint.
+#
+# Mounted at /v1/identity/permissions/grant-prompt-verbatim per the build
+# guide; admin_router has prefix "/v1/admin" so we register here on the
+# main FastAPI app to keep the URL exactly as specified. The handler
+# itself lives in phoenix.admin.grant_prompt_verbatim; this seam exists
+# only to attach the route at the right URL prefix.
+
+from phoenix.admin.grant_prompt_verbatim import (  # noqa: E402
+    GrantPromptVerbatimPayload,
+    post_grant_prompt_verbatim,
+)
+
+
+@app.post(
+    "/v1/identity/permissions/grant-prompt-verbatim",
+    tags=["Identity"],
+)
+def grant_prompt_verbatim_route(
+    payload: GrantPromptVerbatimPayload,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    return post_grant_prompt_verbatim(payload, request, authorization)
+
+
 @app.websocket("/v1/ws/tasks/{task_id}/stream")
-async def task_stream(websocket: WebSocket, task_id: str, token: str | None = None) -> None:
+async def task_stream(
+    websocket: WebSocket,
+    task_id: str,
+    token: str | None = None,
+    events: str | None = None,
+) -> None:
     """Stream verification-gate events for a single task.
 
     Per architecture v1 Section 5.3: the client opens this WS after
@@ -1272,10 +1505,21 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
     polling loop (100ms cadence). Phase 6b's NATS JetStream consumer
     replaces this with a push-based subscription.
 
+    **Phase 13 Step 7 — event-type filter:** the optional ``events``
+    query parameter accepts a comma-separated list of event-type
+    names with optional trailing wildcard, e.g.
+    ``?events=token.delta,cognition.*``. Events not matching any
+    pattern are skipped (cursor advances; no JSON sent). Terminal
+    events (``task.complete`` / ``task.failed``) ALWAYS close the
+    connection regardless of filter — they're the close signal, not
+    just a filtered event.
+
     Close codes:
     - 1000 (normal): task completed (task.complete event sent).
     - 1008 (policy violation): token invalid / expired / used.
     """
+    # Phase 13 Step 7: parse the optional events= query parameter.
+    filter_patterns = parse_event_filter(events)
     # Phase 7 Step 2: WS handlers bypass HTTP middleware, so mint a
     # fresh per-connection request_id here for audit correlation.
     request_id = f"req_{uuid.uuid4().hex}"
@@ -1331,9 +1575,20 @@ async def task_stream(websocket: WebSocket, task_id: str, token: str | None = No
         for _ in range(max_iterations):
             new_events = broker.get_events(task_id, since_index=cursor)
             for event in new_events:
-                await websocket.send_json(to_dict(event))
                 cursor += 1
-                if event.type in ("task.complete", "task.failed"):
+                # Phase 13 Step 7: skip events that don't match the
+                # optional events= filter. Terminal events
+                # (task.complete / task.failed) bypass the filter —
+                # they're the connection-close signal.
+                is_terminal = event.type in ("task.complete", "task.failed")
+                if (
+                    filter_patterns
+                    and not is_terminal
+                    and not event_type_matches_filter(event.type, filter_patterns)
+                ):
+                    continue
+                await websocket.send_json(to_dict(event))
+                if is_terminal:
                     close_reason = "task finished"
                     await websocket.close(code=1000, reason=close_reason)
                     return

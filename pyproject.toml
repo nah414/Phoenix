@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoenix-middleware"
-version = "1.0.0rc1"
-description = "Production-grade quantum-accuracy middleware (v1 release candidate)"
+version = "1.1.0.dev0"
+description = "Production-grade quantum-accuracy middleware with cognition substrate + MCP-client mode (v1.1 dev)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Adam" }]
@@ -109,6 +109,51 @@ otel = [
 mcp = [
     "mcp>=1.0,<2.0",
 ]
+# Phase 13 Step 2 -- Anthropic Claude SDK for the cognition substrate.
+# Opt-in: install only if you need to call Anthropic from Phoenix.
+#     pip install phoenix-middleware[anthropic]
+anthropic = [
+    "anthropic>=0.40,<0.60",
+]
+# Phase 13 Step 2 -- OpenAI Chat Completions SDK.
+#     pip install phoenix-middleware[openai]
+openai = [
+    "openai>=1.50,<2.0",
+]
+# Phase 13 Step 2 -- Google Gemini SDK.
+#     pip install phoenix-middleware[google]
+google = [
+    "google-generativeai>=0.8,<1.0",
+]
+# Phase 13 Step 2 -- umbrella extra that pulls all three cognition
+# adapters' SDKs. Convenience for installs that want any LLM:
+#     pip install phoenix-middleware[cognition]
+cognition = [
+    "anthropic>=0.40,<0.60",
+    "openai>=1.50,<2.0",
+    "google-generativeai>=0.8,<1.0",
+]
+# Phase 13 Step 3 -- LiteLLM passthrough for the long tail (~130
+# providers via the unified API: Ollama, vLLM, AWS Bedrock, Azure,
+# Mistral, Cohere, xAI, Perplexity, etc.). Opt-in deliberately --
+# LiteLLM is a large dependency (~50 MB installed). Users who only
+# need Anthropic + OpenAI + Google should not be forced to pull it in.
+# LiteLLM is MIT-licensed (Apache-2.0 compatible).
+#     pip install phoenix-middleware[litellm]
+litellm = [
+    "litellm>=1.50,<2.0",
+]
+# Phase 13 Step 5b -- ML deps for the cognition disagreement classifier:
+# lightgbm (GBM primary classifier) + sentence-transformers (semantic
+# distance metric for the cognition wobble axes). Both opt-in;
+# sentence-transformers ships the all-MiniLM-L6-v2 model lazily (Step 5c
+# commits a vendored copy at vendor/cognition_wobble/embeddings/).
+#     pip install phoenix-middleware[ml-classifier]
+# Both libraries are Apache 2.0 / MIT compatible.
+ml-classifier = [
+    "lightgbm>=4.0,<5.0",
+    "sentence-transformers>=2.5,<4.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/nah414/Phoenix"
@@ -142,6 +187,11 @@ include = [
     "actor*",
     "omega*",
     "ml*",
+    # Phase 13 Step 5a -- cognition_wobble is Phoenix-authored substrate
+    # (not vendored-from-upstream like the other namespace packages above)
+    # but lives at vendor/ to match the architectural convention that
+    # disagreement classifiers belong outside phoenix/.
+    "cognition_wobble*",
 ]
 exclude = ["tests*", "evals*", "scripts*", "docs*", "vendor*"]
 namespaces = true
@@ -177,6 +227,12 @@ extend-exclude = ["vendor"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# Blanket vendor/ exclude (the original Phase 12 setup). Phase 13's
+# Phoenix-authored cognition_wobble/ is type-checked by passing
+# its files explicitly on the mypy CLI in CI / verification runs;
+# the auto-discovery exclude here keeps mypy from transitively
+# pulling in vendor/synthesis et al. when checking phoenix/ entry
+# points, which would surface unrelated type errors from upstream.
 exclude = ["vendor/", "build/", "dist/"]
 
 # Vendored module names resolve via sys.path injection (phoenix/__init__.py
@@ -244,4 +300,39 @@ ignore_missing_imports = true
 # psutil like the other optional/extra modules.
 [[tool.mypy.overrides]]
 module = ["psutil"]
+ignore_missing_imports = true
+
+# Phase 13 Step 5 -- cognition_wobble is Phoenix-authored substrate at
+# vendor/cognition_wobble/, but vendor/ is excluded from mypy's
+# auto-discovery (above). When phoenix/ files import cognition_wobble,
+# mypy can't find it on its module-search path. The override below
+# silences that "can't find module" error; cognition_wobble itself
+# gets full strict checking when its files are passed explicitly on
+# the mypy CLI.
+[[tool.mypy.overrides]]
+module = ["cognition_wobble", "cognition_wobble.*"]
+ignore_missing_imports = true
+
+# Phase 13 Step 2 -- cognition SDKs ship in optional extras. Adapters
+# import lazily inside __init__ so installs without the extras import
+# cleanly; constructing the adapter without the SDK installed raises
+# CognitionError with the install hint. Tests inject mocks at the
+# adapter's __init__(client=...) seam.
+[[tool.mypy.overrides]]
+module = [
+    "anthropic",
+    "anthropic.*",
+    "openai",
+    "openai.*",
+    "google",
+    "google.generativeai",
+    "google.api_core",
+    "google.api_core.*",
+    "litellm",
+    "litellm.*",
+    "lightgbm",
+    "lightgbm.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+]
 ignore_missing_imports = true

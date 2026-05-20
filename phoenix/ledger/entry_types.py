@@ -262,6 +262,45 @@ class EnrollmentEntry:
     identity_fingerprint: str = ""
 
 
+@dataclass(frozen=True)
+class PermissionGrantEntry:
+    """Payload schema for Phase 13 Step 9 permission grants.
+
+    Per 13-D2 (locked 2026-05-18): granting a privacy-bearing
+    permission (``can_store_prompt_verbatim`` /
+    ``can_store_prompt_encrypted`` / ``can_store_raw_provider_body``)
+    is a high-trust admin operation that MUST be on-chain so audit
+    can answer "who granted what to whom, when, and why?" without
+    relying on the mutable
+    :class:`~phoenix.safety.permissions.PermissionsRegistry` snapshot.
+
+    Distinct from :class:`EnrollmentEntry` (which captures the full
+    initial permissions snapshot) — this entry records single-flag
+    updates after enrollment.
+
+    Fields:
+
+    - ``granted_actor_name`` -- the actor whose capability was changed.
+    - ``granted_by`` -- admin actor that issued the grant.
+    - ``capability`` -- the capability flag name (e.g.
+      ``"can_store_prompt_verbatim"``). Free-form string here so
+      Phase 13.x can add more without a schema break.
+    - ``new_value`` -- ``True`` for grant; ``False`` for revoke.
+    - ``rationale`` -- admin's free-form justification (audit-only).
+    - ``expires_at_unix`` -- optional time-bound grant; ``None`` for
+      permanent. When set, an out-of-band sweeper (Step 10 acceptance
+      battery) revokes the grant at expiry. Phase 13 ships the
+      column; the sweeper is a Phase 13.x follow-up.
+    """
+
+    granted_actor_name: str
+    granted_by: str
+    capability: str
+    new_value: bool
+    rationale: str
+    expires_at_unix: float | None = None
+
+
 # ---------------------------------------------------------------------------
 # Typed-payload -> LedgerEntry converters.
 
@@ -373,16 +412,38 @@ def enrollment_to_ledger_entry(
     )
 
 
+def permission_grant_to_ledger_entry(
+    grant: PermissionGrantEntry,
+    *,
+    timestamp_unix: float | None = None,
+) -> LedgerEntry:
+    """Convert a :class:`PermissionGrantEntry` to a :class:`LedgerEntry`.
+
+    The granting admin actor is the ledger entry's actor_id (not the
+    target -- audit responsibility tracks the admin who granted the
+    privilege, matching the :func:`budget_override_to_ledger_entry`
+    convention).
+    """
+    return _new_ledger_entry(
+        entry_kind="permission_grant",
+        actor_id=grant.granted_by,
+        payload_dict=asdict(grant),
+        timestamp_unix=timestamp_unix,
+    )
+
+
 __all__ = [
     "BudgetOverrideEntry",
     "EnrollmentEntry",
     "KillSwitchEntry",
     "LedgerEntry",
     "OverrideByOperatorEntry",
+    "PermissionGrantEntry",
     "SolveEntry",
     "budget_override_to_ledger_entry",
     "enrollment_to_ledger_entry",
     "kill_switch_to_ledger_entry",
     "override_to_ledger_entry",
+    "permission_grant_to_ledger_entry",
     "solve_to_ledger_entry",
 ]
