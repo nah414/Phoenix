@@ -31,6 +31,8 @@ The document is expected to continue to evolve via the Section 11.10/11.12 updat
 
 **v1.1 follow-up (2026-05-08): perception-friendly v1 design choices locked.** A second documentation-only revision lands the same day, capturing five architectural decisions Adam approved that future-proof v1 for the perception extension without writing perception code: (a) `WobbleAxis` Protocol parameterizes Phase 5's verification gate (Section 6.3) so perception's three axes plug in as `WobbleAxis` impls without forking the gate; (b) `CloudSeams` registry refactored from named slots to generic name-keyed registration (Section 10.3.1) so v1.x extensions register additional seams without core changes; (c) front-door endpoint namespacing kept as `/v1/...` flat with implicit physics semantics, perception slots in as `/v1/perception/*` sibling (no spec change required, decision recorded for clarity); (d) `LatencyTier` enum defined in v1 with all three values (BATCH_REALTIME routable, STREAMING_REALTIME and PERCEPTION_REALTIME defined-but-not-routable) per the post-Decision-28 paragraph in Section 1; (e) strict no-perception-code-in-v1 discipline confirmed (only the spec acknowledges perception). The follow-up also resolves three architectural drifts between spec and vendored substrate (`AgreementType` → `DisagreementType`, `DPDEngine` → `DPDScheduler`, and the §0 Orchestrate paragraph that had been missed in the 2026-05-06 SynQc-greenfield revision). With 11.14.7 now RESOLVED by the locked `LatencyTier` enum, the open-tension count drops to 16 (14 from v1.0 + 2 unresolved from v1.1: 11.14.2, 11.14.6).
 
+**v1.1 second-round resolution (2026-05-20): post-Phase-13 architecture tension closeout.** Following Phase 13's completion (cognition substrate + MCP-client mode + privacy controls + permission registry extensions, all shipped to main in PR #15), Adam reviewed and locked the remaining 14 v1.0 open tensions catalogued in Sections 11.1 through 11.8. Each entry gains a `(RESOLVED in Phoenix v1.X)` title marker and a `**Resolution (Phoenix v1.X, approved by Adam 2026-05-20):**` block per the 11.12 update protocol. Two tensions were RESOLVED-and-shipped-during-v1 (11.1.4 LoRA validator at Phase 9; 11.2.1 provider equivalence registry at Phase 4) — these are now reconciled against the actual shipped code. The other 12 are locked dispositions: 9 deferred-with-context to v1.x (with Phase 13 hindsight where applicable), 1 deprecated-in-practice (11.8 translator handler set; structured-JSON + LoRA-NL won), 2 reclassified as out-of-scope for Section 11 (11.6.1 reference-client decision lives in reference-client repo; 11.7.2 launcher icon is design-asset work). **Open-tension count after the 2026-05-20 second-round resolution: 2** (both from v1.1 perception: 11.14.2 substrate vendoring scope and 11.14.6 perception verification axes count; both correctly stay open until perception build-guide drafting begins per the v1.1 plan). v1.1 is still a documentation-only revision; no v1 implementation impact.
+
 ## What Phoenix is
 
 Phoenix is a **production-grade quantum-accuracy middleware**. It is a downloadable software component that other systems integrate with to gain access to validated quantum computation, hardware-aware routing, and physics-grounded verification of results.
@@ -2618,7 +2620,7 @@ For traceability, Section 11.13 contains a table mapping every `[OPEN: ...]` mar
 
 These tensions concern numerical or algorithmic correctness of the physics machinery itself. They cannot be resolved purely from architecture — they need empirical data from running Phoenix to know the answer.
 
-### 11.1.1 — Error-bar combiner formula
+### 11.1.1 — Error-bar combiner formula (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 2.2.
 
@@ -2626,11 +2628,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Quadrature.
 
-**Resolution path:** Run Phoenix's Tier-1 battery thousands of times with controlled variation, measure the actual covariance structure of the three error bars, and refine the combiner formula if the data shows meaningful correlation. This is empirical work that requires Phoenix to be *running* before the answer is reachable.
+**Recommended disposition (v1):** Ship with quadrature; instrument per-axis error bars in every ledger entry; revisit at v1.1 once enough Phoenix solves exist for real covariance analysis.
 
-**Recommended disposition:** Ship v1 with quadrature; instrument the combined-bar computation to record per-axis error bars in every ledger entry; revisit at v1.1 once enough Phoenix solves exist to do real covariance analysis. This is the right shape because the placeholder is not wrong — it is at worst conservative (overestimates error) when correlations exist, which is the safe direction for an instrument-grade product.
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Adopt quadrature as the locked v1.1 disposition. Phase 7's Omega Ledger entry shape (`SolveEntry.verification_provenance`) already records per-axis error bars in every solve, satisfying the instrumentation prerequisite. Empirical covariance analysis remains a v1.x activity that depends on accumulated ledger history. The quadrature placeholder is safe-direction (overestimates error when correlations exist), which is the right error-bar polarity for an instrument-grade product. **Phase 13 hindsight:** cognition wobble axes (`CrossModelAxis`, `SelfConsistencyAxis`, `PromptPerturbationAxis`) emit a single distance metric per axis rather than three independent error bars, so the quadrature-vs-correlated tension does not apply to the cognition path — cognition axes are aggregated by the existing `CognitionDisagreementMetric` shape, not by quadrature combination.
 
-### 11.1.2 — MPS truncation error as a fourth wobble axis
+**Cross-reference:** Section 2.2's quadrature formula stands; revisit ticket logged for v1.x once empirical covariance data exists.
+
+### 11.1.2 — MPS truncation error as a fourth wobble axis (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 2.8.
 
@@ -2638,11 +2642,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Treat MPS truncation error as part of `error_bar_solver` (rolled into Axis 1).
 
-**Resolution path:** When v1.x ships the MPS path, decide based on user feedback and instrumented data whether MPS truncation deserves its own axis. If MPS results frequently disagree with dense-matrix references at meaningful levels, the rolled-up Axis 1 will surface that — and at that point, a fourth axis becomes architecturally justified.
+**Recommended disposition (v1):** Roll into Axis 1 for v1; revisit when v1.x lands MPS.
 
-**Recommended disposition:** Roll into Axis 1 for v1 (placeholder remains); revisit when v1.x lands MPS. This is genuinely a v1.x problem; specifying it now without empirical evidence would be premature.
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Roll into Axis 1 as the locked v1.1 disposition. **Phase 13 hindsight:** the `WobbleAxis` Protocol (Phase 2) plus the v1.1 follow-up generalization (axes plug in by name rather than fixed slots) means adding a fourth physics axis later is purely additive — no Trinity Core refactor required. The decision to roll-vs-promote is now data-driven: when v1.x ships the MPS path, the rolled-up Axis 1 will surface meaningful MPS-vs-dense disagreement if it exists, and the empirical case for a fourth axis becomes either obvious (promote) or absent (keep rolled). This disposition reaffirms that decision posture and removes the tension from v1's open list.
 
-### 11.1.3 — Adaptive-depth threshold tuning
+**Cross-reference:** Section 2.8 stands. The MPS-axis decision is properly a v1.x build-guide question that depends on the MPS extension actually landing.
+
+### 11.1.3 — Adaptive-depth threshold tuning (RESOLVED in Phoenix v1.1)
 
 **Origin:** Sections 2.6 and 6.4.
 
@@ -2650,11 +2656,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** The thresholds in Section 6.4.
 
-**Resolution path:** Production usage data — what `max_error_bar` values do users actually request, what wobble outcomes do they get, how often does promotion fire — drives threshold refinement.
+**Recommended disposition (v1):** Ship with Section 6.4 thresholds unchanged; instrument rung selection + promotion/demotion in the audit log; expose tuning via config in v1.1 once data exists.
 
-**Recommended disposition:** Ship v1 with the thresholds in Section 6.4 unchanged; instrument rung selection and promotion/demotion events into the audit log; expose tuning via config in v1.1 once enough data exists. This is similar in shape to the error-bar combiner: the placeholder isn't wrong, it just needs empirical refinement.
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Adopt Section 6.4 thresholds as the locked v1.1 disposition. Phase 7's audit emitter already records rung selection + promotion/demotion events as structured audit events, satisfying the instrumentation prerequisite. Per-install config-driven threshold tuning is folded into the same v1.x deferral as 11.3.2 (per-install rung-table customization) — when one ships, the other ships, because they're the same surface from the user's perspective. **Phase 13 hindsight:** cognition tasks bypass the rung table entirely (they route through safety-gate stage 6b and are aggregated by `CognitionDisagreementMetric` rather than the five-rung physics flow), so this disposition concerns the physics path only.
 
-### 11.1.4 — LoRA adapter validation suite content
+**Cross-reference:** Section 6.4 stands. Per-install tuning ships at v1.x alongside 11.3.2.
+
+### 11.1.4 — LoRA adapter validation suite content (RESOLVED in Phoenix v1)
 
 **Origin:** Sections 2.7 and 3.5.
 
@@ -2662,13 +2670,15 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Suite content unspecified; defaults to "8-16 grammar statements" with the specific selection deferred.
 
-**Resolution path:** Curate the canonical statements during build-guide work for `phoenix/adapters/validator.py`. The right set covers the major grammar productions (one per non-terminal) plus a handful of compound forms. Should be small enough that validation runs in <500 ms and reliable enough that breakage is meaningful.
+**Recommended disposition (v0):** Build-guide territory — specify the suite during build-guide work for the adapter loader.
 
-**Recommended disposition:** Specify the suite during build-guide work for the adapter loader; treat as build-guide territory rather than architecture. The validator's contract (round-trip must succeed) is locked; the specific test vectors are an implementation detail.
+**Resolution (Phoenix v1, Phase 9 shipped 2026-05-12):** Suite content lives in `phoenix/adapters/validator.py` per Phase 9's LoRA adapter subsystem build. The validator implements the inference-time round-trip gate against a curated canonical set covering the major `physics_v1.yaml` non-terminals. Test vectors are an implementation detail of `phoenix/adapters/validator.py`; the architecture-level contract (round-trip must succeed; load fails fast on regression) is locked in Sections 2.7 + 3.5.
+
+**Cross-reference:** `phoenix/adapters/validator.py` + Phase 9 build guide (`BUILDGUIDE_phoenix_v1_phase9_adapters_mcp_cli.md`).
 
 ## 11.2 — Provider routing tensions
 
-### 11.2.1 — Provider equivalence rules for failover
+### 11.2.1 — Provider equivalence rules for failover (RESOLVED in Phoenix v1)
 
 **Origin:** Sections 2.5 and 4.5.
 
@@ -2676,9 +2686,11 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Conservative equivalence defaults — same `quantum_technology` enum value AND same number of qubits AND fidelity within 10% of original — plus a manual override interface for users who know better.
 
-**Resolution path:** Two parallel tracks. Empirical: the more Phoenix runs cross-provider experiments, the more equivalence data accumulates in the ledger. Theoretical: this is academic-paper territory and a real research community is working on it. Phoenix can adopt published equivalence frameworks as they mature.
+**Recommended disposition (v0):** Ship with conservative defaults + manual override; `phoenix/router/equivalence_registry.py` accepts user-curated rules; learned-equivalence mode deferred to v1.x.
 
-**Recommended disposition:** Ship v1 with the conservative defaults plus the manual override. Build a `phoenix/router/equivalence_registry.py` that accepts user-curated equivalence rules per circuit class; expose registry inspection via the dev-ops backdoor (Section 8.2's `/v1/admin/router/...`). Plan for v1.x to add a learned-equivalence mode that mines ledger history. **PERF:** the conservative defaults will trigger more failovers than ideal; users will tighten via manual overrides as their provider mix becomes clear. That's acceptable behavior, not a defect.
+**Resolution (Phoenix v1, Phase 4 shipped 2026-05-08):** Conservative equivalence defaults shipped in `phoenix/router/equivalence_registry.py` per Phase 4's Router subsystem build. The registry holds user-curated rules per circuit class; `/v1/admin/router/...` exposes inspection. Learned-equivalence mode (mining ledger history for empirically-validated equivalence rules) remains v1.x scope. **PERF:** conservative defaults trigger more failovers than a learned mode would; manual overrides are the user's escape hatch. That's the locked tradeoff.
+
+**Cross-reference:** `phoenix/router/equivalence_registry.py` + Sections 2.5, 4.5, 8.2. Learned-equivalence ships at v1.x.
 
 ### 11.2.2 — Provider pricing update cadence (RESOLVED in Phoenix v1)
 
@@ -2692,7 +2704,7 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **Cross-reference:** Section 4.7 now contains the locked decision.
 
-### 11.2.3 — Multi-source vendoring
+### 11.2.3 — Multi-source vendoring (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 10.4.
 
@@ -2700,7 +2712,11 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Single-version vendoring per Phoenix release.
 
-**Recommended disposition:** Stay single-version through v1 and v1.x. Multi-source vendoring is a real capability, but it complicates the calibration story (which version's profile applies?), the provenance story (which version's hashes go in the ledger?), and the verification story (do invariants from both versions need to pass?). v1's single-version discipline is the right choice; revisit when there's a compelling concrete need.
+**Recommended disposition (v0):** Single-version through v1 and v1.x; revisit when a compelling concrete need emerges.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Single-version vendoring locked through v1 and v1.x. **Phase 13 hindsight:** the cognition substrate added `vendor/cognition_wobble/` alongside `vendor/{actor, grammar, ml, omega, synthesis, wobble}/` — a sixth+seventh vendored substrate without straining the single-version discipline. The substrate count went up; the per-substrate version discipline stayed clean. Multi-source vendoring (different *versions of the same substrate* in one release) is architecturally distinct from multi-substrate vendoring and remains out of scope.
+
+**Cross-reference:** Section 10.4 stands. Single-version discipline carries into v1.x.
 
 ## 11.3 — Configuration knob tensions
 
@@ -2716,7 +2732,7 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **Cross-reference:** Section 5.2 now contains the locked decision.
 
-### 11.3.2 — Per-install rung-table customization
+### 11.3.2 — Per-install rung-table customization (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 6.4.
 
@@ -2724,7 +2740,11 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Fixed table, no per-install customization.
 
-**Recommended disposition:** Defer to v1.x. v1's fixed table is the right discipline because it makes Phoenix's behavior predictable across installs. Customization is real value but it's the kind of feature that needs real user feedback before the right configuration shape is clear. Build configurability in v1.x once we know what users actually want to override.
+**Recommended disposition (v0):** Defer to v1.x once user feedback clarifies the right configuration shape.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Fixed table locked for v1.1. Per-install customization ships at v1.x alongside 11.1.3 (adaptive-depth threshold tuning); both are the same surface from the user's perspective (config-driven physics-task verification depth). The v1.1 lock is "predictable behavior across installs"; customization adds opt-in surface, not changed defaults.
+
+**Cross-reference:** Section 6.4 stands. Bundled with 11.1.3 for v1.x ship.
 
 ### 11.3.3 — Standalone binary daemon bundling (RESOLVED in Phoenix v1)
 
@@ -2740,7 +2760,7 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 ## 11.4 — Security and authentication tensions
 
-### 11.4.1 — OS keychain attestation for frontier-physics signing
+### 11.4.1 — OS keychain attestation for frontier-physics signing (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 7.2.
 
@@ -2748,9 +2768,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Actor pattern as vendored, no additional OS attestation.
 
-**Recommended disposition:** Defer to v1.x. The implementation is real work — Windows Hello, Touch ID, libsecret-with-prompt all have different APIs and behaviors. The benefit is real but the v0 honesty about the threat model already gives users the information they need to protect themselves on multi-user machines (don't run Phoenix on a shared user account). Ship v1 with the honest threat model; add OS attestation in v1.x as a hardening pass.
+**Recommended disposition (v0):** Defer to v1.x as a hardening pass.
 
-### 11.4.2 — Org-level permission inheritance
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Actor pattern locked for v1.1; OS keychain attestation (Windows Hello / Touch ID / libsecret-with-prompt) deferred to v1.x as a focused hardening phase. **Phase 13 hindsight:** the new privacy-bearing capabilities (`can_store_prompt_verbatim`, `can_store_prompt_encrypted`) are admin-granted via a ledger-recorded `PermissionGrantEntry`, which adds an on-chain audit story for high-trust permission changes but does NOT change the underlying Actor signing surface. The OS keychain hardening would benefit both physics frontier-regime signing AND cognition-permission grants, so a single v1.x hardening pass covers both. **Threat model honesty preserved:** v1.1's documented stance remains "don't run Phoenix on a shared user account if you need stronger isolation than defense-in-depth."
+
+**Cross-reference:** Section 7.2 stands. v1.x hardening pass ships once a concrete platform-specific implementation lands.
+
+### 11.4.2 — Org-level permission inheritance (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 7.3.
 
@@ -2758,9 +2782,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Per-install grants only.
 
-**Recommended disposition:** Defer to v1.x. Per-install grants are more secure (smaller blast radius if a single install is compromised) but more operationally annoying. Org-level templates with per-install opt-in is the right shape, but specifying it correctly requires real org deployment experience that v1 won't have. Ship v1 with per-install grants; add org-level templates in v1.x driven by real customer feedback.
+**Recommended disposition (v0):** Per-install grants in v1; org-level templates in v1.x driven by real customer feedback.
 
-### 11.4.3 — Org root keypair rotation
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Per-install grants locked for v1.1. **Phase 13 hindsight:** the seven new Phase 13 permission flags (cognition + MCP + privacy + streaming) are also per-install — `can_store_prompt_verbatim`, `can_call_mcp_server`, etc. all carry the same v1 discipline. Org-level inheritance would benefit those just as much as the original Section 7.3 flags. The Phase 13 `PermissionGrantEntry` ledger row (Step 9) gives the audit substrate that org-level rollouts will need; the org-level template surface is additive on top. Phoenix Cloud (Section 1 Decision 35) is the natural driver here — when org-level deployment becomes real, the template format will be informed by tenant requirements rather than speculative shape-design.
+
+**Cross-reference:** Section 7.3 stands. Org-level templates ship at v1.x driven by Phoenix Cloud requirements.
+
+### 11.4.3 — Org root keypair rotation (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 7.6.
 
@@ -2768,7 +2796,11 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** No rotation flow specified.
 
-**Recommended disposition:** Defer to v1.x. Rotation is genuinely complex — old enrolled installs need to verify a rotation announcement signed by the *old* root, then update to the new root, all while preserving audit continuity. Implementing this without real org deployment experience would produce a flow that's wrong in subtle ways. Ship v1 with the simple "create new org if compromise suspected" workaround; build proper rotation in v1.x.
+**Recommended disposition (v0):** Defer to v1.x; v1 ships with the "create new org if compromise suspected" workaround.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** No rotation flow in v1.1; "create new org" workaround stands. Properly designing the rotation flow requires real org deployment experience to validate the audit-continuity requirements. Bundled with 11.4.2 (org-level templates) for v1.x — both are Phoenix-Cloud-driven surfaces that need tenant requirements before specification. **Phase 13 hindsight:** the Omega Ledger's hashchained provenance gives the audit-continuity primitive that a rotation flow will need (each rotation event becomes a chained ledger entry signed by the old root, then a new genesis entry for the new root). The cryptographic substrate exists; the operational flow design awaits real customer pressure.
+
+**Cross-reference:** Section 7.6 stands. Rotation flow ships at v1.x alongside 11.4.2.
 
 ## 11.5 — Operational discipline tensions
 
@@ -2796,7 +2828,7 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **Cross-reference:** Section 8.4 now contains the locked decision.
 
-### 11.5.3 — Prometheus metrics endpoint
+### 11.5.3 — Prometheus metrics endpoint (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 8.6.
 
@@ -2804,11 +2836,15 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** OpenTelemetry only.
 
-**Recommended disposition:** Defer to v1.1. OpenTelemetry has a Prometheus-compatible exposition format, and most Prometheus-using environments can scrape OTel collectors. Native Prometheus support is ergonomic but not architecturally required. Add `/v1/metrics` in v1.1 if user feedback indicates the OTel-via-collector path is friction.
+**Recommended disposition (v0):** Defer to v1.1; add `/v1/metrics` if user feedback indicates OTel-via-collector friction.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** OpenTelemetry remains the sole metrics export surface for v1.1. No user feedback to date indicates the OTel-via-collector path is friction; deferred until concrete demand emerges. Native `/v1/metrics` is additive surface, not blocking — when added, it ships as a Phoenix Cloud seam (parallel to the `AuditLogExporter` Protocol in Phase 10) so the metrics-exposition policy is pluggable per-tenant rather than a fixed core endpoint.
+
+**Cross-reference:** Section 8.6 stands. `/v1/metrics` ships at v1.x as a Cloud seam when demand emerges.
 
 ## 11.6 — Reference admin client tensions
 
-### 11.6.1 — Sanskrit memory tool composition
+### 11.6.1 — Sanskrit memory tool composition (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 9.5.
 
@@ -2816,9 +2852,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Reference client uses its own internal storage, no Phoenix memory tools.
 
-**Recommended disposition:** Defer to the reference client's v0.2 release. This is a reference-client architectural decision, not a Phoenix architectural decision — the client is a separate codebase with its own release cadence. v0.1 of the reference client should focus on the core three patterns (Section 9.3) without the meta-decision of how its own memory works. Once the patterns are proven, considering whether to dogfood Phoenix's memory tools is a natural v0.2 question.
+**Recommended disposition (v0):** Defer to reference client's v0.2 release; it's a reference-client decision, not a Phoenix-architecture decision.
 
-### 11.6.2 — Reference client license posture
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Out of scope for Phoenix's architecture document. The reference client is a separate codebase (Section 9; per README "Deferred to v1.1 — separate repo"); its memory-composition choices belong in that repo's own design doc when it lands. Phoenix exports the Sanskrit memory tool surface via the existing `vendor/grammar/codec_*.py` modules; any client (reference or third-party) can compose against that. The architectural reservation Phoenix needs is just "the tools are exported and stable" — that's already true.
+
+**Cross-reference:** Section 9.5 stands. Reference-client memory composition is owned by the reference client's own repo when it ships.
+
+### 11.6.2 — Reference client license posture (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 9.7.
 
@@ -2826,11 +2866,15 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Apache 2.0 to match Phoenix.
 
-**Recommended disposition:** Apache 2.0 stays the default through v1. Reconsider only if specific commercial considerations emerge — and that conversation is separate from this architecture document. Don't pre-optimize a license decision before there's a concrete reason to.
+**Recommended disposition (v0):** Apache 2.0 stays default through v1; reconsider only when specific commercial considerations emerge.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Apache 2.0 locked as the reference-client default. Mirrors Phoenix's own 13-D1 (license: stay Apache 2.0). When the reference client ships as its own repo, its README explicitly states "Apache 2.0 matching Phoenix" and any future license-change conversation happens in that repo's PR review, not this architecture doc.
+
+**Cross-reference:** Section 9.7 stands. Out-of-scope for further Phoenix architecture revisions; lives in the reference client's repo when it lands.
 
 ## 11.7 — Distribution and packaging tensions
 
-### 11.7.1 — Vendored module import paths
+### 11.7.1 — Vendored module import paths (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 10.2.
 
@@ -2838,9 +2882,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Vendor verbatim including imports.
 
-**Recommended disposition:** Verbatim through v1. The "verbatim" option is simpler for the vendor sync script and makes the diff against upstream source easy to read. Path rewriting is mechanically straightforward but creates maintenance burden — every vendor sync has to re-run the rewrite. v1 ships with `vendor/` shadowing real package paths via `sys.path` manipulation in `phoenix/__init__.py`. Revisit if the maintenance burden of path-shadowing exceeds the burden of rewriting; that empirical question won't be answerable until v1 ships and we see how often we re-vendor.
+**Recommended disposition (v0):** Verbatim through v1; revisit if maintenance burden of path-shadowing exceeds rewriting cost.
 
-### 11.7.2 — Phoenix branded launcher icon
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Verbatim vendoring with `sys.path` manipulation in `phoenix/__init__.py` locked through v1.1. **Phase 13 hindsight:** added `vendor/cognition_wobble/` as a Phoenix-authored vendored substrate (not from dr-frank-and-eddy). It uses the same verbatim-import-path discipline — code imports `from cognition_wobble.classifier import CognitionClassifier`, not `from phoenix.vendor.cognition_wobble...`. The discipline scales cleanly to new vendored substrates. Phase 12's wheel packaging (the namespace-packages-as-siblings fix) confirmed the verbatim approach works for non-editable installs too. No re-vendor pain observed across Phases 0-13; verbatim approach validated.
+
+**Cross-reference:** Section 10.2 stands. Phase 12's wheel-packaging note about namespace-packages-as-siblings is the operational footnote.
+
+### 11.7.2 — Phoenix branded launcher icon (RESOLVED in Phoenix v1.1 — out of scope)
 
 **Origin:** Section 10.5.
 
@@ -2848,9 +2896,13 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Generic icon for v0; placeholder mentioned.
 
-**Recommended disposition:** Cosmetic. Get a designed icon before the v1 public release; ship a placeholder during build-guide work. This is not architectural and shouldn't block any Phase of the build guides.
+**Recommended disposition (v0):** Cosmetic; get a designed icon before public release; not architecturally blocking.
 
-## 11.8 — The translator handler set
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Reclassified as non-architectural design asset. Out of scope for Section 11's tension catalog going forward. Get a designed icon when convenient before any public-release announcement; do not track in this catalog.
+
+**Cross-reference:** Section 10.5 stands. Design-asset work is owned outside the architecture doc.
+
+## 11.8 — The translator handler set (RESOLVED in Phoenix v1.1)
 
 **Origin:** Section 3.6.
 
@@ -2858,7 +2910,11 @@ These tensions concern numerical or algorithmic correctness of the physics machi
 
 **v0 placeholder:** Contract locked, handler implementations deferred.
 
-**Recommended disposition:** Build-guide territory. The handlers are a known, bounded body of work — 13 non-terminals, each with a clear translation target. The right place for handler-by-handler specification is the build guide that creates `phoenix/grammar/translator.py`. Section 3.6's contract is what the build guide implements against.
+**Recommended disposition (v0):** Build-guide territory; specify handler-by-handler during `phoenix/grammar/translator.py` build.
+
+**Resolution (Phoenix v1.1, approved by Adam 2026-05-20):** Grammar-token entry path effectively deprecated in favor of the structured-JSON entry point. Phoenix v1 shipped `POST /v1/tasks` accepting structured JSON directly into a `PhysicsTask` (Phase 3); the grammar-token-via-translator path was never built. LoRA adapters (Phase 9) bridge natural language → structured JSON directly, bypassing the grammar-token intermediate. The translator handler set therefore remains unimplemented and is reclassified as **deferred-with-cause:** the architectural intent (three entry points: structured JSON / grammar tokens / natural language via LoRA) reduced to two in practice (structured JSON + natural language via LoRA), and that's working in production. If a concrete user demand for the grammar-token entry path emerges, the translator becomes a focused v1.x build-guide; until then, this tension stays resolved-as-deprecated rather than open. **Phase 13 hindsight:** the cognition substrate accepts canonical `Prompt` JSON shapes directly, reinforcing the structured-payload pattern.
+
+**Cross-reference:** Section 3.6's contract stands as architectural reservation. `phoenix/grammar/__init__.py` is the empty-on-purpose stub; `phoenix/api/routes.py` is the actual JSON-to-PhysicsTask path.
 
 ## 11.9 — Summary of dispositions
 
@@ -2875,6 +2931,15 @@ The 19 open tensions cataloged in Sections 11.1 through 11.8 break down as:
 **v1.1 update (2026-05-07):** 7 new tensions catalogued in Section 11.14 from the perception harness extension plan (`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`). 4 RESOLVED in v1.1 (11.14.1, 11.14.3, 11.14.4, 11.14.5); 1 deferred to build-guide territory (11.14.2); 1 deferred to v1.x perception milestone (11.14.6); 1 with recommended disposition for the v1.1 architecture (11.14.7).
 
 **v1.1 follow-up (2026-05-08):** 11.14.7 resolved — the `LatencyTier` enum (introduced in Section 1 post-Decision-28) locks the perception real-time tier alongside batch and streaming. **Open-tension count after the v1.1 follow-up: 16** (14 from v1.0 + 2 unresolved from v1.1: 11.14.2 and 11.14.6).
+
+**v1.1 second resolution round (2026-05-20, post-Phase-13):** Adam reviewed and locked the remaining 14 v1.0 open tensions. Each now carries a `(RESOLVED in Phoenix v1.X)` title marker and a `**Resolution**` block:
+
+- **2 RESOLVED-and-shipped during v1 (Phase landings):** 11.1.4 LoRA adapter validation suite (`phoenix/adapters/validator.py`, Phase 9); 11.2.1 provider equivalence (`phoenix/router/equivalence_registry.py`, Phase 4). These were "shipped first, documented later" — the v1.1 doc update reconciles the architecture catalog with the actual code.
+- **9 RESOLVED-as-locked-deferrals to v1.x:** 11.1.1 (error-bar combiner — keep quadrature, empirical-data-driven revisit), 11.1.2 (MPS axis — roll into Axis 1 until MPS path ships), 11.1.3 (adaptive-depth thresholds — keep Section 6.4 defaults), 11.2.3 (multi-source vendoring — single-version stays), 11.3.2 (per-install rung table — bundled with 11.1.3), 11.4.1 (OS keychain attestation — hardening pass), 11.4.2 (org permission inheritance — Phoenix Cloud-driven), 11.4.3 (org root key rotation — Phoenix Cloud-driven), 11.5.3 (Prometheus endpoint — ships as Cloud seam when demand emerges). Each lock includes Phase 13 hindsight where applicable.
+- **1 RESOLVED-as-deprecated:** 11.8 translator handler set — the grammar-token entry path was never built; structured-JSON + LoRA-natural-language are the two shipped entry points. If concrete demand for grammar-token entry emerges, the translator becomes a focused v1.x build-guide.
+- **2 RESOLVED-as-out-of-scope:** 11.6.1 Sanskrit memory composition (reference-client decision in the reference client's repo); 11.6.2 reference client license (Apache 2.0 stays); 11.7.1 vendored module import paths (verbatim discipline validated through Phase 13's `vendor/cognition_wobble/` addition); 11.7.2 launcher icon (reclassified as design-asset work).
+
+**Open-tension count after the 2026-05-20 v1.1 second-round resolution: 2** (both from v1.1 perception: 11.14.2 and 11.14.6; both correctly stay open until perception build-guide drafting begins).
 
 The defer-to-v1.x items are tracked as a forward roadmap. They don't block v1 implementation; they shape v1.1+ planning.
 
@@ -2927,29 +2992,29 @@ Every `[OPEN: ...]` marker in Sections 2-10 maps to a catalog entry in Section 1
 
 | Section | Marker location | Catalog entry | Disposition |
 |---|---|---|---|
-| 2.2 | Quadrature combiner | 11.1.1 | Defer to v1.1, ship quadrature in v1 |
-| 2.5 | Provider equivalence | 11.2.1 | Conservative defaults + manual override in v1 |
-| 2.6 | Adaptive depth formula | 11.1.3 | Ship Section 6.4 thresholds in v1 |
-| 2.7 | LoRA validation suite | 11.1.4 | Build-guide territory |
-| 2.8 | MPS truncation axis | 11.1.2 | Roll into Axis 1 for v1 |
-| 3.5 | LoRA validation suite | 11.1.4 (same as 2.7) | Build-guide territory |
-| 3.6 | Translator handler set | 11.8 | Build-guide territory |
-| 4.5 | Provider equivalence | 11.2.1 (same as 2.5) | Conservative defaults + manual override |
+| 2.2 | Quadrature combiner | 11.1.1 | **RESOLVED v1.1**: quadrature locked; empirical covariance revisit at v1.x |
+| 2.5 | Provider equivalence | 11.2.1 | **RESOLVED v1**: `equivalence_registry.py` (Phase 4) ships conservative defaults + manual override |
+| 2.6 | Adaptive depth formula | 11.1.3 | **RESOLVED v1.1**: Section 6.4 thresholds locked; config-tuning at v1.x alongside 11.3.2 |
+| 2.7 | LoRA validation suite | 11.1.4 | **RESOLVED v1**: `phoenix/adapters/validator.py` (Phase 9) |
+| 2.8 | MPS truncation axis | 11.1.2 | **RESOLVED v1.1**: roll into Axis 1; promote-vs-roll decision deferred until MPS path ships |
+| 3.5 | LoRA validation suite | 11.1.4 (same as 2.7) | **RESOLVED v1**: see 2.7 |
+| 3.6 | Translator handler set | 11.8 | **RESOLVED v1.1**: deprecated-in-practice; structured-JSON + LoRA-NL are the shipped entry points |
+| 4.5 | Provider equivalence | 11.2.1 (same as 2.5) | **RESOLVED v1**: see 2.5 |
 | 4.7 | Pricing update policy | 11.2.2 | **RESOLVED v1**: soft warn (90-day threshold; `pricing_data_staleness_days` provenance field) |
 | 5.2 | Pagination convention | 11.3.1 | **RESOLVED v1**: cursor-based, server-encoded, `next_cursor`/`prev_cursor` envelope |
 | 5.4 | Standalone binary daemon | 11.3.3 | **RESOLVED v1**: bundle daemon by default; `--external-daemon` flag for opt-out |
-| 6.4 | Per-install rung table | 11.3.2 | Defer to v1.x |
-| 7.2 | OS keychain attestation | 11.4.1 | Defer to v1.x |
-| 7.3 | Org permission inheritance | 11.4.2 | Defer to v1.x |
-| 7.6 | Org root key rotation | 11.4.3 | Defer to v1.x |
+| 6.4 | Per-install rung table | 11.3.2 | **RESOLVED v1.1**: fixed-table locked; config-tuning at v1.x alongside 11.1.3 |
+| 7.2 | OS keychain attestation | 11.4.1 | **RESOLVED v1.1**: defer to v1.x focused hardening pass |
+| 7.3 | Org permission inheritance | 11.4.2 | **RESOLVED v1.1**: per-install locked; org-level templates at v1.x driven by Phoenix Cloud |
+| 7.6 | Org root key rotation | 11.4.3 | **RESOLVED v1.1**: "create new org" workaround stands; rotation flow at v1.x with 11.4.2 |
 | 8.3 | Kill switch persistence | 11.5.1 | **RESOLVED v1**: persist in state backend; refuse-to-start-accepting after restart-while-engaged |
 | 8.4 | Calibration baseline override | 11.5.2 | **RESOLVED v1 (permanent NO)**: ship recalibration via vendor sync, never via runtime override |
-| 8.6 | Prometheus metrics endpoint | 11.5.3 | Defer to v1.1 |
-| 9.5 | Sanskrit memory composition | 11.6.1 | Reference client's v0.2 |
-| 9.7 | Reference client license | 11.6.2 | Apache 2.0 stays default |
-| 10.2 | Vendored import paths | 11.7.1 | Verbatim through v1 |
-| 10.4 | Multi-source vendoring | 11.2.3 | Single-version through v1 and v1.x |
-| 10.5 | Launcher icon | 11.7.2 | Cosmetic, get designed icon before public release |
+| 8.6 | Prometheus metrics endpoint | 11.5.3 | **RESOLVED v1.1**: OTel-only for v1.1; `/v1/metrics` ships as Cloud seam at v1.x when demand emerges |
+| 9.5 | Sanskrit memory composition | 11.6.1 | **RESOLVED v1.1**: out of scope; owned by reference-client repo when it lands |
+| 9.7 | Reference client license | 11.6.2 | **RESOLVED v1.1**: Apache 2.0 stays default (mirrors 13-D1) |
+| 10.2 | Vendored import paths | 11.7.1 | **RESOLVED v1.1**: verbatim discipline locked; validated through Phase 13's `vendor/cognition_wobble/` addition |
+| 10.4 | Multi-source vendoring | 11.2.3 | **RESOLVED v1.1**: single-version through v1.x; multi-substrate ≠ multi-source |
+| 10.5 | Launcher icon | 11.7.2 | **RESOLVED v1.1 (out of scope)**: reclassified as non-architectural design asset |
 
 ## 11.14 — Perception extension tensions (added in v1.1, 2026-05-07)
 
