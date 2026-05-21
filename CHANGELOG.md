@@ -177,23 +177,28 @@ Breakdown of the 14 v1.0 resolutions:
   registry (`phoenix/router/equivalence_registry.py`, Phase 4). Both shipped
   during the v1 build pipeline; the doc update reconciles the catalog with
   what's actually in code.
-- **9 RESOLVED-as-locked-deferrals to v1.x:** 11.1.1 error-bar combiner (keep
-  quadrature), 11.1.2 MPS axis (roll into Axis 1 until MPS path ships), 11.1.3
-  adaptive-depth thresholds (keep Section 6.4 defaults), 11.2.3 multi-source
-  vendoring (single-version through v1.x), 11.3.2 per-install rung table
-  (bundled with 11.1.3), 11.4.1 OS keychain attestation (hardening pass),
-  11.4.2 org permission inheritance (Phoenix Cloud-driven), 11.4.3 org root
-  key rotation (with 11.4.2), 11.5.3 Prometheus endpoint (ships as Cloud seam
-  when demand emerges). Each carries Phase 13 hindsight where applicable.
+- **10 RESOLVED-as-locked-deferrals to v1.x (Phase 13 hindsight where
+  applicable):** 11.1.1 error-bar combiner (keep quadrature), 11.1.2 MPS axis
+  (roll into Axis 1 until MPS path ships), 11.1.3 adaptive-depth thresholds
+  (keep Section 6.4 defaults), 11.2.3 multi-source vendoring (single-version
+  through v1.x), 11.3.2 per-install rung table (bundled with 11.1.3), 11.4.1
+  OS keychain attestation (hardening pass), 11.4.2 org permission inheritance
+  (Phoenix-Cloud-driven), 11.4.3 org root key rotation (with 11.4.2), 11.5.3
+  Prometheus endpoint (Cloud seam when demand emerges), 11.7.1 vendored module
+  import paths (verbatim discipline locked; validated through Phase 13's
+  `vendor/cognition_wobble/` addition).
 - **1 RESOLVED-as-deprecated:** 11.8 translator handler set — grammar-token
   entry path was never built; structured-JSON + LoRA-natural-language are the
   two shipped entry points.
-- **2 RESOLVED-as-out-of-scope-for-Section-11:** 11.6.1 Sanskrit memory
+- **3 RESOLVED-as-out-of-scope-for-Section-11:** 11.6.1 Sanskrit memory
   composition (reference-client decision in the reference-client repo); 11.6.2
-  reference-client license (Apache 2.0 mirrors 13-D1); 11.7.1 vendored module
-  import paths (verbatim discipline validated through Phase 13's
-  `vendor/cognition_wobble/` addition); 11.7.2 launcher icon (reclassified as
-  design-asset work).
+  reference-client license (Apache 2.0 mirrors 13-D1; further license
+  discussion lives in the reference-client repo when it ships); 11.7.2
+  launcher icon (reclassified as design-asset work).
+
+Counts add to 16 (2 + 10 + 1 + 3): the 14 official open v1.0 tensions plus
+the two previously-uncounted entries (11.7.2 cosmetic, 11.8 build-guide-
+territory) that this round formally dispositions for accounting cleanliness.
 
 The Section 11.13 cross-reference table is updated end-to-end; each marker
 now shows `**RESOLVED v1**` or `**RESOLVED v1.1**` with the specific
