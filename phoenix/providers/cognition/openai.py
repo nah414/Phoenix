@@ -181,6 +181,171 @@ class OpenAIProvider(_CognitionAdapterBase):
             prompt_cache_hit=(cached_tokens > 0) if usage is not None else None,
         )
 
+    async def astream(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float,
+        tools: list[Tool] | None = None,
+    ) -> Any:  # AsyncIterator[StreamEvent]; relaxed for mypy on lazy SDK
+        """Stream completion events for ``prompt`` (Phase 13.x.2).
+
+        Yields :class:`StreamTokenDelta` / :class:`StreamToolCallStart`
+        / :class:`StreamFinal` events as the OpenAI SDK reports them.
+        Mirrors :meth:`AnthropicProvider.astream` shipped at Phase 13
+        Step 7; production injects an :class:`openai.AsyncOpenAI` client
+        for the streaming path.
+
+        OpenAI's streaming chunks differ from Anthropic's in two ways:
+
+        1. Each chunk carries a per-choice ``delta`` with optional
+           ``content`` (text fragment) + optional ``tool_calls`` array.
+           Tool-call arguments arrive as concatenated JSON fragments
+           across chunks — we accumulate per ``index`` and parse at
+           the final aggregate step.
+        2. Final usage info arrives on the LAST chunk (one with empty
+           ``choices``) when ``stream_options={"include_usage": True}``
+           is set. We always set that option so the aggregate
+           :class:`CognitionResult` has accurate token counts.
+        """
+        from phoenix.providers.cognition.streaming import (
+            StreamFinal,
+            StreamTokenDelta,
+            StreamToolCallStart,
+        )
+
+        # Build the request payload (mirrors _do_complete's prep).
+        messages: list[dict[str, Any]] = []
+        if prompt.system is not None:
+            messages.append({"role": "system", "content": prompt.system})
+        messages.extend(prompt.messages)
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            kwargs["tools"] = [self._tool_to_openai(t) for t in tools]
+
+        t0 = time.perf_counter()
+        cumulative_tokens = 0
+        text_parts: list[str] = []
+        # Per-index accumulator for tool-call fragments.
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        final_usage: Any = None
+
+        # Cast to Any at the stream-call seam: production injects
+        # AsyncOpenAI; tests inject duck-typed fakes. The cast isolates
+        # the type-loose seam to this one line (matches AnthropicProvider).
+        async_client: Any = self._client
+        try:
+            stream = await async_client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                # Last chunk: empty choices, populated usage (when
+                # stream_options.include_usage=True).
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    usage_obj = getattr(chunk, "usage", None)
+                    if usage_obj is not None:
+                        final_usage = usage_obj
+                    continue
+
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+
+                # Text deltas.
+                text = getattr(delta, "content", None)
+                if text:
+                    text_parts.append(text)
+                    cumulative_tokens += max(1, len(text) // 4)
+                    yield StreamTokenDelta(
+                        delta_text=text,
+                        cumulative_tokens=cumulative_tokens,
+                    )
+
+                # Tool-call announcements + argument fragments.
+                tc_deltas = getattr(delta, "tool_calls", None) or []
+                for tc in tc_deltas:
+                    idx = getattr(tc, "index", 0)
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {
+                            "id": getattr(tc, "id", "") or "",
+                            "name": "",
+                            "args_chunks": [],
+                            "announced": False,
+                        }
+                    # Update id if it arrives in a later chunk.
+                    if not tool_calls_acc[idx]["id"]:
+                        new_id = getattr(tc, "id", "") or ""
+                        if new_id:
+                            tool_calls_acc[idx]["id"] = new_id
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        name = getattr(fn, "name", None)
+                        if name and not tool_calls_acc[idx]["name"]:
+                            tool_calls_acc[idx]["name"] = name
+                        args_chunk = getattr(fn, "arguments", None)
+                        if args_chunk:
+                            tool_calls_acc[idx]["args_chunks"].append(args_chunk)
+                    # Announce once we have BOTH an id and a name.
+                    if (
+                        not tool_calls_acc[idx]["announced"]
+                        and tool_calls_acc[idx]["id"]
+                        and tool_calls_acc[idx]["name"]
+                    ):
+                        tool_calls_acc[idx]["announced"] = True
+                        yield StreamToolCallStart(
+                            call_id=tool_calls_acc[idx]["id"],
+                            tool_name=tool_calls_acc[idx]["name"],
+                            partial_args={},
+                        )
+        except Exception as exc:
+            mapped = self._map_sdk_exception(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        # Assemble final tool calls from accumulated fragments.
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_calls_acc.keys()):
+            acc = tool_calls_acc[idx]
+            args_raw = "".join(acc["args_chunks"])
+            try:
+                args = json.loads(args_raw) if args_raw else {}
+            except json.JSONDecodeError:
+                args = {"_raw_arguments": args_raw}
+            tool_calls.append(ToolCall(call_id=acc["id"], name=acc["name"], arguments=args))
+
+        prompt_tokens = int(getattr(final_usage, "prompt_tokens", 0)) if final_usage else 0
+        completion_tokens = int(getattr(final_usage, "completion_tokens", 0)) if final_usage else 0
+        cached_tokens = 0
+        if final_usage is not None:
+            details = getattr(final_usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+
+        result = CognitionResult(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            usage=TokenUsage(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                cached_input_tokens=cached_tokens,
+            ),
+            latency_ms=latency_ms,
+            provider_fingerprint=self.fingerprint(),
+            prompt_cache_hit=(cached_tokens > 0) if final_usage is not None else None,
+        )
+        yield StreamFinal(result=result)
+
     def capabilities(self) -> CognitionCapabilities:
         caps = _STATIC_CAPABILITIES.get(self.model)
         if caps is None:
