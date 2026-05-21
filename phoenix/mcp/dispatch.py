@@ -93,21 +93,48 @@ def check_mcp_dispatch(
     if spec is None:
         raise MCPServerNotRegistered(server_name)
 
+    enforce_call_gates(spec, tool_name)
+    return spec
+
+
+def enforce_call_gates(spec: MCPServerSpec, tool_name: str) -> None:
+    """Re-check tool allowlist + budget against a known spec.
+
+    Phase 13.x defense-in-depth (2026-05-21): :class:`MCPClient`'s
+    ``call_tool`` invokes this on every call so the gate fires even
+    when a caller forgets the pre-dispatch ``check_mcp_dispatch()``
+    pass. The two checks are cheap and local; running them twice in
+    a normal request path costs O(allowed_tools) + one optional
+    hook call.
+
+    Raises:
+        MCPToolNotAllowed: ``tool_name`` is not in
+            ``spec.allowed_tools``.
+        MCPServerBudgetExceeded: the budget-check hook reports the
+            server's 24h budget exhausted.
+
+    The registry-lookup check that :func:`check_mcp_dispatch` does
+    is intentionally NOT repeated here — by the time a caller has a
+    live :class:`MCPClient` (and therefore a :class:`MCPServerSpec`
+    in hand), registration was validated at session construction.
+    Re-checking registration would catch one narrow case
+    (deregistration mid-session) at the cost of every call; the
+    Phase 13 Step 6 contract handles that via the next-dispatch
+    revocation check at higher layers, not here.
+    """
     if not spec.tool_allowed(tool_name):
-        raise MCPToolNotAllowed(server_name, tool_name)
+        raise MCPToolNotAllowed(spec.name, tool_name)
 
     if _budget_check_hook is not None:
-        result = _budget_check_hook(server_name, spec.max_budget_usd_per_day)
+        result = _budget_check_hook(spec.name, spec.max_budget_usd_per_day)
         if result is not None:
             spent_usd, retry_after_seconds = result
             raise MCPServerBudgetExceeded(
-                server_name,
+                spec.name,
                 spent_usd=spent_usd,
                 budget_usd=spec.max_budget_usd_per_day,
                 retry_after_seconds=retry_after_seconds,
             )
-
-    return spec
 
 
 def reset_budget_check_hook() -> None:
