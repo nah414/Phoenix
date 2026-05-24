@@ -33,5 +33,113 @@ Vendors the Omega Ledger pattern from dr-frank-and-eddy. Phoenix extends with re
 - `evals/ledger/` (Phase 7+) — hashchain stays valid under all operations.
 - `evals/replay/` (Phase 7+) — strict and replay modes produce bit-exact match for the deterministic portion. Long-window replay test (Phase 0 acceptance §10.7): 6+ months between original and replay across CI hardware + clean Linux container + clean macOS runner.
 
+## Encryption ceremony (Phase 13.x.6)
+
+Phase 13 Step 8 shipped the `prompt_encrypted` BLOB column +
+`PromptEncryptor` Protocol with `NullPromptEncryptor` as the default
+(raises `EncryptedDispositionNotConfigured` on every call).
+Phase 13.x.6 ships the **age-based reference implementation**
+(`AgePromptEncryptor` in `encryption_age.py`) that ops install + wire
+to enable real `ENCRYPTED_OPT_IN` prompt-disposition storage.
+
+### Threat model
+
+**Protects against:** offline attackers with filesystem access to
+the encrypted blobs (e.g., stolen `ledger_entries.db`); remote
+attackers without keys; ciphertext tampering (ChaCha20-Poly1305
+AEAD); wrong-key decrypt attempts.
+
+**Does NOT protect against:** in-process attackers with daemon
+memory access (prompts are plaintext in memory during the encrypt
+op); OS-level keyloggers; identity-file theft from disk; coercion
+of the key holder.
+
+For deployments needing tamper-evident **external** audit (regulated
+industries where Phoenix's own ledger isn't a sufficient witness),
+a v1.2.x `AwsKmsPromptEncryptor` / `VaultPromptEncryptor` plugs into
+the same `PromptEncryptor` Protocol via `set_prompt_encryptor()`.
+The age impl is the local-default reference; the cloud-KMS impls
+are enterprise add-ons.
+
+### Setup (one-time per install)
+
+1. Install the optional extra:
+
+   ```bash
+   pip install "phoenix-middleware[encryption-age]"
+   ```
+
+2. Generate an age keypair. Until the
+   `phoenix admin generate-encryption-key` CLI lands at Phase 13.x.7,
+   use the `age-keygen` binary directly:
+
+   ```bash
+   mkdir -p ~/.phoenix/runtime/encryption_keys/recipients
+   age-keygen -o ~/.phoenix/runtime/encryption_keys/identity.txt
+   chmod 0600 ~/.phoenix/runtime/encryption_keys/identity.txt
+   age-keygen -y ~/.phoenix/runtime/encryption_keys/identity.txt \
+       > ~/.phoenix/runtime/encryption_keys/recipients/primary.pub
+   ```
+
+3. Wire it into Phoenix at daemon startup:
+
+   ```python
+   from phoenix.ledger.encryption import set_prompt_encryptor
+   from phoenix.ledger.encryption_age import encryptor_from_default_layout
+
+   set_prompt_encryptor(encryptor_from_default_layout())
+   ```
+
+   The convenience constructor reads `identity.txt` + every `*.pub`
+   under `recipients/` from the conventional `default_keys_dir()`
+   (override via `$PHOENIX_ENCRYPTION_KEYS_DIR`).
+
+### Key rotation (lossless via multi-recipient encryption)
+
+age supports multi-recipient encryption natively, which gives
+lossless key rotation:
+
+1. Generate a second keypair (`identity-v2.txt` + `v2.pub`).
+2. Restart the daemon. `encryptor_from_default_layout()` picks up
+   the new recipient automatically (globs `recipients/*.pub`). New
+   encrypts go to `{primary, v2}`; old encrypts remain decryptable
+   with either identity.
+3. After the transition window, batch-rotate (admin command lands
+   at Phase 13.x.7): decrypt with old identity, re-encrypt to
+   `{v2}` only, delete old identity + `primary.pub`.
+
+### Audit events
+
+Every encrypt + decrypt op emits a structured audit event:
+
+- `cognition.prompt.encrypted` — `recipient_fingerprints`,
+  `plaintext_bytes`, `ciphertext_bytes`.
+- `cognition.prompt.decrypted` — `identity_fingerprint`.
+- `cognition.prompt.encrypt.failed` / `cognition.prompt.decrypt.failed`
+  — fingerprints + `error_type`. **Phoenix does NOT retry decrypts.**
+
+Fingerprints are 16-hex-char SHA-256 prefixes of the recipient/
+identity public-key strings — stable correlators ops can reproduce
+with `sha256sum`.
+
+### Safety invariants (enforced by the encryptor)
+
+- **POSIX file-permission check:** identity files MUST have mode
+  `0o600`. Phoenix refuses to load looser permissions; the error
+  message includes the `chmod 0600 <path>` fix command. No opt-out.
+- **Identity contents are never logged.** Audit events carry only
+  fingerprints, never key material.
+- **Failed decrypts are not retried.** A failed decrypt is
+  structural (tampering or wrong key), not transient.
+
+### What's NOT shipped at 13.x.6
+
+- **Phase 13.x.7** — `phoenix admin generate-encryption-key` CLI +
+  `POST /v1/admin/encryption/rotate-key` admin endpoint.
+- **Phase 13.x.8** — per-actor key isolation.
+- **v1.2.x** — `AwsKmsPromptEncryptor` / `GcpKmsPromptEncryptor` /
+  `VaultPromptEncryptor` Protocol-conforming plugins.
+
 ## Recent changes
+- 2026-05-23 — Phase 13.x.6: `AgePromptEncryptor` + ceremony docs.
 - 2026-05-06 — Phase 0: module created as empty stub.
