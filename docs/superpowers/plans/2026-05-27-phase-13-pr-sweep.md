@@ -12,6 +12,15 @@
 
 ---
 
+## Global execution protocols
+
+Captured 2026-05-27 from Adam-decision during executing-plans-skill kickoff:
+
+1. **If `main` CI goes red after any merge:** STOP the sweep immediately. Do not merge any further PRs. Investigate the failure (read the failing CI run output, identify the cause). Propose a fix path to Adam with two named options (typically `gh pr revert <PR>` vs. fix-forward patch) and the trade-offs. Await direction before any further action.
+2. **Workspace:** Execute from `C:\Phoenix` (on `main`). No worktree — this sweep's local-write footprint is one doc commit in Task 7; the rest is `gh` remote ops where worktree isolation adds no benefit.
+
+---
+
 ## Task 0: Pre-flight
 
 **Files:**
