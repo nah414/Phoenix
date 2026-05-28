@@ -139,11 +139,10 @@ class AgeKeyLoadError(AgeEncryptionError):
 class AgeDecryptError(AgeEncryptionError):
     """Decryption failed.
 
-    Carries ``recipient_fingerprints_tried`` (a list of SHA-256
-    fingerprint prefixes of recipients in the loaded identity set)
-    so forensic analysis can correlate the failed decrypt against
-    audit log entries that recorded the encrypt operation's
-    recipients. Common causes:
+    Carries ``identity_fingerprint`` (a 16-hex-char SHA-256 prefix of
+    the identity that attempted the decrypt) so forensic analysis can
+    correlate the failed decrypt against audit log entries that
+    recorded the encrypt operation's recipient set. Common causes:
 
     - Ciphertext was tampered with at rest (AEAD authentication tag
       mismatch).
@@ -155,6 +154,14 @@ class AgeDecryptError(AgeEncryptionError):
     Phoenix does NOT retry decrypts. The caller (typically the
     replay engine) surfaces this as a typed error to the admin
     endpoint.
+
+    Sourcery review (2026-05-28): the prior docstring promised a
+    ``recipient_fingerprints_tried`` list attribute that the class
+    never exposed — decryption operates with one identity at a time,
+    so the meaningful audit handle is the identity, not a recipient
+    set. Cross-referencing the encrypt-side recipient fingerprints is
+    done at the audit-log layer (the ``cognition.prompt.encrypted``
+    event carries them).
     """
 
     def __init__(self, message: str, *, identity_fingerprint: str) -> None:
@@ -285,15 +292,12 @@ class AgePromptEncryptor:
             keys). Each file contains one or more lines beginning
             with ``age1``. Multi-recipient encryption is supported
             for lossless key rotation — see module docstring.
-        require_pyrage: Internal — set to False in tests that inject
-            a fake ``pyrage`` module via ``sys.modules`` monkeypatch.
 
     Raises:
         AgeKeyPermissionError: identity file permissions too loose
             (POSIX only).
         AgeKeyLoadError: file not found, malformed key, or empty file.
-        ImportError: ``pyrage`` not installed and ``require_pyrage``
-            is True. Install via
+        ImportError: ``pyrage`` not installed. Install via
             ``pip install phoenix-middleware[encryption-age]``.
 
     **Lazy SDK import:** ``pyrage`` is imported on first construction
@@ -324,21 +328,48 @@ class AgePromptEncryptor:
             ) from exc
 
         # Load identity.
+        #
+        # Codex review (P1, 2026-05-28): ``age-keygen -o identity.txt`` writes
+        # comment headers (``# created: ...`` + ``# public key: ...``) before
+        # the secret-key line, so a blob-level ``startswith("AGE-SECRET-KEY-")``
+        # check rejects valid default-layout identities and breaks the setup
+        # flow documented in phoenix/ledger/README.md. We parse line-by-line —
+        # mirroring the recipient parser below — and accept the first non-blank,
+        # non-comment line as the secret-key candidate. Multiple secret-key
+        # lines are an error (real age identities contain exactly one).
         try:
-            identity_text = identity_path.read_text(encoding="utf-8").strip()
+            identity_text_full = identity_path.read_text(encoding="utf-8")
         except OSError as exc:
             raise AgeKeyLoadError(
                 f"encryption_age: cannot read identity file at {identity_path}: {exc}"
             ) from exc
-        if not identity_text or not identity_text.startswith("AGE-SECRET-KEY-"):
+        secret_key_line: str | None = None
+        for raw_line in identity_text_full.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if not line.startswith("AGE-SECRET-KEY-"):
+                raise AgeKeyLoadError(
+                    f"encryption_age: identity file at {identity_path} contains a "
+                    f"non-identity line (expected 'AGE-SECRET-KEY-...'); got: "
+                    f"{line[:32]}... Phoenix's age integration does not support "
+                    f"passphrase or SSH identities."
+                )
+            if secret_key_line is not None:
+                raise AgeKeyLoadError(
+                    f"encryption_age: identity file at {identity_path} contains "
+                    f"multiple AGE-SECRET-KEY- lines; expected exactly one."
+                )
+            secret_key_line = line
+        if secret_key_line is None:
             raise AgeKeyLoadError(
-                f"encryption_age: identity file at {identity_path} does not contain "
-                f"a valid X25519 age identity (expected line starting with "
-                f"'AGE-SECRET-KEY-'). Phoenix's age integration does not support "
-                f"passphrase or SSH identities."
+                f"encryption_age: identity file at {identity_path} contains no "
+                f"AGE-SECRET-KEY- line (comments and blank lines are allowed but "
+                f"a secret-key line is required). Phoenix's age integration does "
+                f"not support passphrase or SSH identities."
             )
         try:
-            identity = pyrage.x25519.Identity.from_str(identity_text)
+            identity = pyrage.x25519.Identity.from_str(secret_key_line)
         except Exception as exc:
             raise AgeKeyLoadError(
                 f"encryption_age: pyrage failed to parse identity at {identity_path}: {exc}"

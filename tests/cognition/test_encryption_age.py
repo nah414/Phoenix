@@ -309,7 +309,7 @@ class TestKeyLoadErrors:
         if sys.platform != "win32":
             os.chmod(identity, 0o600)
         recipient = _write_recipient(tmp_path)
-        with pytest.raises(AgeKeyLoadError, match="does not contain a valid"):
+        with pytest.raises(AgeKeyLoadError, match="contains no AGE-SECRET-KEY"):
             AgePromptEncryptor(identity_path=identity, recipient_paths=[recipient])
 
     def test_malformed_identity_raises(self, fake_pyrage: Any, tmp_path: Path) -> None:
@@ -318,7 +318,50 @@ class TestKeyLoadErrors:
         if sys.platform != "win32":
             os.chmod(identity, 0o600)
         recipient = _write_recipient(tmp_path)
-        with pytest.raises(AgeKeyLoadError, match="does not contain a valid"):
+        with pytest.raises(AgeKeyLoadError, match="non-identity line"):
+            AgePromptEncryptor(identity_path=identity, recipient_paths=[recipient])
+
+    def test_identity_with_age_keygen_comment_header_parses(
+        self, fake_pyrage: Any, tmp_path: Path
+    ) -> None:
+        """Codex review (P1, 2026-05-28): ``age-keygen -o identity.txt`` writes
+        ``# created:`` and ``# public key:`` comment headers before the
+        secret-key line. The loader must skip comments/blanks and accept the
+        secret-key line — otherwise the default setup flow documented in
+        phoenix/ledger/README.md fails at startup with AgeKeyLoadError.
+        """
+        identity = tmp_path / "identity.txt"
+        identity.write_text(
+            "# created: 2026-05-28T12:00:00Z\n"
+            "# public key: age1examplepubkey\n"
+            "AGE-SECRET-KEY-COMMENTHEADERTEST\n",
+            encoding="utf-8",
+        )
+        if sys.platform != "win32":
+            os.chmod(identity, 0o600)
+        recipient = _write_recipient(tmp_path)
+        # Should construct cleanly with no raise.
+        enc = AgePromptEncryptor(identity_path=identity, recipient_paths=[recipient])
+        assert enc.identity_fingerprint == _fingerprint(
+            _FakeIdentity("AGE-SECRET-KEY-COMMENTHEADERTEST")._pub
+        )
+
+    def test_identity_with_multiple_secret_key_lines_raises(
+        self, fake_pyrage: Any, tmp_path: Path
+    ) -> None:
+        """Defensive: a well-formed age identity file contains exactly one
+        secret-key line. Two or more indicates corruption or a concatenated
+        identity set — reject rather than silently use the first.
+        """
+        identity = tmp_path / "identity.txt"
+        identity.write_text(
+            "AGE-SECRET-KEY-ONE\nAGE-SECRET-KEY-TWO\n",
+            encoding="utf-8",
+        )
+        if sys.platform != "win32":
+            os.chmod(identity, 0o600)
+        recipient = _write_recipient(tmp_path)
+        with pytest.raises(AgeKeyLoadError, match="multiple AGE-SECRET-KEY"):
             AgePromptEncryptor(identity_path=identity, recipient_paths=[recipient])
 
     def test_empty_recipient_paths_list_raises(self, fake_pyrage: Any, tmp_path: Path) -> None:
