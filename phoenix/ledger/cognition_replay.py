@@ -746,6 +746,7 @@ def replay_cognition_entry(
     *,
     provider_factory: CognitionProviderFactory | None = None,
     comparator: CognitionResultComparator | None = None,
+    classifier: CognitionClassifier | None = None,  # NEW (Phase 13.x.4)
     state_backend: StateBackend | None = None,
 ) -> CognitionReplayReport:
     """Replay a single cognition ledger entry by ``entry_id``.
@@ -812,7 +813,17 @@ def replay_cognition_entry(
         ) from exc
 
     factory = provider_factory if provider_factory is not None else _unavailable_factory
-    compare = comparator if comparator is not None else default_compare_cognition_results
+    # Phase 13.x.4: wrap the comparator so the classifier kwarg flows through.
+    # Custom comparators that don't take a classifier kwarg are still supported
+    # because we only inject the kwarg into the default_compare_cognition_results
+    # path; custom comparators receive only (original_payload, replayed).
+    compare: CognitionResultComparator
+    if comparator is None:
+        from functools import partial
+
+        compare = partial(default_compare_cognition_results, classifier=classifier)
+    else:
+        compare = comparator
 
     try:
         disposition = PromptDisposition(disposition_raw)

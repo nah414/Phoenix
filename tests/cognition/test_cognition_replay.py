@@ -1111,3 +1111,41 @@ class TestPerfOptimization:
         outcome = default_compare_cognition_results(payload, replayed, classifier=spy_classifier)
         assert outcome.verdict == CognitionReplayVerdict.BIT_EXACT
         spy_classifier.classify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4: classifier kwarg propagates through replay_cognition_entry.
+
+
+class TestClassifierKwargPropagation:
+    def test_replay_passes_classifier_to_comparator(self) -> None:
+        """When replay_cognition_entry is called with a classifier kwarg,
+        it propagates to the comparator (default OR custom)."""
+        prompt = Prompt(system=None, messages=[{"role": "user", "content": "hi"}])
+        # Build VERBATIM payload where text DIFFERS so the comparator
+        # actually invokes the classifier.
+        payload = _build_verbatim_payload(prompt=prompt, result_text="original", temperature=0.0)
+        backend = _FakeBackend(rows=[_build_row(entry_id="c1", payload=payload)])
+
+        canned = CognitionResult(
+            text="DIFFERENT",
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=10, output_tokens=20),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+
+        # FACTUAL_AGREEMENT classifier → verdict=SEMANTIC_MATCH → no raise.
+        classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_AGREEMENT)
+
+        report = replay_cognition_entry(
+            "c1",
+            state_backend=_as_backend(backend),
+            provider_factory=_make_factory(canned),
+            classifier=classifier,
+        )
+        assert report.comparison_outcome is not None
+        assert report.comparison_outcome.verdict == CognitionReplayVerdict.SEMANTIC_MATCH
+        assert report.comparison_outcome.matches is True
+        assert report.comparison_outcome.classification is not None
+        assert report.comparison_outcome.classification.classifier_version == "stub-fixed-v1"
