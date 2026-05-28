@@ -46,6 +46,10 @@ from phoenix.ledger.cognition_replay import (
 )
 from phoenix.ledger.cognition_replay import CognitionReplayVerdict  # noqa: F401 -- used in 13.x.4 tests
 from cognition_wobble.disagreement_types import CognitionDisagreementType
+from phoenix.ledger.cognition_classifier import (
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    ClassificationResult,
+)
 from phoenix.ledger.encryption import EncryptedDispositionNotConfigured
 from phoenix.ledger.prompt_disposition import (
     canonicalize_prompt,
@@ -210,13 +214,11 @@ class _StubClassifier:
 
     def classify(
         self,
-        prompt,
-        responses,
+        prompt: Prompt,
+        responses: list[CognitionResult],
         *,
-        confidence_threshold: float = 0.5,
-    ):
-        from phoenix.ledger.cognition_classifier import ClassificationResult
-
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    ) -> ClassificationResult:
         del prompt, responses, confidence_threshold
         return ClassificationResult(
             disagreement_type=self._returns,
@@ -235,7 +237,13 @@ class _FailingClassifier:
     def __init__(self, *, exception: Exception) -> None:
         self._exception = exception
 
-    def classify(self, prompt, responses, *, confidence_threshold=0.5):
+    def classify(
+        self,
+        prompt: Prompt,
+        responses: list[CognitionResult],
+        *,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    ) -> ClassificationResult:
         del prompt, responses, confidence_threshold
         raise self._exception
 

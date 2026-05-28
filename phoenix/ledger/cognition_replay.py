@@ -501,12 +501,27 @@ def _build_unclassified_outcome(
 ) -> ComparisonOutcome:
     """Build an UNCLASSIFIED outcome (classifier failure or invalid result).
 
-    Preserves PR #20's reason substrings so existing tests pass.
+    Preserves PR #20's reason substrings AND PREFIX so existing tests
+    pass. Specifically:
+
+    - When ``temperature > 0``, the reason starts with
+      ``"non_deterministic_replay: temperature=..."`` (preserves PR #20's
+      ``startswith("non_deterministic_replay")`` invariant).
+    - When ``temperature == 0``, the reason starts with the supplied
+      ``reason_prefix`` (e.g., ``"classifier_failure: ExcType(...)"``).
+    - The ``reason_prefix`` is always present in the reason string (as
+      a substring even when not leading), so ops can grep for
+      ``"classifier_failure:"`` to find these cases regardless of temp.
     """
-    parts: list[str] = [reason_prefix]
-    parts.append(f"verdict={CognitionReplayVerdict.UNCLASSIFIED.value}")
+    parts: list[str] = []
     if temperature > 0.0:
+        # PR #20 compat: non_deterministic_replay must lead when temp>0
+        # for downstream `startswith("non_deterministic_replay")` checks.
         parts.append(f"non_deterministic_replay: temperature={temperature}")
+        parts.append(reason_prefix)
+    else:
+        parts.append(reason_prefix)
+    parts.append(f"verdict={CognitionReplayVerdict.UNCLASSIFIED.value}")
     if not text_match:
         parts.append(
             f"text differs (original_len={len(original_text)}, replayed_len={len(replayed_text)})"
