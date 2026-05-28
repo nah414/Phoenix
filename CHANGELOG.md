@@ -40,6 +40,78 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13.x.4: classifier integration for cognition replay (2026-05-28)
+
+Upgrades `phoenix/ledger/cognition_replay.py`'s
+`default_compare_cognition_results` from a binary
+`{match, divergence}` outcome to a 4-level `CognitionReplayVerdict`
+(`bit_exact` / `semantic_match` / `divergence` / `unclassified`)
+driven by `CognitionClassifier.classify()`.
+
+**New module:** `phoenix/ledger/cognition_classifier.py` — Protocol
+re-export + `set_/get_/reset_cognition_classifier` registry. Ships
+with `AlwaysUnclassifiedClassifier` as the ship default (matches the
+`NullPromptEncryptor` pattern); ops swap in a real classifier (e.g.,
+Phase 13 Step 5b's hybrid GBM+LLM-judge) at daemon startup.
+
+**ComparisonOutcome** gains two optional fields (back-compat: default
+`None`): `verdict: CognitionReplayVerdict | None` and
+`classification: ClassificationResult | None`.
+
+**Disagreement-type → verdict mapping (locked):**
+
+| `CognitionDisagreementType` | `CognitionReplayVerdict` |
+|---|---|
+| `FACTUAL_AGREEMENT` | `SEMANTIC_MATCH` |
+| `STYLISTIC_DIVERGENCE` | `SEMANTIC_MATCH` |
+| `FACTUAL_DISAGREEMENT` | `DIVERGENCE` |
+| `INTERPRETIVE_DIVERGENCE` | `DIVERGENCE` |
+| `REFUSAL_DIVERGENCE` | `DIVERGENCE` |
+| `TOOL_CHOICE_DIVERGENCE` | `DIVERGENCE` |
+| `UNCLASSIFIED` | `UNCLASSIFIED` |
+
+**Raise-policy matrix (matches=True ⟺ no raise):**
+
+| Verdict | `temp=0` | `temp>0` |
+|---|---|---|
+| `BIT_EXACT` | True | True |
+| `SEMANTIC_MATCH` | **True (NEW: no raise on classifier-confirmed equivalence)** | True |
+| `DIVERGENCE` | False (raise) | **False (NEW: classifier confidence raises even at temp>0)** |
+| `UNCLASSIFIED` | False (raise) | True (no raise) |
+
+**Two behavior changes from PR #20** (bolded above):
+1. `temp=0` + `SEMANTIC_MATCH` no longer raises (the headline 13.x.4
+   feature: classifier-confirmed equivalence is preserved).
+2. `temp>0` + `DIVERGENCE` now raises (classifier confidence beats
+   the temp>0 hedge).
+
+**Back-compat guarantee:** All existing PR #20 tests pass unchanged.
+The `AlwaysUnclassifiedClassifier` ship default produces
+`verdict=UNCLASSIFIED`, which maps to the same `matches` semantics as
+PR #20's binary outcome.
+
+**Perf optimization:** The bit-exact branch returns *without* calling
+the classifier (saves ~100-500ms when hybrid LLM-judge fires).
+Pinned via `TestPerfOptimization`.
+
+**Classifier failure fallback:** If `classifier.classify()` raises,
+the comparator returns `verdict=UNCLASSIFIED` with `reason` prefix
+`classifier_failure: <ExceptionType>(<first 80 chars>)`; logs the
+exception at WARNING. Replay does not crash on classifier
+malfunction. When `temperature > 0`, the reason still starts with
+`non_deterministic_replay:` (the prefix invariant) to preserve PR
+#20's substring checks.
+
+**Tests added:** 21 new (4 registry + 7 mapping + 8 raise-policy + 3
+error-handling + 1 perf opt + 1 kwarg propagation) in
+`tests/cognition/test_cognition_classifier_registry.py` and
+`tests/cognition/test_cognition_replay.py`. Total
+test_cognition_replay.py count: 50 passing.
+
+**Open follow-ups (deferred to later v1.1.x slots):**
+`classifier-version-drift` warning, `hybrid-classifier-LLM-judge-cost`
+ceiling.
+
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
 quantum + classical-cognition substrate. The same audit-grade guarantees
 (typed errors, hashchained ledger, three-axis wobble verification,
