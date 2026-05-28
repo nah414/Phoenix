@@ -45,7 +45,7 @@ Phoenix is in pre-release development. The architecture is locked at v1; build g
 | Provider routing | **Live (Phase 4)** -- routes any task through the Router with seven-stage filtering + ranking + failover; cloud SDK adapters (qiskit-ibm-runtime, amazon-braket-sdk, ionq) ship as stubs that raise on submit, real wiring lands in a focused later phase |
 | Front door (REST + WebSocket + CLI + MCP) | Full v1 surface live — `/v1/health` + `POST /v1/tasks` + `/v1/tasks/{id}/replay` + `/v1/audit/*` + `/v1/admin/*` (Phase 8) + LoRA + CLI + `phoenix mcp serve` (Phase 9) + cost-ceiling + Cloud seams (Phase 10) + cognition + MCP-client-mode admin endpoints (Phase 13) |
 | Reference admin client | Deferred to v1.1 — separate repo (open scope) |
-| Perception harness extension | **LOCKED v1 plan 2026-05-07** — build-guide drafting unblocked (v1 Phase 5 trigger long satisfied; perception phases renumbered to 14-24 post-Phase-13 cognition shift) |
+| Perception harness extension | **LOCKED v1 plan 2026-05-07** — build-guide drafting unblocked (v1 Phase 5 trigger long satisfied). Phase numbering per [`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`](PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md) Section 7 (Phase 12 onwards); any renumbering to account for Phase 13's cognition shift is a separate architecture revision and not yet locked. |
 
 See [`PHOENIX_ARCHITECTURE_v1.md`](PHOENIX_ARCHITECTURE_v1.md) Sections 10.7 and 10.8 for the v1 and v1.1 acceptance criteria.
 
