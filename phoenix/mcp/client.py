@@ -160,17 +160,34 @@ class MCPClient:
     ) -> dict[str, Any]:
         """Invoke a tool on the connected server.
 
-        Caller is responsible for verifying ``tool_name`` is in
-        ``self.spec.allowed_tools`` BEFORE invoking this method —
-        the dispatch helper at :func:`phoenix.mcp.dispatch.check_mcp_dispatch`
-        is the gate; this method just executes.
+        Defense-in-depth (Phase 13.x 2026-05-21): this method re-checks
+        the tool allowlist + budget hook on every call via
+        :func:`phoenix.mcp.dispatch.enforce_call_gates`. The
+        higher-layer entry-point gate
+        (:func:`phoenix.mcp.dispatch.check_mcp_dispatch`) is the
+        first-line check; this in-method re-check is the second-line
+        guarantee so a caller that forgets the pre-dispatch gate still
+        cannot bypass per-tool-allowlist or per-server budget
+        enforcement.
 
-        Returns a dict with ``content`` (list of content blocks),
-        ``isError`` (bool), and ``_raw`` (the SDK's raw response for
-        debugging).
+        Returns a dict with ``content`` (list of content blocks) and
+        ``is_error`` (bool).
 
-        Raises :class:`MCPTransportError` on transport failure.
+        Raises:
+            MCPToolNotAllowed: ``tool_name`` is not in this server's
+                allowlist (re-check at the call site).
+            MCPServerBudgetExceeded: a registered budget hook reports
+                the server's 24h budget exhausted.
+            MCPTransportError: transport failure, including the
+                "not connected" case when :meth:`connect` was skipped.
         """
+        # Defense-in-depth re-check: per-tool allowlist + per-server budget.
+        # Phase 13.x.1 (2026-05-21): the first-line pre-dispatch gate is
+        # discipline-based; this re-check is enforcement-based.
+        from phoenix.mcp.dispatch import enforce_call_gates
+
+        enforce_call_gates(self._spec, tool_name)
+
         if self._session is None:
             raise MCPTransportError(
                 self._spec.name,
