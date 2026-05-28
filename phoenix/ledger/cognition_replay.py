@@ -547,6 +547,8 @@ def default_compare_cognition_results(
                 f"bit_exact: text + tool_calls match "
                 f"(temperature={temperature}; usage drift not compared)"
             ),
+            verdict=CognitionReplayVerdict.BIT_EXACT,
+            classification=None,  # No classifier call on bit-exact (perf opt).
         )
 
     # Real deterministic divergence — build a precise reason.

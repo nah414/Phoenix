@@ -295,6 +295,25 @@ class TestDefaultComparator:
         assert outcome.matches is True
         assert "bit_exact" in outcome.reason
 
+    def test_bit_exact_populates_verdict_bit_exact(self) -> None:
+        """Phase 13.x.4: bit-exact comparison sets verdict=BIT_EXACT."""
+        payload = {
+            "cognition_provenance": {"temperature": 0.0},
+            "result_text": "answer",
+            "result_tool_calls": [],
+        }
+        replayed = CognitionResult(
+            text="answer",
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+        outcome = default_compare_cognition_results(payload, replayed)
+        assert outcome.matches is True
+        assert outcome.verdict == CognitionReplayVerdict.BIT_EXACT
+        assert outcome.classification is None  # No classifier call on bit-exact.
+
 
 # ---------------------------------------------------------------------------
 # replay_cognition_entry — error paths
