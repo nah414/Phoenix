@@ -73,6 +73,7 @@ from phoenix.ledger.prompt_disposition import (
 )
 
 if TYPE_CHECKING:
+    from phoenix.ledger.cognition_classifier import ClassificationResult
     from phoenix.ledger.entry_types import LedgerEntry
     from phoenix.providers.cognition.protocol import CognitionProvider
     from phoenix.providers.cognition.types import CognitionResult
@@ -237,18 +238,25 @@ def _unavailable_factory(provider_id: str, model: str) -> CognitionProvider:
 class ComparisonOutcome:
     """The result of comparing an original cognition entry to a replay.
 
-    Fields:
+    Fields (Phase 13.x.3 original):
         matches: True iff the replay matches the original per the
             comparison policy chosen by the caller.
-        reason: Free-form description of WHY they match (when matches=
-            True, typically "bit-exact match" or
-            "match modulo usage drift") or why they differ. Surfaced
-            to the admin audit log + the API response so the operator
-            can understand what the comparison found.
+        reason: Free-form description of WHY they match or differ.
+
+    Fields (Phase 13.x.4 additions; optional for back-compat):
+        verdict: The 4-level :class:`CognitionReplayVerdict` produced
+            by the default comparator when a classifier is available.
+            ``None`` for custom comparators that don't classify.
+        classification: The full :class:`ClassificationResult` from
+            the classifier, when one was called. ``None`` when the
+            comparator returned BIT_EXACT (no classifier call) or
+            when a custom comparator chose not to populate it.
     """
 
     matches: bool
     reason: str
+    verdict: CognitionReplayVerdict | None = None
+    classification: ClassificationResult | None = None
 
 
 CognitionResultComparator = Callable[[dict[str, Any], "CognitionResult"], ComparisonOutcome]

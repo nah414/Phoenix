@@ -44,6 +44,7 @@ from phoenix.ledger.cognition_replay import (
     default_compare_cognition_results,
     replay_cognition_entry,
 )
+from phoenix.ledger.cognition_replay import CognitionReplayVerdict  # noqa: F401 -- used in 13.x.4 tests
 from phoenix.ledger.encryption import EncryptedDispositionNotConfigured
 from phoenix.ledger.prompt_disposition import (
     canonicalize_prompt,
@@ -712,3 +713,10 @@ class TestComparisonOutcome:
         outcome = ComparisonOutcome(matches=True, reason="bit_exact: details")
         assert outcome.matches is True
         assert outcome.reason == "bit_exact: details"
+
+    def test_outcome_new_fields_default_to_none(self) -> None:
+        """Phase 13.x.4: verdict + classification default to None for
+        backward-compat with PR #20 callsites that don't populate them."""
+        outcome = ComparisonOutcome(matches=True, reason="x")
+        assert outcome.verdict is None
+        assert outcome.classification is None
