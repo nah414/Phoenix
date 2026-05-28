@@ -763,6 +763,14 @@ def replay_cognition_entry(
             needing a factory).
         comparator: Comparison function. When ``None``,
             :func:`default_compare_cognition_results` is used.
+        classifier: Optional :class:`CognitionClassifier` to use for
+            text-differs replays (Phase 13.x.4). Only injected when
+            ``comparator`` is ``None``; custom comparators receive the
+            raw ``(original_payload, replayed)`` signature and should
+            handle classifier wiring themselves. When ``None`` AND
+            ``comparator`` is ``None``, falls through to
+            :func:`get_cognition_classifier` (ship default:
+            :class:`AlwaysUnclassifiedClassifier`).
         state_backend: Optional explicit backend (tests).
 
     Raises:

@@ -102,8 +102,9 @@ malfunction. When `temperature > 0`, the reason still starts with
 `non_deterministic_replay:` (the prefix invariant) to preserve PR
 #20's substring checks.
 
-**Tests added:** 21 new (4 registry + 7 mapping + 8 raise-policy + 3
-error-handling + 1 perf opt + 1 kwarg propagation) in
+**Tests added:** 26 new (4 registry + 1 ComparisonOutcome-defaults + 1
+bit-exact-verdict + 7 mapping + 8 raise-policy + 3 error-handling +
+1 perf opt + 1 kwarg propagation) in
 `tests/cognition/test_cognition_classifier_registry.py` and
 `tests/cognition/test_cognition_replay.py`. Total
 test_cognition_replay.py count: 50 passing.
