@@ -274,8 +274,19 @@ def _find_entry_by_id(
         if str(row.get("entry_id", "")) == entry_id:
             try:
                 payload = json.loads(row["payload_json"])
-            except (json.JSONDecodeError, TypeError):
-                return None
+            except (json.JSONDecodeError, TypeError) as exc:
+                # Sourcery review (2026-05-28): an entry that exists but
+                # has unparseable payload_json is a corruption case, NOT
+                # a missing-entry case. Conflating them (by returning
+                # None here and letting the caller raise
+                # CognitionEntryNotFound) masks data corruption as
+                # "doesn't exist." Raise the typed corruption error
+                # instead so the admin endpoint can surface a clear
+                # 409 "invalid payload_json" rather than a misleading 404.
+                raise CognitionReplayEntryIncomplete(
+                    f"entry_id={entry_id!r} payload_json is malformed "
+                    f"(corruption or partial write): {exc}"
+                ) from exc
             return LedgerEntry(
                 entry_id=str(row["entry_id"]),
                 entry_kind=str(row["entry_kind"]),
@@ -303,6 +314,84 @@ def _reconstruct_prompt_from_canonical(canonical_json: str) -> Any:
         system=parsed.get("system"),
         messages=list(parsed.get("messages", [])),
     )
+
+
+def _extract_sampling_params(
+    *,
+    entry_id: str,
+    provenance: dict[str, Any],
+) -> tuple[int, float]:
+    """Parse ``max_tokens`` + ``temperature`` from a cognition entry's provenance.
+
+    Sourcery review (2026-05-28): the previous direct
+    ``int(provenance.get("max_tokens", 1024))`` raised
+    :class:`TypeError`/:class:`ValueError` on malformed legacy values
+    (e.g. ``"auto"``, ``None``), turning a data issue into an
+    unstructured 5xx. This helper centralizes the defensive parsing so
+    both VERBATIM + ENCRYPTED_OPT_IN handlers stay consistent and
+    surface :class:`CognitionReplayEntryIncomplete` (HTTP 409) on
+    malformed provenance rather than crashing.
+    """
+    raw_max_tokens = provenance.get("max_tokens", 1024)
+    try:
+        max_tokens = int(raw_max_tokens)
+    except (TypeError, ValueError) as exc:
+        raise CognitionReplayEntryIncomplete(
+            f"entry_id={entry_id!r} cognition_provenance has invalid "
+            f"max_tokens={raw_max_tokens!r}; expected an integer."
+        ) from exc
+    raw_temperature = provenance.get("temperature", 0.0)
+    try:
+        temperature = float(raw_temperature)
+    except (TypeError, ValueError) as exc:
+        raise CognitionReplayEntryIncomplete(
+            f"entry_id={entry_id!r} cognition_provenance has invalid "
+            f"temperature={raw_temperature!r}; expected a float."
+        ) from exc
+    return max_tokens, temperature
+
+
+def _decode_encrypted_blob(
+    *,
+    entry_id: str,
+    raw_blob: Any,
+) -> bytes:
+    """Normalize a stored ``prompt_encrypted`` value to raw ciphertext bytes.
+
+    Codex review (P2, 2026-05-28): when an encrypted blob arrives via
+    JSON-serialized payload (as opposed to a direct SQLite BLOB read),
+    it's necessarily a string — and the Phoenix convention for binary
+    in JSON is base64 (matches Phase 6a's keystore convention). The
+    previous code did ``encrypted_blob.encode("utf-8")``, which gave
+    the UTF-8 bytes of the *base64 string* rather than the ciphertext —
+    decryption would fail under a real (non-mock) encryptor.
+
+    Phase 13 convention (locked here):
+
+    - Strings → base64-decoded
+    - bytes/bytearray → used as-is
+
+    Raises :class:`CognitionReplayEntryIncomplete` on base64-decode
+    failure rather than crashing later inside the encryptor.
+    """
+    if isinstance(raw_blob, (bytes, bytearray)):
+        return bytes(raw_blob)
+    if not isinstance(raw_blob, str):
+        raise CognitionReplayEntryIncomplete(
+            f"entry_id={entry_id!r} prompt_encrypted is {type(raw_blob).__name__}; "
+            f"expected bytes or base64-encoded string."
+        )
+    import base64 as _base64
+    import binascii as _binascii
+
+    try:
+        return _base64.b64decode(raw_blob, validate=True)
+    except (_binascii.Error, ValueError) as exc:
+        raise CognitionReplayEntryIncomplete(
+            f"entry_id={entry_id!r} prompt_encrypted is a string but not "
+            f"valid base64 (Phase 13 convention for JSON-serialized "
+            f"ciphertext): {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +575,16 @@ def replay_cognition_entry(
             f"entry_id={entry_id!r} prompt_hash missing or malformed "
             f"(expected 64-char hex SHA-256)."
         )
+    # Codex review (P1, 2026-05-28): length-only validation accepts non-hex
+    # strings (e.g., "z" * 64), letting malformed hashes report
+    # hash_verified=True. Enforce hex characters before treating as valid.
+    try:
+        int(prompt_hash_stored, 16)
+    except ValueError as exc:
+        raise CognitionReplayEntryIncomplete(
+            f"entry_id={entry_id!r} prompt_hash is not valid hexadecimal "
+            f"(got {prompt_hash_stored[:16]}...); expected 64-char hex SHA-256."
+        ) from exc
 
     factory = provider_factory if provider_factory is not None else _unavailable_factory
     compare = comparator if comparator is not None else default_compare_cognition_results
@@ -594,9 +693,10 @@ def _replay_verbatim(
     # Reconstruct the prompt + re-invoke.
     prompt = _reconstruct_prompt_from_canonical(canonical)
     # Use the recorded sampling params; these are what made the original
-    # invocation reproducible.
-    max_tokens = int(provenance.get("max_tokens", 1024))
-    temperature = float(provenance.get("temperature", 0.0))
+    # invocation reproducible. Defensive parsing per Sourcery review
+    # (2026-05-28): malformed legacy values now raise
+    # CognitionReplayEntryIncomplete (409) instead of crashing as 5xx.
+    max_tokens, temperature = _extract_sampling_params(entry_id=entry_id, provenance=provenance)
 
     replayed = provider.complete(
         prompt,
@@ -649,14 +749,10 @@ def _replay_encrypted(
 
     # Decrypt via the configured encryptor; raises
     # EncryptedDispositionNotConfigured for the Phase 13 default.
+    # Normalize the stored blob to raw ciphertext bytes — string values
+    # are base64 per Phase 13 convention (Codex review 2026-05-28).
     encryptor = get_prompt_encryptor()
-    if isinstance(encrypted_blob, str):
-        # SQLite returns BLOB as bytes; JSON encoding may have turned
-        # it into a string (e.g., base64). The encryptor seam takes
-        # bytes; tests typically pass bytes directly.
-        encrypted_bytes = encrypted_blob.encode("utf-8")
-    else:
-        encrypted_bytes = bytes(encrypted_blob)
+    encrypted_bytes = _decode_encrypted_blob(entry_id=entry_id, raw_blob=encrypted_blob)
 
     canonical = encryptor.decrypt(encrypted_bytes)
 
@@ -682,8 +778,8 @@ def _replay_encrypted(
 
     provider = factory(provider_id, model)
     prompt = _reconstruct_prompt_from_canonical(canonical)
-    max_tokens = int(provenance.get("max_tokens", 1024))
-    temperature = float(provenance.get("temperature", 0.0))
+    # Defensive sampling-param parsing (Sourcery review 2026-05-28).
+    max_tokens, temperature = _extract_sampling_params(entry_id=entry_id, provenance=provenance)
 
     replayed = provider.complete(
         prompt,

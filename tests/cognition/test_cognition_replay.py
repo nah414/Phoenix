@@ -353,6 +353,43 @@ class TestReplayErrorPaths:
         with pytest.raises(CognitionReplayEntryIncomplete, match="unrecognized"):
             replay_cognition_entry("c1", state_backend=_as_backend(backend))
 
+    def test_non_hex_prompt_hash_raises(self) -> None:
+        """Codex review P1 (2026-05-28): length-only validation accepted
+        non-hex strings like 'z' * 64. Now enforces hexadecimal."""
+        backend = _FakeBackend(
+            rows=[
+                _build_row(
+                    entry_id="c1",
+                    payload={
+                        "prompt_disposition": "HASH_ONLY",
+                        "prompt_hash": "z" * 64,  # 64 chars, but not hex
+                    },
+                )
+            ]
+        )
+        with pytest.raises(CognitionReplayEntryIncomplete, match="not valid hexadecimal"):
+            replay_cognition_entry("c1", state_backend=_as_backend(backend))
+
+    def test_corrupted_payload_json_raises_incomplete(self) -> None:
+        """Sourcery review (2026-05-28): payload_json corruption used to
+        return None (interpreted as EntryNotFound); now raises
+        CognitionReplayEntryIncomplete (HTTP 409) to distinguish
+        'entry doesn't exist' from 'entry exists but corrupted'."""
+        rows = [
+            {
+                "entry_id": "c1",
+                "entry_kind": "cognition",
+                "timestamp_unix": 1717000000.0,
+                "actor_id": "ash",
+                "parent_hash": "GENESIS",
+                "entry_hash": "0" * 64,
+                "payload_json": "{this is not valid json",
+            }
+        ]
+        backend = _FakeBackend(rows=rows)
+        with pytest.raises(CognitionReplayEntryIncomplete, match="payload_json is malformed"):
+            replay_cognition_entry("c1", state_backend=_as_backend(backend))
+
 
 # ---------------------------------------------------------------------------
 # HASH_ONLY disposition
@@ -545,6 +582,52 @@ class TestVerbatimDisposition:
         assert exc.value.provider_id == "anthropic"
         assert exc.value.model == "claude-sonnet-4-7-20260418"
 
+    def test_invalid_max_tokens_raises_incomplete(self) -> None:
+        """Sourcery review (2026-05-28): malformed max_tokens raises
+        CognitionReplayEntryIncomplete (HTTP 409) rather than crashing
+        as 5xx inside the provider.complete() invocation."""
+        prompt = Prompt(system=None, messages=[{"role": "user", "content": "hi"}])
+        payload = _build_verbatim_payload(prompt=prompt, temperature=0.0)
+        # Tamper the provenance with a legacy-style string value.
+        payload["cognition_provenance"]["max_tokens"] = "auto"
+        backend = _FakeBackend(rows=[_build_row(entry_id="c1", payload=payload)])
+
+        canned = CognitionResult(
+            text="x",
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+        with pytest.raises(CognitionReplayEntryIncomplete, match="invalid max_tokens"):
+            replay_cognition_entry(
+                "c1",
+                state_backend=_as_backend(backend),
+                provider_factory=_make_factory(canned),
+            )
+
+    def test_invalid_temperature_raises_incomplete(self) -> None:
+        """Sourcery review (2026-05-28): malformed temperature raises
+        CognitionReplayEntryIncomplete rather than crashing as 5xx."""
+        prompt = Prompt(system=None, messages=[{"role": "user", "content": "hi"}])
+        payload = _build_verbatim_payload(prompt=prompt, temperature=0.0)
+        payload["cognition_provenance"]["temperature"] = None
+        backend = _FakeBackend(rows=[_build_row(entry_id="c1", payload=payload)])
+
+        canned = CognitionResult(
+            text="x",
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=0, output_tokens=0),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+        with pytest.raises(CognitionReplayEntryIncomplete, match="invalid temperature"):
+            replay_cognition_entry(
+                "c1",
+                state_backend=_as_backend(backend),
+                provider_factory=_make_factory(canned),
+            )
+
 
 # ---------------------------------------------------------------------------
 # ENCRYPTED_OPT_IN disposition
@@ -554,23 +637,46 @@ class TestEncryptedDisposition:
     def test_encrypted_with_null_encryptor_raises(self) -> None:
         """Phase 13 default: NullPromptEncryptor.decrypt() raises
         EncryptedDispositionNotConfigured. The replay engine surfaces
-        that without catching it."""
+        that without catching it.
+
+        Codex review (2026-05-28): the JSON-carried ciphertext is
+        base64 per Phase 13 convention; the engine base64-decodes
+        before calling decrypt(). We use a valid-base64 string here
+        so the test reaches the encryptor (rather than failing earlier
+        at the base64 decode step)."""
+        import base64
+
         payload = {
             "prompt_disposition": "ENCRYPTED_OPT_IN",
             "prompt_hash": "a" * 64,
-            "prompt_encrypted": b"\x00\x01\x02fake-encrypted-bytes",
+            "prompt_encrypted": base64.b64encode(b"fake-encrypted-bytes").decode("ascii"),
             "cognition_provenance": {
                 "provider_id": "anthropic",
                 "model": "claude-sonnet-4-7-20260418",
                 "temperature": 0.0,
             },
         }
-        # bytes won't survive json.dumps; use a string the engine can
-        # encode back to bytes per the _replay_encrypted branch.
-        payload["prompt_encrypted"] = "fake-encrypted-bytes"
         backend = _FakeBackend(rows=[_build_row(entry_id="c1", payload=payload)])
 
         with pytest.raises(EncryptedDispositionNotConfigured):
+            replay_cognition_entry("c1", state_backend=_as_backend(backend))
+
+    def test_encrypted_invalid_base64_raises_incomplete(self) -> None:
+        """Codex review (2026-05-28): non-base64 string ciphertext raises
+        CognitionReplayEntryIncomplete (HTTP 409) rather than crashing
+        inside the encryptor as 5xx."""
+        payload = {
+            "prompt_disposition": "ENCRYPTED_OPT_IN",
+            "prompt_hash": "a" * 64,
+            "prompt_encrypted": "not!valid!base64!!@@",
+            "cognition_provenance": {
+                "provider_id": "anthropic",
+                "model": "claude-sonnet-4-7-20260418",
+                "temperature": 0.0,
+            },
+        }
+        backend = _FakeBackend(rows=[_build_row(entry_id="c1", payload=payload)])
+        with pytest.raises(CognitionReplayEntryIncomplete, match="base64"):
             replay_cognition_entry("c1", state_backend=_as_backend(backend))
 
     def test_encrypted_missing_blob_raises_incomplete(self) -> None:
