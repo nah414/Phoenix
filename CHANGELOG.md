@@ -163,6 +163,47 @@ This release lands ten build-guide steps on the
 - 678 integration tests pass (31 skipped for Postgres absence).
 - mypy --strict clean on 168 source files; ruff check clean.
 
+### Architecture: v1.0 open-tension closeout (2026-05-20, doc-only)
+
+Following Phase 13's merge, Adam reviewed and locked the remaining 14 v1.0 open
+tensions catalogued in `PHOENIX_ARCHITECTURE_v1.md` Section 11. Open-tension
+count after the closeout: **2** (both from v1.1 perception extension: 11.14.2,
+11.14.6 — both correctly stay open until perception build-guide drafting).
+
+Breakdown of the 14 v1.0 resolutions:
+
+- **2 RESOLVED-and-shipped during v1:** 11.1.4 LoRA adapter validation suite
+  (`phoenix/adapters/validator.py`, Phase 9); 11.2.1 provider equivalence
+  registry (`phoenix/router/equivalence_registry.py`, Phase 4). Both shipped
+  during the v1 build pipeline; the doc update reconciles the catalog with
+  what's actually in code.
+- **10 RESOLVED-as-locked-deferrals to v1.x (Phase 13 hindsight where
+  applicable):** 11.1.1 error-bar combiner (keep quadrature), 11.1.2 MPS axis
+  (roll into Axis 1 until MPS path ships), 11.1.3 adaptive-depth thresholds
+  (keep Section 6.4 defaults), 11.2.3 multi-source vendoring (single-version
+  through v1.x), 11.3.2 per-install rung table (bundled with 11.1.3), 11.4.1
+  OS keychain attestation (hardening pass), 11.4.2 org permission inheritance
+  (Phoenix-Cloud-driven), 11.4.3 org root key rotation (with 11.4.2), 11.5.3
+  Prometheus endpoint (Cloud seam when demand emerges), 11.7.1 vendored module
+  import paths (verbatim discipline locked; validated through Phase 13's
+  `vendor/cognition_wobble/` addition).
+- **1 RESOLVED-as-deprecated:** 11.8 translator handler set — grammar-token
+  entry path was never built; structured-JSON + LoRA-natural-language are the
+  two shipped entry points.
+- **3 RESOLVED-as-out-of-scope-for-Section-11:** 11.6.1 Sanskrit memory
+  composition (reference-client decision in the reference-client repo); 11.6.2
+  reference-client license (Apache 2.0 mirrors 13-D1; further license
+  discussion lives in the reference-client repo when it ships); 11.7.2
+  launcher icon (reclassified as design-asset work).
+
+Counts add to 16 (2 + 10 + 1 + 3): the 14 official open v1.0 tensions plus
+the two previously-uncounted entries (11.7.2 cosmetic, 11.8 build-guide-
+territory) that this round formally dispositions for accounting cleanliness.
+
+The Section 11.13 cross-reference table is updated end-to-end; each marker
+now shows `**RESOLVED v1**` or `**RESOLVED v1.1**` with the specific
+disposition. No code shift; no test impact.
+
 ---
 
 ## [1.0.0rc1] — 2026-05-14
