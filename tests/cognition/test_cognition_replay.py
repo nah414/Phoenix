@@ -45,6 +45,7 @@ from phoenix.ledger.cognition_replay import (
     replay_cognition_entry,
 )
 from phoenix.ledger.cognition_replay import CognitionReplayVerdict  # noqa: F401 -- used in 13.x.4 tests
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 from phoenix.ledger.encryption import EncryptedDispositionNotConfigured
 from phoenix.ledger.prompt_disposition import (
     canonicalize_prompt,
@@ -182,6 +183,61 @@ def _build_verbatim_payload(
             "cached_input_tokens": 0,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4 test helpers: stub classifiers.
+
+
+class _StubClassifier:
+    """Classifier stub: returns a fixed CognitionDisagreementType every time.
+
+    Used by TestVerdictMapping + TestRaisePolicyMatrix to exercise
+    the comparator's classifier-driven path without invoking the
+    real GBM/LLM-judge classifier.
+    """
+
+    version: str = "stub-fixed-v1"
+
+    def __init__(
+        self,
+        *,
+        returns: CognitionDisagreementType,
+        confidence: float = 0.95,
+    ) -> None:
+        self._returns = returns
+        self._confidence = confidence
+
+    def classify(
+        self,
+        prompt,
+        responses,
+        *,
+        confidence_threshold: float = 0.5,
+    ):
+        from phoenix.ledger.cognition_classifier import ClassificationResult
+
+        del prompt, responses, confidence_threshold
+        return ClassificationResult(
+            disagreement_type=self._returns,
+            confidence=self._confidence,
+            classifier_version=self.version,
+            feature_values={},
+            escalated_to_judge=False,
+        )
+
+
+class _FailingClassifier:
+    """Classifier stub that raises on classify(). For error-handling tests."""
+
+    version: str = "stub-failing-v1"
+
+    def __init__(self, *, exception: Exception) -> None:
+        self._exception = exception
+
+    def classify(self, prompt, responses, *, confidence_threshold=0.5):
+        del prompt, responses, confidence_threshold
+        raise self._exception
 
 
 # ---------------------------------------------------------------------------
@@ -739,3 +795,77 @@ class TestComparisonOutcome:
         outcome = ComparisonOutcome(matches=True, reason="x")
         assert outcome.verdict is None
         assert outcome.classification is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4: TestVerdictMapping — pin the disagreement_type → verdict
+# mapping table from design spec §5.1.
+
+
+class TestVerdictMapping:
+    """Each test pins one row of the §5.1 mapping table.
+
+    The classifier returns a single CognitionDisagreementType; the
+    comparator runs (text differs, classifier called); the outcome's
+    verdict matches the locked mapping.
+    """
+
+    def _make_payload_and_replayed(self) -> tuple[dict[str, Any], CognitionResult]:
+        """Text-differs payload so the comparator goes through the
+        classifier branch."""
+        return (
+            {
+                "cognition_provenance": {"temperature": 0.0},
+                "result_text": "original",
+                "result_tool_calls": [],
+            },
+            CognitionResult(
+                text="replayed (DIFFERENT)",
+                tool_calls=[],
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+                latency_ms=0.0,
+                provider_fingerprint="x",
+            ),
+        )
+
+    def test_factual_agreement_maps_to_semantic_match(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_AGREEMENT)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.SEMANTIC_MATCH
+
+    def test_stylistic_divergence_maps_to_semantic_match(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.STYLISTIC_DIVERGENCE)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.SEMANTIC_MATCH
+
+    def test_factual_disagreement_maps_to_divergence(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_DISAGREEMENT)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.DIVERGENCE
+
+    def test_interpretive_divergence_maps_to_divergence(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.INTERPRETIVE_DIVERGENCE)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.DIVERGENCE
+
+    def test_refusal_divergence_maps_to_divergence(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.REFUSAL_DIVERGENCE)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.DIVERGENCE
+
+    def test_tool_choice_divergence_maps_to_divergence(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.TOOL_CHOICE_DIVERGENCE)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.DIVERGENCE
+
+    def test_unclassified_stays_unclassified(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.UNCLASSIFIED)
+        payload, replayed = self._make_payload_and_replayed()
+        outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
+        assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED

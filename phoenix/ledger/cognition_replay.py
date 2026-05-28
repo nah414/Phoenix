@@ -73,7 +73,10 @@ from phoenix.ledger.prompt_disposition import (
 )
 
 if TYPE_CHECKING:
-    from phoenix.ledger.cognition_classifier import ClassificationResult
+    from phoenix.ledger.cognition_classifier import (
+        ClassificationResult,
+        CognitionClassifier,
+    )
     from phoenix.ledger.entry_types import LedgerEntry
     from phoenix.providers.cognition.protocol import CognitionProvider
     from phoenix.providers.cognition.types import CognitionResult
@@ -449,57 +452,158 @@ def _decode_encrypted_blob(
 
 
 # ---------------------------------------------------------------------------
-# Result comparison — TO BE AUTHORED BY ADAM.
+# Result comparison — Phase 13.x.4 classifier-driven default comparator.
 #
-# See the docstring below for context + the three reasonable approaches.
-# This function is the load-bearing design call for VERBATIM replay
-# semantics; once it's pinned, the rest of the engine flows mechanically.
+# This is the load-bearing design call for VERBATIM replay semantics.
+# Phase 13.x.3 shipped a binary comparator; Phase 13.x.4 extends it
+# to a 4-level verdict ladder (BIT_EXACT / SEMANTIC_MATCH /
+# DIVERGENCE / UNCLASSIFIED) driven by a pluggable classifier.
+
+
+def _compute_matches(
+    verdict: CognitionReplayVerdict,
+    temperature: float,
+) -> bool:
+    """Phase 13.x.4 raise-policy matrix (§5.2):
+
+    +----------------+---------+---------+
+    | verdict        | temp=0  | temp>0  |
+    +================+=========+=========+
+    | BIT_EXACT      | True    | True    |
+    | SEMANTIC_MATCH | True    | True    |
+    | DIVERGENCE     | False   | False   |
+    | UNCLASSIFIED   | False   | True    |
+    +----------------+---------+---------+
+    """
+    if verdict in (
+        CognitionReplayVerdict.BIT_EXACT,
+        CognitionReplayVerdict.SEMANTIC_MATCH,
+    ):
+        return True
+    if verdict is CognitionReplayVerdict.DIVERGENCE:
+        return False
+    if verdict is CognitionReplayVerdict.UNCLASSIFIED:
+        return temperature > 0.0
+    # Unreachable per the 4-value enum; defense-in-depth.
+    return False
+
+
+def _build_unclassified_outcome(
+    *,
+    text_match: bool,
+    tool_calls_match: bool,
+    original_text: str,
+    replayed_text: str,
+    original_tool_calls_n: int,
+    replayed_tool_calls_n: int,
+    temperature: float,
+    reason_prefix: str,
+) -> ComparisonOutcome:
+    """Build an UNCLASSIFIED outcome (classifier failure or invalid result).
+
+    Preserves PR #20's reason substrings so existing tests pass.
+    """
+    parts: list[str] = [reason_prefix]
+    parts.append(f"verdict={CognitionReplayVerdict.UNCLASSIFIED.value}")
+    if temperature > 0.0:
+        parts.append(f"non_deterministic_replay: temperature={temperature}")
+    if not text_match:
+        parts.append(
+            f"text differs (original_len={len(original_text)}, replayed_len={len(replayed_text)})"
+        )
+    if not tool_calls_match:
+        parts.append(
+            f"tool_calls differ (original_n={original_tool_calls_n}, "
+            f"replayed_n={replayed_tool_calls_n})"
+        )
+    return ComparisonOutcome(
+        matches=_compute_matches(CognitionReplayVerdict.UNCLASSIFIED, temperature),
+        reason="; ".join(parts),
+        verdict=CognitionReplayVerdict.UNCLASSIFIED,
+        classification=None,
+    )
+
+
+def _payload_to_cognition_result(payload: dict[str, Any]) -> CognitionResult:
+    """Reconstruct a CognitionResult from a cognition ledger payload.
+
+    Used by the classifier-driven comparator path: classify() expects
+    a list of responses; we feed it [original, replayed].
+    """
+    from phoenix.providers.cognition.types import CognitionResult, TokenUsage, ToolCall
+
+    text = str(payload.get("result_text", ""))
+    tc_raw = payload.get("result_tool_calls") or []
+    tool_calls = [
+        ToolCall(
+            call_id=str(tc.get("call_id", "")),
+            name=str(tc.get("name", "")),
+            arguments=tc.get("arguments", {}),
+        )
+        for tc in tc_raw
+    ]
+    usage_raw = payload.get("result_usage") or {}
+    usage = TokenUsage(
+        input_tokens=int(usage_raw.get("input_tokens", 0)),
+        output_tokens=int(usage_raw.get("output_tokens", 0)),
+        cached_input_tokens=int(usage_raw.get("cached_input_tokens", 0)),
+    )
+    provenance = payload.get("cognition_provenance") or {}
+    fingerprint = f"{provenance.get('provider_id', '')}|{provenance.get('model', '')}|replay"
+    return CognitionResult(
+        text=text,
+        tool_calls=tool_calls,
+        usage=usage,
+        latency_ms=0.0,
+        provider_fingerprint=fingerprint,
+        prompt_cache_hit=None,
+    )
 
 
 def default_compare_cognition_results(
     original_payload: dict[str, Any],
     replayed: CognitionResult,
+    *,
+    classifier: CognitionClassifier | None = None,
 ) -> ComparisonOutcome:
     """Default comparator for VERBATIM-disposition cognition replays.
 
-    **Policy (Phase 13.x.3 binary version, locked 2026-05-21):**
+    **Policy (Phase 13.x.4 four-level verdict, locked 2026-05-28):**
 
-    - Compare ``text`` byte-for-byte AND ``tool_calls`` (call_id +
-      name + arguments dict) byte-for-byte.
-    - **Ignore ``usage``** because token counts can drift slightly
-      across provider API versions / tokenizer updates without any
-      semantic change to the output. The integrity story for usage
-      lives in the per-entry hashchain, not in replay verification.
-    - For **non-deterministic** invocations (``temperature > 0`` per
-      the recorded ``cognition_provenance``), return ``matches=True``
-      with reason prefixed ``"non_deterministic_replay:"`` per
-      Phase 13 build guide §4.8. The new output is preserved
-      alongside the original for forensic review; we do NOT raise
-      :class:`CognitionReplayDivergence` because text divergence is
-      *expected* when ``temperature > 0``.
+    The 4-level :class:`CognitionReplayVerdict` ladder:
 
-    **[v1.1.x TODO]** The richer 3-level verdict
-    (``bit_exact`` / ``semantic_match`` / ``divergence``) that
-    integrates with :class:`cognition_wobble.classifier.CognitionClassifier`
-    is tracked as Phase 13.x.4. The classifier-backed
-    "semantic_match" verdict will catch provider-side benign drift
-    (e.g., model version update producing equivalent prose) WITHOUT
-    flagging it as divergence. The 13.x.4 upgrade is additive: the
-    callsite signature for this function does not change; the
-    returned :class:`ComparisonOutcome` gains optional fields.
+    - ``BIT_EXACT`` — text + tool_calls match byte-for-byte. No
+      classifier call (perf optimization).
+    - ``SEMANTIC_MATCH`` — text differs but classifier confirms
+      equivalence (e.g., model version producing equivalent prose).
+    - ``DIVERGENCE`` — classifier confident the outputs differ in
+      substance.
+    - ``UNCLASSIFIED`` — classifier could not confidently categorize
+      OR the classifier itself raised (reason carries the prefix
+      ``classifier_failure:`` in the latter case).
+
+    The ``matches`` field follows §5.2's raise-policy matrix (see
+    :func:`_compute_matches`).
 
     Args:
         original_payload: The cognition entry's parsed payload dict.
-            Reads ``result_text``, ``result_tool_calls``, and
-            ``cognition_provenance.temperature``. Missing keys default
-            to empty/zero.
         replayed: The fresh :class:`CognitionResult` from re-invoking
             the provider.
+        classifier: Optional :class:`CognitionClassifier` to use for
+            the text-differs case. When ``None``, falls through to
+            :func:`get_cognition_classifier` (which returns the ship
+            default :class:`AlwaysUnclassifiedClassifier` until
+            ``set_cognition_classifier`` is called).
 
     Returns:
-        :class:`ComparisonOutcome` with ``matches`` and a human-
-        readable ``reason`` suitable for the admin audit log.
+        :class:`ComparisonOutcome` with ``matches``, ``reason``,
+        ``verdict``, and ``classification`` populated.
     """
+    from phoenix.ledger.cognition_classifier import get_cognition_classifier
+
+    # Resolve effective classifier (kwarg overrides global).
+    effective_classifier = classifier if classifier is not None else get_cognition_classifier()
+
     # Determine non-determinism from the recorded sampling params.
     provenance = original_payload.get("cognition_provenance") or {}
     try:
@@ -512,9 +616,7 @@ def default_compare_cognition_results(
     original_text = str(original_payload.get("result_text", ""))
     original_tool_calls_raw = original_payload.get("result_tool_calls") or []
 
-    # Normalize the replayed CognitionResult.tool_calls to the same
-    # dict shape used in the payload (matches what
-    # cognition_wobble.eval.serialize_tool_calls writes).
+    # Normalize the replayed tool_calls.
     replayed_tool_calls = [
         {
             "call_id": tc.call_id,
@@ -527,19 +629,7 @@ def default_compare_cognition_results(
     text_match = replayed.text == original_text
     tool_calls_match = list(original_tool_calls_raw) == replayed_tool_calls
 
-    # Non-deterministic case: text drift is expected; do not raise.
-    if temperature > 0.0:
-        return ComparisonOutcome(
-            matches=True,
-            reason=(
-                f"non_deterministic_replay: temperature={temperature} "
-                f"(text_match={text_match}, tool_calls_match={tool_calls_match}); "
-                f"new output preserved for forensic review per build guide §4.8"
-            ),
-        )
-
-    # Deterministic case (temperature == 0): demand bit-exact text +
-    # tool_calls. Usage is informational only.
+    # Bit-exact branch: early return, no classifier call.
     if text_match and tool_calls_match:
         return ComparisonOutcome(
             matches=True,
@@ -548,23 +638,87 @@ def default_compare_cognition_results(
                 f"(temperature={temperature}; usage drift not compared)"
             ),
             verdict=CognitionReplayVerdict.BIT_EXACT,
-            classification=None,  # No classifier call on bit-exact (perf opt).
+            classification=None,
         )
 
-    # Real deterministic divergence — build a precise reason.
-    diffs: list[str] = []
+    # Text-differs branch: invoke the classifier (with defensive try).
+    # Reconstruct prompt for classifier from the canonical form in payload.
+    try:
+        canonical_json = str(original_payload.get("prompt_verbatim", "") or "{}")
+        prompt = _reconstruct_prompt_from_canonical(canonical_json)
+    except Exception:
+        # If reconstruction fails, classifier still gets *some* prompt;
+        # use an empty Prompt as fallback so classify() can run.
+        from phoenix.providers.cognition.types import Prompt
+
+        prompt = Prompt(system=None, messages=[])
+
+    # Reconstruct original CognitionResult for the classifier.
+    original_response = _payload_to_cognition_result(original_payload)
+
+    # Classify (defense: catch any exception, fall back to UNCLASSIFIED).
+    classification: ClassificationResult | None
+    try:
+        classification = effective_classifier.classify(
+            prompt=prompt,
+            responses=[original_response, replayed],
+        )
+        verdict = MAP_DISAGREEMENT_TYPE_TO_VERDICT.get(
+            classification.disagreement_type,
+            CognitionReplayVerdict.UNCLASSIFIED,  # Defense-in-depth.
+        )
+    except Exception as exc:
+        log.warning(
+            "default_compare_cognition_results: classifier.classify() raised",
+            exc_info=True,
+        )
+        return _build_unclassified_outcome(
+            text_match=text_match,
+            tool_calls_match=tool_calls_match,
+            original_text=original_text,
+            replayed_text=replayed.text,
+            original_tool_calls_n=len(list(original_tool_calls_raw)),
+            replayed_tool_calls_n=len(replayed_tool_calls),
+            temperature=temperature,
+            reason_prefix=f"classifier_failure: {type(exc).__name__}({str(exc)[:80]})",
+        )
+
+    # Compute matches per §5.2 raise-policy matrix.
+    matches = _compute_matches(verdict, temperature)
+
+    # Build reason. PRESERVE existing PR #20 substring patterns:
+    #   "non_deterministic_replay"    when temperature > 0 (kept as PREFIX
+    #                                 for PR #20 startswith() check compat)
+    #   "text differs (...)"          when text doesn't match
+    #   "tool_calls differ (...)"     when tool_calls don't match
+    #   "temperature=X.X"             when temperature > 0
+    # plus add the 13.x.4 verdict + classifier info.
+    reason_parts: list[str] = []
+    # PR #20 compat: when temperature > 0, lead with "non_deterministic_replay:"
+    # so the existing startswith() check still passes.
+    if temperature > 0.0:
+        reason_parts.append(f"non_deterministic_replay: temperature={temperature}")
+    reason_parts.append(f"verdict={verdict.value}")
     if not text_match:
-        diffs.append(
+        reason_parts.append(
             f"text differs (original_len={len(original_text)}, replayed_len={len(replayed.text)})"
         )
     if not tool_calls_match:
-        diffs.append(
+        reason_parts.append(
             f"tool_calls differ (original_n={len(list(original_tool_calls_raw))}, "
             f"replayed_n={len(replayed_tool_calls)})"
         )
+    reason_parts.append(
+        f"classifier: version={classification.classifier_version} "
+        f"confidence={classification.confidence:.2f}"
+    )
+    reason = "; ".join(reason_parts)
+
     return ComparisonOutcome(
-        matches=False,
-        reason=f"deterministic replay divergence: {'; '.join(diffs)}",
+        matches=matches,
+        reason=reason,
+        verdict=verdict,
+        classification=classification,
     )
 
 
