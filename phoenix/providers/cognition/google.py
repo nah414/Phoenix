@@ -199,6 +199,151 @@ class GoogleGeminiProvider(_CognitionAdapterBase):
             prompt_cache_hit=None,
         )
 
+    async def astream(
+        self,
+        prompt: Prompt,
+        *,
+        max_tokens: int,
+        temperature: float,
+        tools: list[Tool] | None = None,
+    ) -> Any:  # AsyncIterator[StreamEvent]; relaxed for mypy on lazy SDK
+        """Stream completion events for ``prompt`` (Phase 13.x.2).
+
+        Yields :class:`StreamTokenDelta` / :class:`StreamToolCallStart`
+        / :class:`StreamFinal` events as the Gemini SDK reports them.
+
+        Gemini's streaming shape differs from Anthropic's and OpenAI's:
+
+        1. The async streaming entry is
+           ``model.generate_content_async(stream=True)`` which returns
+           an async iterator over chunks. Each chunk carries
+           ``candidates[0].content.parts`` with optional ``text`` or
+           ``function_call`` on each part.
+        2. Function calls arrive as complete objects on the part (not as
+           streamed argument fragments like OpenAI). When a chunk
+           contains a ``function_call`` part, we emit the
+           :class:`StreamToolCallStart` event with the complete args
+           parsed at that moment — no per-fragment accumulation.
+        3. Usage metadata arrives on the FINAL chunk's
+           ``usage_metadata`` (when the SDK populates it). Cached
+           tokens are not surfaced (matches the sync ``_do_complete``
+           caveat documented in the module docstring).
+
+        **Production note:** the sync ``GenerativeModel`` client's
+        ``generate_content_async`` is itself an async method on the
+        same client object, so a single client instance supports both
+        sync ``_do_complete`` and async ``astream`` — no separate
+        async client construction is needed (contrast with
+        Anthropic/OpenAI which have distinct ``Async*`` classes).
+        """
+        from phoenix.providers.cognition.streaming import (
+            StreamFinal,
+            StreamTokenDelta,
+            StreamToolCallStart,
+        )
+
+        contents = self._prompt_to_gemini(prompt)
+        generation_config: dict[str, Any] = {
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        kwargs: dict[str, Any] = {
+            "contents": contents,
+            "generation_config": generation_config,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = [self._tool_to_gemini(t) for t in tools]
+
+        t0 = time.perf_counter()
+        cumulative_tokens = 0
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        final_usage: Any = None
+        final_finish_reason: Any = None
+
+        async_client: Any = self._client
+        try:
+            stream = await async_client.generate_content_async(**kwargs)
+            async for chunk in stream:
+                candidates = getattr(chunk, "candidates", None) or []
+                if candidates:
+                    content = getattr(candidates[0], "content", None)
+                    parts = getattr(content, "parts", None) or []
+                    for part in parts:
+                        # Text delta.
+                        text = getattr(part, "text", None)
+                        if text:
+                            text_parts.append(text)
+                            cumulative_tokens += max(1, len(text) // 4)
+                            yield StreamTokenDelta(
+                                delta_text=text,
+                                cumulative_tokens=cumulative_tokens,
+                            )
+                        # Function call announcement (Gemini delivers as
+                        # a complete part rather than fragmented args).
+                        fn_call = getattr(part, "function_call", None)
+                        if fn_call is not None:
+                            args_raw = getattr(fn_call, "args", {}) or {}
+                            try:
+                                args = dict(args_raw)
+                            except (TypeError, ValueError):
+                                args = {"_raw_arguments": str(args_raw)}
+                            call_id = getattr(fn_call, "id", "") or ""
+                            tool_name = getattr(fn_call, "name", "")
+                            yield StreamToolCallStart(
+                                call_id=call_id,
+                                tool_name=tool_name,
+                                partial_args=args,
+                            )
+                            tool_calls.append(
+                                ToolCall(
+                                    call_id=call_id,
+                                    name=tool_name,
+                                    arguments=args,
+                                )
+                            )
+                    # Track the LATEST finish_reason; SDK reports per-chunk.
+                    fr = getattr(candidates[0], "finish_reason", None)
+                    if fr is not None:
+                        final_finish_reason = fr
+
+                # Usage metadata typically arrives on the final chunk.
+                usage_chunk = getattr(chunk, "usage_metadata", None)
+                if usage_chunk is not None:
+                    final_usage = usage_chunk
+        except Exception as exc:
+            mapped = self._map_sdk_exception(exc)
+            if mapped is not None:
+                raise mapped from exc
+            raise
+
+        # Post-stream safety check — matches the sync path's behavior.
+        if _is_safety_block(final_finish_reason):
+            raise CognitionContentPolicyError(
+                f"{self.provider_id}: content policy refusal.",
+                reason_code=str(final_finish_reason),
+            )
+
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        input_tokens = int(getattr(final_usage, "prompt_token_count", 0)) if final_usage else 0
+        output_tokens = int(getattr(final_usage, "candidates_token_count", 0)) if final_usage else 0
+
+        result = CognitionResult(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            usage=TokenUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_input_tokens=0,  # See module docstring caveat.
+            ),
+            latency_ms=latency_ms,
+            provider_fingerprint=self.fingerprint(),
+            prompt_cache_hit=None,
+        )
+        yield StreamFinal(result=result)
+
     def capabilities(self) -> CognitionCapabilities:
         caps = _STATIC_CAPABILITIES.get(self.model)
         if caps is None:
