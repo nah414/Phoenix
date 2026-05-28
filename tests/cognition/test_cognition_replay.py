@@ -1076,3 +1076,38 @@ class TestClassifierErrorHandling:
             assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
         finally:
             cr.MAP_DISAGREEMENT_TYPE_TO_VERDICT = original  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4: TestPerfOptimization — verify bit-exact case bypasses
+# the classifier call.
+
+
+class TestPerfOptimization:
+    def test_bit_exact_does_not_call_classifier(self) -> None:
+        """Bit-exact comparison must NOT call classifier.classify().
+
+        The early return on text_match + tool_calls_match prevents the
+        classifier call (saving ~100-500ms when hybrid LLM-judge fires).
+        This test pins that perf optimization as an automated invariant.
+        """
+        from unittest.mock import MagicMock
+
+        spy_classifier = MagicMock()
+        spy_classifier.version = "spy-v1"
+        # Build a bit-exact payload.
+        payload = {
+            "cognition_provenance": {"temperature": 0.0},
+            "result_text": "hello",
+            "result_tool_calls": [],
+        }
+        replayed = CognitionResult(
+            text="hello",  # bit-exact match with original
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+        outcome = default_compare_cognition_results(payload, replayed, classifier=spy_classifier)
+        assert outcome.verdict == CognitionReplayVerdict.BIT_EXACT
+        spy_classifier.classify.assert_not_called()
