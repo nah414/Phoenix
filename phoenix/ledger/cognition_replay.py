@@ -57,7 +57,10 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+from cognition_wobble.disagreement_types import CognitionDisagreementType
 
 from phoenix.ledger.encryption import (
     EncryptedDispositionNotConfigured,
@@ -77,6 +80,49 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4 — verdict enum + mapping dict.
+
+
+class CognitionReplayVerdict(Enum):
+    """The four-level outcome of a cognition replay comparison.
+
+    Per Phase 13.x.4 design spec:
+
+    - :attr:`BIT_EXACT` — text + tool_calls byte-for-byte match; no
+      classifier call needed (perf optimization).
+    - :attr:`SEMANTIC_MATCH` — text differs but classifier confirms
+      semantic equivalence (e.g., model-version update producing
+      equivalent prose).
+    - :attr:`DIVERGENCE` — classifier confident the outputs differ in
+      substance (factual disagreement, refusal asymmetry, tool-choice
+      divergence, etc.).
+    - :attr:`UNCLASSIFIED` — classifier could not confidently
+      categorize (or the classifier crashed; see
+      :class:`CognitionReplayDivergence` reason prefix).
+    """
+
+    BIT_EXACT = "bit_exact"
+    SEMANTIC_MATCH = "semantic_match"
+    DIVERGENCE = "divergence"
+    UNCLASSIFIED = "unclassified"
+
+
+# Locked mapping from classifier output to verdict. Per Phase 13.x.4
+# design spec §5.1: the six classified disagreement types collapse
+# to SEMANTIC_MATCH or DIVERGENCE; UNCLASSIFIED stays as its own
+# verdict (the calibrated escape hatch).
+MAP_DISAGREEMENT_TYPE_TO_VERDICT: dict[CognitionDisagreementType, CognitionReplayVerdict] = {
+    CognitionDisagreementType.FACTUAL_AGREEMENT: CognitionReplayVerdict.SEMANTIC_MATCH,
+    CognitionDisagreementType.STYLISTIC_DIVERGENCE: CognitionReplayVerdict.SEMANTIC_MATCH,
+    CognitionDisagreementType.FACTUAL_DISAGREEMENT: CognitionReplayVerdict.DIVERGENCE,
+    CognitionDisagreementType.INTERPRETIVE_DIVERGENCE: CognitionReplayVerdict.DIVERGENCE,
+    CognitionDisagreementType.REFUSAL_DIVERGENCE: CognitionReplayVerdict.DIVERGENCE,
+    CognitionDisagreementType.TOOL_CHOICE_DIVERGENCE: CognitionReplayVerdict.DIVERGENCE,
+    CognitionDisagreementType.UNCLASSIFIED: CognitionReplayVerdict.UNCLASSIFIED,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -823,9 +869,11 @@ __all__ = [
     "CognitionReplayError",
     "CognitionReplayProviderUnavailable",
     "CognitionReplayReport",
+    "CognitionReplayVerdict",
     "CognitionResultComparator",
     "CognitionProviderFactory",
     "ComparisonOutcome",
+    "MAP_DISAGREEMENT_TYPE_TO_VERDICT",
     "default_compare_cognition_results",
     "replay_cognition_entry",
 ]
