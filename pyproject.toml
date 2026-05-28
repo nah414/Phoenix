@@ -154,6 +154,17 @@ ml-classifier = [
     "lightgbm>=4.0,<5.0",
     "sentence-transformers>=2.5,<4.0",
 ]
+# Phase 13.x.6 -- age-encryption ceremony for ENCRYPTED_OPT_IN
+# prompt disposition (13-D2). pyrage is the maintained Rust-bindings
+# Python wrapper around age (X25519 + ChaCha20-Poly1305); ~5-10x
+# faster than the pure-Python `age` package. Opt-in: ops that don't
+# need ENCRYPTED_OPT_IN disposition leave NullPromptEncryptor as the
+# default (Phase 13 Step 8 default).
+#     pip install phoenix-middleware[encryption-age]
+# pyrage is BSD-3-Clause / Apache-2.0 dual-licensed (Apache-2.0 compatible).
+encryption-age = [
+    "pyrage>=1.1,<2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/nah414/Phoenix"
@@ -334,5 +345,11 @@ module = [
     "lightgbm.*",
     "sentence_transformers",
     "sentence_transformers.*",
+    # Phase 13.x.6 -- pyrage (age-encryption Python bindings) ships in
+    # the [encryption-age] optional extra. phoenix/ledger/encryption_age.py
+    # imports it lazily inside AgePromptEncryptor.__init__ so module
+    # import succeeds without the extra installed.
+    "pyrage",
+    "pyrage.*",
 ]
 ignore_missing_imports = true

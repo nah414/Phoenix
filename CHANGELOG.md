@@ -204,6 +204,62 @@ The Section 11.13 cross-reference table is updated end-to-end; each marker
 now shows `**RESOLVED v1**` or `**RESOLVED v1.1**` with the specific
 disposition. No code shift; no test impact.
 
+### Phase 13.x.6: encryption ceremony — age-based reference impl
+
+Phase 13 Step 8 shipped the `prompt_encrypted` BLOB column +
+`PromptEncryptor` Protocol with `NullPromptEncryptor` as the default.
+Phase 13.x.6 ships the **real cryptographic implementation** backed
+by [age](https://age-encryption.org) (X25519 + ChaCha20-Poly1305)
+via the `pyrage` Rust-bindings Python wrapper.
+
+**Files:**
+
+- `phoenix/ledger/encryption_age.py` (new) — `AgePromptEncryptor`
+  implementing the existing `PromptEncryptor` Protocol; typed errors
+  `AgeEncryptionError` / `AgeKeyPermissionError` / `AgeKeyLoadError`
+  / `AgeDecryptError`; `encryptor_from_default_layout()` convenience
+  constructor reading the conventional Phoenix runtime keys directory.
+- `phoenix/ledger/README.md` — full ceremony documentation: threat
+  model, setup steps, lossless key-rotation flow via multi-recipient
+  encryption, audit events, safety invariants.
+- `pyproject.toml` — new optional extra `[encryption-age]` depending
+  on `pyrage>=1.1,<2.0`. BSD-3-Clause / Apache-2.0 dual-licensed.
+- `tests/cognition/test_encryption_age.py` (new) — 20 tests + 1 POSIX-
+  only-skip: round-trip, multi-recipient rotation overlap, tamper
+  detection, wrong-identity rejection, identity-file permission
+  validation, key-load error paths, audit emission on encrypt /
+  decrypt / failure, public attributes, default-layout convenience.
+
+**Safety invariants enforced:**
+
+- POSIX identity files MUST have mode `0o600`; loader refuses looser
+  permissions with a clear error message including the `chmod 0600`
+  fix command. No opt-out.
+- Identity contents are NEVER logged. Audit events carry only 16-hex-
+  char SHA-256 fingerprints of the public-key strings.
+- Failed decrypts are NOT retried. A failed decrypt is structural
+  (tampering, wrong key, or malformed ciphertext) — never transient.
+
+**Audit events:**
+
+- `cognition.prompt.encrypted` (success) — `recipient_fingerprints`,
+  `plaintext_bytes`, `ciphertext_bytes`.
+- `cognition.prompt.decrypted` (success) — `identity_fingerprint`.
+- `cognition.prompt.encrypt.failed` / `cognition.prompt.decrypt.failed`
+  — fingerprints + `error_type`.
+
+All events land in the existing `phoenix.audit.get_emitter()` sink
+(JSONL by default; OpenTelemetry when configured).
+
+**NOT shipped at 13.x.6** (tracked as v1.1.x follow-ups):
+
+- **Phase 13.x.7** — `phoenix admin generate-encryption-key` CLI +
+  `POST /v1/admin/encryption/rotate-key` admin endpoint.
+- **Phase 13.x.8** — per-actor key isolation.
+- **v1.2.x** — `AwsKmsPromptEncryptor` / `GcpKmsPromptEncryptor` /
+  `VaultPromptEncryptor` Protocol-conforming plugins for deployments
+  needing tamper-evident external audit.
+
 ---
 
 ## [1.0.0rc1] — 2026-05-14
