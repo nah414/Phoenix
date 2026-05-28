@@ -129,18 +129,64 @@ The plan is **NOT** required to:
 | Session token-exhaustion before all 6 merge | Low | Each PR is small; review-and-merge per PR is bounded work. If we run out, the merged PRs stay merged and unmerged ones stay open. |
 | 13-D1 LICENSE escalation lands mid-sweep | Low | Surface to Adam if frank-data LICENSE gets declared during the sweep; doesn't block continuing. |
 
-## 8 — Execution log placeholder
+## 8 — Execution log
 
-To be appended at sweep end:
+Sweep executed 2026-05-27 → 2026-05-28 UTC. Per-PR outcomes:
 
 ```
-PR #17: [outcome]
-PR #16: [outcome]
-PR #18: [outcome]
-PR #19: [outcome]
-PR #20: [outcome]
-PR #21: [outcome]
-main green after sweep: [Y/N + CI run URL]
-Notable findings: [...]
-Version bump decision: [...]
+PR #17: CHANGES REQUESTED (date drift 2026-05-20 -> 2026-05-19;
+        perception phase renumbering 14-24 claim lacks locked-decision
+        backing; comment: https://github.com/nah414/Phoenix/pull/17#issuecomment-4559655753)
+PR #16: MERGED 8be6c9f at 2026-05-28T00:04:07Z (squash)
+PR #18: MERGED 839bb66 (squash; .x.1 mcp-budget-audit)
+PR #19: MERGED fb9f455 (squash; .x.2 streaming)
+PR #20: MERGED ad35b99 (squash; .x.3 replay-cognition)
+PR #21: MERGED cce7c26 (squash; .x.6 encryption-age) -- mid-sweep:
+        rebased to resolve PR #16 CHANGELOG conflict (47dc00f);
+        branch then accumulated a second commit 39c191c
+        "parse identity files line-by-line; fix docstring drift"
+        (source unconfirmed -- likely Sourcery auto-suggestion or
+        external push); CI was green at 39c191c; merge clean.
+
+main green after sweep: Y
+  Final CI run: https://github.com/nah414/Phoenix/actions/runs/26548176623
+  Run sequence (all green): 26546136531 (PR #16) -> 26546721535 (PR #18)
+  -> 26547321156 (PR #19) -> 26547722867 (PR #20) -> 26548176623 (PR #21)
+
+Notable findings:
+  1. **13.x.N gap audit revised.** Pre-sweep audit said "13.x.4/.x.5
+     are reserved-and-skipped, non-issues." Review of PR #20 + PR #21
+     surfaced explicit planned follow-ups:
+     - 13.x.4: classifier integration for cognition replay (upgrades
+       binary comparator to 3-level verdict bit_exact /
+       semantic_match / divergence; reuses cognition_wobble classifier)
+     - 13.x.7: `phoenix admin generate-encryption-key` CLI +
+       `POST /v1/admin/encryption/rotate-key` admin endpoint
+     - 13.x.8: per-actor key isolation for encryption
+     13.x.5 alone remains genuinely unaccounted-for.
+  2. **PR #21 mid-sweep mutation.** Branch SHA shifted between
+     rebase and merge (47dc00f -> 39c191c) due to an unannounced
+     second commit. Worth investigating origin if pattern repeats.
+  3. **PR #16 scope expansion.** Plan expected "architecture doc
+     only"; PR touched 3 files (CHANGELOG, ARCHITECTURE, README).
+     Expected because open-tension count needed to stay consistent
+     across docs. Not a real scope creep.
+  4. **`C:\357\200\272temp_section4.txt` stray** still present at
+     sweep end. Encoding-corrupted filename (U+F03A colon-lookalike).
+     Out of scope per pre-flight expectation; safe to remove manually.
+  5. **13-D1 frank-data LICENSE blocker UNCHANGED.** No LICENSE /
+     COPYING / COPYRIGHT file at `C:\frank-data\` root at sweep start
+     OR end. Phase 13 code continues to ship under informal-loosening.
+
+Version bump decision: STAYED at 1.1.0.dev0 (matches spec default;
+  no bump applied to pyproject.toml).
 ```
+
+## 9 — Sweep close
+
+Sweep complete. Six PRs entered the queue; five merged (PR #16 + the
+four .x sub-improvements); one deferred (PR #17 with change request).
+The 13-D1 LICENSE blocker and PR #17 rework are the carry-over items
+for the next session. Three planned follow-ups (13.x.4 / .x.7 / .x.8)
+are now surfaced as the natural next-session candidates beyond
+1.0.0-final, alongside the still-unaccounted-for 13.x.5 slot.
