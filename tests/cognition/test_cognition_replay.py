@@ -877,3 +877,129 @@ class TestVerdictMapping:
         payload, replayed = self._make_payload_and_replayed()
         outcome = default_compare_cognition_results(payload, replayed, classifier=classifier)
         assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4: TestRaisePolicyMatrix — pin the §5.2 raise-policy
+# matrix (4 verdicts × 2 temperature regimes).
+
+
+class TestRaisePolicyMatrix:
+    """Each test pins one cell of the §5.2 matrix.
+
+    +----------------+---------+---------+
+    | verdict        | temp=0  | temp>0  |
+    +================+=========+=========+
+    | BIT_EXACT      | True    | True    |
+    | SEMANTIC_MATCH | True    | True    |
+    | DIVERGENCE     | False   | False   |
+    | UNCLASSIFIED   | False   | True    |
+    +----------------+---------+---------+
+
+    Tests build a text-differs payload and feed a stub classifier
+    returning the disagreement_type that maps to the test's verdict.
+    """
+
+    @staticmethod
+    def _payload_at(temperature: float, *, text_differs: bool = True) -> dict[str, Any]:
+        return {
+            "cognition_provenance": {"temperature": temperature},
+            "result_text": "original",
+            "result_tool_calls": [],
+        }
+
+    @staticmethod
+    def _replayed(text: str = "different") -> CognitionResult:
+        return CognitionResult(
+            text=text,
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+
+    # ----- BIT_EXACT row -----
+
+    def test_bit_exact_temp_zero_matches_true(self) -> None:
+        """Bit-exact at temp=0 → matches=True. (Covered by Task 4 too;
+        re-asserted here for matrix completeness.)"""
+        payload = self._payload_at(0.0)
+        # bit-exact: replayed text == original text
+        replayed = self._replayed("original")
+        outcome = default_compare_cognition_results(payload, replayed)
+        assert outcome.verdict == CognitionReplayVerdict.BIT_EXACT
+        assert outcome.matches is True
+
+    def test_bit_exact_temp_high_matches_true(self) -> None:
+        payload = self._payload_at(0.7)
+        replayed = self._replayed("original")
+        outcome = default_compare_cognition_results(payload, replayed)
+        assert outcome.verdict == CognitionReplayVerdict.BIT_EXACT
+        assert outcome.matches is True
+
+    # ----- SEMANTIC_MATCH row -----
+
+    def test_semantic_match_temp_zero_matches_true(self) -> None:
+        """Phase 13.x.4 behavior change: classifier confirms equivalence
+        → no raise even at temp=0."""
+        classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_AGREEMENT)
+        payload = self._payload_at(0.0)
+        outcome = default_compare_cognition_results(
+            payload, self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.SEMANTIC_MATCH
+        assert outcome.matches is True
+
+    def test_semantic_match_temp_high_matches_true(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.STYLISTIC_DIVERGENCE)
+        payload = self._payload_at(0.7)
+        outcome = default_compare_cognition_results(
+            payload, self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.SEMANTIC_MATCH
+        assert outcome.matches is True
+
+    # ----- DIVERGENCE row -----
+
+    def test_divergence_temp_zero_matches_false(self) -> None:
+        classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_DISAGREEMENT)
+        payload = self._payload_at(0.0)
+        outcome = default_compare_cognition_results(
+            payload, self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.DIVERGENCE
+        assert outcome.matches is False
+
+    def test_divergence_temp_high_matches_false(self) -> None:
+        """Phase 13.x.4 behavior change: confident classifier divergence
+        raises even at temp>0."""
+        classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_DISAGREEMENT)
+        payload = self._payload_at(0.7)
+        outcome = default_compare_cognition_results(
+            payload, self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.DIVERGENCE
+        assert outcome.matches is False
+
+    # ----- UNCLASSIFIED row -----
+
+    def test_unclassified_temp_zero_matches_false(self) -> None:
+        """Preserves PR #20: classifier unsure at temp=0 → raise."""
+        classifier = _StubClassifier(returns=CognitionDisagreementType.UNCLASSIFIED)
+        payload = self._payload_at(0.0)
+        outcome = default_compare_cognition_results(
+            payload, self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
+        assert outcome.matches is False
+
+    def test_unclassified_temp_high_matches_true(self) -> None:
+        """Preserves PR #20: classifier unsure at temp>0 → no raise
+        (benefit of doubt under double uncertainty)."""
+        classifier = _StubClassifier(returns=CognitionDisagreementType.UNCLASSIFIED)
+        payload = self._payload_at(0.7)
+        outcome = default_compare_cognition_results(
+            payload, self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
+        assert outcome.matches is True
