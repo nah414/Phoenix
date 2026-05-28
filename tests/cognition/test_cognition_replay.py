@@ -1003,3 +1003,76 @@ class TestRaisePolicyMatrix:
         )
         assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
         assert outcome.matches is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.x.4: TestClassifierErrorHandling — defense paths.
+
+
+class TestClassifierErrorHandling:
+    @staticmethod
+    def _payload() -> dict[str, Any]:
+        return {
+            "cognition_provenance": {"temperature": 0.0},
+            "result_text": "original",
+            "result_tool_calls": [],
+        }
+
+    @staticmethod
+    def _replayed() -> CognitionResult:
+        return CognitionResult(
+            text="different",
+            tool_calls=[],
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            latency_ms=0.0,
+            provider_fingerprint="x",
+        )
+
+    def test_classifier_raises_falls_back_to_unclassified(self) -> None:
+        """classifier.classify() exception → verdict=UNCLASSIFIED with
+        reason prefix 'classifier_failure:'."""
+        boom = _FailingClassifier(exception=RuntimeError("model file corrupt"))
+        outcome = default_compare_cognition_results(
+            self._payload(), self._replayed(), classifier=boom
+        )
+        assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
+        # The Task 5 fixup put non_deterministic_replay first when temp>0;
+        # at temp=0 the reason_prefix leads as before.
+        assert outcome.reason.startswith("classifier_failure: RuntimeError(")
+        assert "model file corrupt" in outcome.reason
+        assert outcome.classification is None  # Classifier raised; no result.
+
+    def test_classifier_returns_unclassified_explicitly_respected(self) -> None:
+        """Classifier explicitly returns UNCLASSIFIED → verdict=UNCLASSIFIED
+        with reason WITHOUT classifier_failure prefix (the classifier ran
+        successfully; it just didn't know)."""
+        classifier = _StubClassifier(returns=CognitionDisagreementType.UNCLASSIFIED)
+        outcome = default_compare_cognition_results(
+            self._payload(), self._replayed(), classifier=classifier
+        )
+        assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
+        assert not outcome.reason.startswith("classifier_failure:")
+        assert outcome.classification is not None
+        assert outcome.classification.classifier_version == "stub-fixed-v1"
+
+    def test_classifier_returns_unmapped_type_treated_as_unclassified(self) -> None:
+        """If the classifier returns a disagreement_type not in the mapping,
+        the lookup falls back to UNCLASSIFIED (defense-in-depth).
+
+        We simulate this by patching MAP_DISAGREEMENT_TYPE_TO_VERDICT to be
+        empty for the duration of the test, then invoking with FACTUAL_AGREEMENT
+        (which would normally map to SEMANTIC_MATCH). The lookup uses
+        ``.get(<key>, UNCLASSIFIED)``, so an empty dict produces UNCLASSIFIED.
+        """
+        import phoenix.ledger.cognition_replay as cr
+
+        original = cr.MAP_DISAGREEMENT_TYPE_TO_VERDICT
+        cr.MAP_DISAGREEMENT_TYPE_TO_VERDICT = {}  # type: ignore[misc]
+        try:
+            classifier = _StubClassifier(returns=CognitionDisagreementType.FACTUAL_AGREEMENT)
+            outcome = default_compare_cognition_results(
+                self._payload(), self._replayed(), classifier=classifier
+            )
+            assert outcome.verdict == CognitionReplayVerdict.UNCLASSIFIED
+        finally:
+            cr.MAP_DISAGREEMENT_TYPE_TO_VERDICT = original  # type: ignore[misc]
