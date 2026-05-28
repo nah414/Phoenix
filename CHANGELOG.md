@@ -15,6 +15,29 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.0.0] — 2026-05-28
+
+Phoenix v1.0 final release. **Content-equivalent to `1.0.0rc1`**: the
+1.0.0 git tag is annotated at commit `12c9198` (Phase 12 CI fix; the
+last v1.0-line commit before Phase 13 opened the v1.1 development line
+on 2026-05-19). No source changes occurred during the two-week rc1
+baking period; the 1.0.0 tag formalizes the v1.0 release state.
+
+This entry marks the formal close of the Phoenix v1.0 line. For the
+full v1.0 release contents (Trinity Core wiring, the seven wrapping
+layers, three-axis wobble verification, hashchained Omega Ledger,
+three distribution artifacts, full acceptance battery) see the
+`[1.0.0rc1]` entry below. For ongoing v1.1 development on top of v1.0
+see `[1.1.0.dev0]` above.
+
+The pyproject.toml version at commit `12c9198` is `1.0.0rc1` — the
+lightweight tag accepts this so the v1.1 dev line on `main` is not
+disturbed. A future v1.0 maintenance branch (`release/1.0.x`) would
+ship a real `1.0.0` pyproject bump if PyPI publication is later
+warranted; the GitHub Release at this tag does not require it.
+
+---
+
 ## [1.1.0.dev0] — 2026-05-20
 
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
