@@ -624,7 +624,8 @@ def encryptor_from_default_layout() -> AgePromptEncryptor:
     if not identity_path.is_file():
         raise AgeKeyLoadError(
             f"encryption_age: identity file not found at {identity_path}. "
-            f"Generate via `phoenix admin generate-encryption-key` (Phase 13.x.7 CLI)."
+            f"Generate via `phoenix admin generate-encryption-key` "
+            f"(or `phoenix/ledger/keygen.py::generate_age_keypair()` programmatically)."
         )
     if not recipients_dir.is_dir():
         raise AgeKeyLoadError(
