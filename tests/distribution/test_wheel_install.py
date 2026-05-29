@@ -157,7 +157,14 @@ def test_phoenix_console_script_installed(fresh_venv: Path) -> None:
         check=True,
     )
     assert "phoenix" in result.stdout.lower()
-    assert "1.0.0" in result.stdout
+    # Use phoenix.__version__ as single source of truth so this test
+    # doesn't go stale on every version bump (was previously hardcoded
+    # to "1.0.0" which failed after the dev0 bump opened the v1.1 line).
+    from phoenix import __version__
+
+    assert __version__ in result.stdout, (
+        f"console script printed {result.stdout!r} but phoenix.__version__ is {__version__!r}"
+    )
 
 
 def test_sdist_builds_and_is_under_2mb(tmp_path_factory: pytest.TempPathFactory) -> None:
