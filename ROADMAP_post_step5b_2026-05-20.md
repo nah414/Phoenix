@@ -6,6 +6,62 @@
 
 ---
 
+## Status update (2026-05-28) — 8 days later
+
+Each major item below the original 2026-05-20 snapshot annotated here:
+
+### State items
+
+- **Phase 12 / `1.0.0rc1` / main at `12c9198`** — STILL ACCURATE in fact; **v1.0.0 final tag created 2026-05-28** at `12c9198` ([GitHub Release Latest](https://github.com/nah414/Phoenix/releases/tag/1.0.0)). The `1.0.0rc1` artifact is now content-equivalent to `1.0.0`.
+- **Phase 13 implementation (Steps 1-5b in flight on `phase-13-cognition-mcp-client`)** — DONE for the original scope. All 10 Phase 13 steps shipped on `main` via PR #15 merge 2026-05-19 at `1.1.0.dev0`. Phase 13.x sub-improvements followed: `.x.1` / `.x.2` / `.x.3` / `.x.6` merged via 2026-05-27 PR sweep; `.x.4` (classifier integration for cognition replay) merged 2026-05-28 via PR #22 (squash-merge as commit `6d2c043`).
+- **Step 5c data work deferred** — STILL DEFERRED. Adam-side research; no deadline; corpus rebalancing + GBM training + macro-F1 verification all pending.
+- **PR #13 (Phase 13 docs conditional lock on frank-data LICENSE)** — MERGED 2026-05-18 (commit `07e4fc0`).
+- **PR #14 (README phases 6b-12 status backfill)** — MERGED 2026-05-18 (commit `ba8745e`).
+- **PR #44 on dr-frank-and-eddy (Apache 2.0 LICENSE)** — STATUS UNCHANGED in Adam's working memory; LICENSE not yet declared (informal-loosening pattern continues; Phase 13 shipping anyway). Re-confirm with Adam when convenient.
+- **Test surface 878 + 203 cognition** — SUPERSEDED. The cognition substrate landed on main; Phase 13.x.4's PR #22 adds 21 tests on top.
+- **Architectural debt 16 OPEN markers + 3 perception** — DOWN TO 2. PR #16 (`arch v1.1 second-round`, merged 2026-05-28) locked 14 of the 16 v1.0 Section 11 tensions; only the 2 perception items (11.14.2 + 11.14.6) remain open.
+
+### "What's healthy" items
+
+- All three observations (Trinity Core / Phase 13 build-guide discipline / Step 4→5b→5c fallback chain) — STILL TRUE.
+
+### "What's accumulating risk" items
+
+- **`phoenix/admin/` under-tested relative to scope** — STILL TRUE. No focused admin-tests sweep happened. Phase 13.x.4 added one admin endpoint reference but no new admin-suite coverage.
+- **`phoenix/verification/drift_detector.py` placeholder stubs** — STILL TRUE. The "Phase 13.5 or absorbed into Step 10" framing remains the recommended path. Distinct concept from Phase 13.x.5 (which is an unallocated sub-improvement numbering slot, audited 2026-05-28).
+- **Carried `[OPEN: ...]` markers** — LARGELY RESOLVED via PR #16 (2026-05-28 second-round resolution): error-combiner quadrature, state migrations format, and adaptive-depth formula all locked or deferred-with-disposition.
+- **`phoenix/queue/` 13K LOC integration-only** — STILL TRUE. No dedicated unit-test sweep happened.
+
+### "What's theoretical, not load-bearing yet" items
+
+- **13-D5 parallel-with-perception framing** — STILL NOT CONSTRAINING. Perception code is still zero LOC.
+- **`1.0.0` final label gated on Adam-side actions** — DONE 2026-05-28. The lightweight-tag option was chosen (no PyPI publish, no Docker rebuild for `:1.0.0` — the existing `:1.0.0rc1` image is content-equivalent).
+
+### Recommended sequencing — what's been done
+
+| Order | What | Status |
+|---|---|---|
+| 1 | Phase 13 Step 6: MCP-client mode | **DONE** (merged in PR #15) |
+| 2 | Admin tests paired with Steps 6/8/9 | **NOT DONE** — still gap |
+| 3 | Empirically test quadrature error-combiner | **DEFERRED via PR #16** — locked as v1.1.x revisit, not actively empirical |
+| 4 | Step 5c corpus rebalancing + training | **STILL PENDING** (Adam-side research) |
+| 5 | 1.0.0 closeout | **DONE 2026-05-28** (lightweight tag) |
+| 6 | Drift detector real implementation | **STILL PENDING** — natural next focus session |
+
+### Step 9+ architectural decision (cross-enum mapping)
+
+- The Path A vs Path B recommendation (extend `PhoenixDisagreementType` vs separate-enums-with-mapping) — STATUS UNCERTAIN. Phase 13 main shipped Step 9 (`grant-prompt-verbatim` / `cognition-budget-override` / `cognition-spend audit` admin endpoints); whether the cross-enum mapping decision was made and which path was taken needs a quick code spot-check. Worth a separate audit if Phase 13.5 / drift detector work begins, since drift detector consumes cognition outputs.
+
+### Push-back-and-flag items
+
+- All three observations (13-D5 framing not constraining / Step 5c feature additions wait for rebalance / drift_detector aged into tech debt) — STILL VALID.
+
+### Net read
+
+The original 2026-05-20 sequencing held remarkably well: items 1, 5 done; items 2, 4, 6 still pending in roughly their original framing. The biggest unanticipated win was PR #16's resolution of 14 v1.0 OPEN markers (was framed as a deferred-with-context item; got actively dispositioned). The biggest unanticipated work was the Phase 13.x.N sub-improvement series (.x.1 through .x.4 + .x.6), which added a layer of refinement to Phase 13's substrate that this doc didn't anticipate.
+
+---
+
 ## State (2026-05-20)
 
 **Phase 12 shipped at package version `1.0.0rc1`**; main is at commit `12c9198`.
