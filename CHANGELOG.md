@@ -113,6 +113,58 @@ test_cognition_replay.py count: 50 passing.
 `classifier-version-drift` warning, `hybrid-classifier-LLM-judge-cost`
 ceiling.
 
+### Phase 13.x.7: encryption admin CLI + rotate-key endpoint (2026-05-28)
+
+Closes the two ergonomic gaps left by Phase 13.x.6 (PR #21):
+
+- **CLI:** `phoenix admin generate-encryption-key [--name SLUG] [--force] [--keys-dir PATH]`
+  generates an age (X25519) keypair, writes identity.txt
+  (mode 0o600 on POSIX) + recipients/<name>.pub to the conventional
+  Phoenix encryption-keys directory.
+- **Admin endpoint:** `POST /v1/admin/encryption/rotate-key` generates
+  the keypair in-process (audit-logged), returns paths + fingerprints
+  + a `next_step` field reminding the caller that daemon-restart is
+  required to pick up the new recipient.
+
+**New shared primitive:** `phoenix/ledger/keygen.py::generate_age_keypair()`
+backs both surfaces. Single place for filename convention + POSIX
+permission discipline + path-conflict guard (refuses overwrite without
+`force=True`).
+
+**New permission:** `ActorPermissions.can_rotate_encryption_key`
+(default deny; admin-tier construction grants True). The endpoint
+returns 403 if the actor lacks the flag.
+
+**Audit events:**
+- `admin.encryption.rotate.success` — `{name, recipient_fingerprint,
+  recipient_path, identity_path, force}` on success. Never includes
+  the identity secret.
+- `admin.encryption.rotate.error.{kind}` — granular per-error event
+  types (auth / permission / kill_switch / conflict / keygen /
+  pyrage_missing / identity / privilege / rate_limit) for forensic
+  observability.
+
+**NOT shipped at 13.x.7** (deferred):
+- **Batch decrypt-and-re-encrypt** of existing `ENCRYPTED_OPT_IN`
+  ledger rows on rotation. The 13.x.6 README originally framed this
+  as part of 13.x.7, but the database-transaction + partial-failure-
+  recovery surface is substantially different from key generation;
+  it gets its own follow-up slot.
+- **`POST /v1/admin/encryption/reload`** zero-downtime encryptor
+  reload. Daemon-restart pattern preserved — matches the existing
+  `encryptor_from_default_layout()` startup-only loading discipline.
+- **Identity revocation / cleanup** of replaced keys.
+
+**Tests added:** ~20 across 4 test files:
+- `tests/cognition/test_keygen.py` (9) — primitive happy-path /
+  conflict / force / fingerprint / POSIX-mode / name-validation
+- `tests/integration/test_admin_encryption_rotate_key.py` (5) —
+  endpoint happy-path / default-name / 409 / force / 403
+- `tests/cli/test_admin_generate_encryption_key.py` (3) — CLI
+  happy-path / conflict / force
+- `tests/unit/test_permissions_phase13x7.py` (3) — default-deny /
+  explicit-grant / existing-flags-unchanged
+
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
 quantum + classical-cognition substrate. The same audit-grade guarantees
 (typed errors, hashchained ledger, three-axis wobble verification,

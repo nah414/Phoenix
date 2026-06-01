@@ -43,6 +43,9 @@ from phoenix.admin import (
 )
 from phoenix.admin import grant_prompt_verbatim as _grant_prompt_verbatim  # noqa: F401
 
+# Phase 13.x.7: encryption rotate-key admin endpoint.
+from phoenix.admin import encryption_admin as _encryption_admin  # noqa: F401
+
 __all__ = [
     "AdapterNotLoaded",
     "AdminError",

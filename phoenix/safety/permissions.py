@@ -77,6 +77,12 @@ class ActorPermissions:
       ``token.delta`` WebSocket events (Phase 13 Step 7 streaming
       surface). Default ``True`` — token streams are functional, not
       privacy-bearing, so the conservative-stance is relaxed here.
+
+    **Phase 13.x.7 extension** (encryption admin):
+
+    - :attr:`can_rotate_encryption_key` — gate on
+      ``POST /v1/admin/encryption/rotate-key`` admin endpoint. Default
+      ``False`` (deny); admin-tier construction grants ``True``.
     """
 
     can_submit_tasks: bool = True
@@ -95,6 +101,8 @@ class ActorPermissions:
     can_store_prompt_encrypted: bool = False
     can_store_raw_provider_body: bool = False
     can_receive_token_stream: bool = True
+    # ----- Phase 13.x.7 extension (encryption admin) -----
+    can_rotate_encryption_key: bool = False
 
 
 def _default_permissions_for(actor_name: str) -> ActorPermissions:
@@ -124,6 +132,8 @@ def _default_permissions_for(actor_name: str) -> ActorPermissions:
             can_store_prompt_encrypted=True,
             can_store_raw_provider_body=True,
             can_receive_token_stream=True,
+            # ----- Phase 13.x.7 bootstrap grant -----
+            can_rotate_encryption_key=True,
         )
     return ActorPermissions()
 

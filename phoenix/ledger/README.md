@@ -69,17 +69,16 @@ are enterprise add-ons.
    pip install "phoenix-middleware[encryption-age]"
    ```
 
-2. Generate an age keypair. Until the
-   `phoenix admin generate-encryption-key` CLI lands at Phase 13.x.7,
-   use the `age-keygen` binary directly:
+2. Generate an age keypair using the Phoenix CLI:
 
    ```bash
-   mkdir -p ~/.phoenix/runtime/encryption_keys/recipients
-   age-keygen -o ~/.phoenix/runtime/encryption_keys/identity.txt
-   chmod 0600 ~/.phoenix/runtime/encryption_keys/identity.txt
-   age-keygen -y ~/.phoenix/runtime/encryption_keys/identity.txt \
-       > ~/.phoenix/runtime/encryption_keys/recipients/primary.pub
+   phoenix admin generate-encryption-key
    ```
+
+   The CLI writes `identity.txt` (mode 0o600 on POSIX) +
+   `recipients/primary.pub` to `~/.phoenix/runtime/encryption_keys/`
+   (override via `$PHOENIX_ENCRYPTION_KEYS_DIR`). Pass `--name <slug>`
+   for non-primary keypairs (rotation, per-actor when v1.1.x.8 ships).
 
 3. Wire it into Phoenix at daemon startup:
 
@@ -104,9 +103,13 @@ lossless key rotation:
    the new recipient automatically (globs `recipients/*.pub`). New
    encrypts go to `{primary, v2}`; old encrypts remain decryptable
    with either identity.
-3. After the transition window, batch-rotate (admin command lands
-   at Phase 13.x.7): decrypt with old identity, re-encrypt to
-   `{v2}` only, delete old identity + `primary.pub`.
+3. The 13.x.7 admin endpoint `POST /v1/admin/encryption/rotate-key`
+   generates the new keypair in-process (audit-logged) so ops can
+   trigger rotation without shell access. **Batch decrypt-and-re-encrypt
+   of existing ENCRYPTED_OPT_IN rows** (the "re-encrypt to `{v2}` only,
+   delete old identity" cleanup) is deferred to a separate follow-up
+   slot — until then, ops can leave both recipients valid (multi-recipient
+   rotation is lossless and forward-compatible).
 
 ### Audit events
 
@@ -132,11 +135,20 @@ with `sha256sum`.
 - **Failed decrypts are not retried.** A failed decrypt is
   structural (tampering or wrong key), not transient.
 
-### What's NOT shipped at 13.x.6
+### What's shipped through 13.x.7
 
+- **Phase 13.x.6** — `AgePromptEncryptor` (this module's reference impl).
 - **Phase 13.x.7** — `phoenix admin generate-encryption-key` CLI +
-  `POST /v1/admin/encryption/rotate-key` admin endpoint.
+  `POST /v1/admin/encryption/rotate-key` admin endpoint (both backed
+  by `phoenix/ledger/keygen.py::generate_age_keypair`).
+
+### What's NOT shipped yet
+
+- **Batch decrypt-and-re-encrypt** of existing `ENCRYPTED_OPT_IN`
+  ledger rows on rotation (deferred from 13.x.7's original scope).
 - **Phase 13.x.8** — per-actor key isolation.
+- **`POST /v1/admin/encryption/reload`** — zero-downtime encryptor
+  reload (daemon-restart pattern preserved for now).
 - **v1.2.x** — `AwsKmsPromptEncryptor` / `GcpKmsPromptEncryptor` /
   `VaultPromptEncryptor` Protocol-conforming plugins.
 

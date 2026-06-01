@@ -367,6 +367,33 @@ def _add_admin_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentPa
         help="Operator-supplied reason recorded in the audit log.",
     )
 
+    gen_key = inner.add_parser(
+        "generate-encryption-key",
+        help="Generate an age keypair for ENCRYPTED_OPT_IN ledger encryption.",
+    )
+    gen_key.add_argument(
+        "--name",
+        default="primary",
+        help=(
+            "Name slug for the keypair files. Default 'primary' writes "
+            "identity.txt + recipients/primary.pub."
+        ),
+    )
+    gen_key.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing files. Default: refuse.",
+    )
+    gen_key.add_argument(
+        "--keys-dir",
+        default=None,
+        help=(
+            "Override the default keys directory. "
+            "Default: $PHOENIX_ENCRYPTION_KEYS_DIR or "
+            "~/.phoenix/runtime/encryption_keys/."
+        ),
+    )
+
 
 # --------------------------------------------------------------------
 # Handler registry. Phase 9 Step 6 ships a single working command
