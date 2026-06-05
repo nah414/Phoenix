@@ -165,6 +165,70 @@ returns 403 if the actor lacks the flag.
 - `tests/unit/test_permissions_phase13x7.py` (3) — default-deny /
   explicit-grant / existing-flags-unchanged
 
+### Phase 13.5: cognition drift extension (2026-06-05)
+
+Wires cognition substrate signals into the existing drift detector's
+ML Statistical Checker (which had a `feature_provider` seam since
+Phase 6b but no provider). 14-dim feature vector covering:
+
+- Classifier verdict distribution (bit_exact / semantic_match /
+  divergence / unclassified rates)
+- Classifier confidence (mean + p10)
+- Cognition wobble disagreement (mean + p90)
+- Provider error + refusal rates
+- Cognition latency p95
+- Prompt disposition mix (HASH_ONLY / VERBATIM / ENCRYPTED_OPT_IN)
+
+**New files:**
+- `phoenix/verification/cognition_drift_features.py` —
+  `CognitionDriftFeatures` dataclass + `CognitionFeatureProvider` +
+  `_VECTOR_FIELDS` ordered tuple (single source of truth for vector
+  dimension; module-level assertion catches accidental drift).
+- `phoenix/verification/cognition_drift_baseline.py` —
+  `CognitionDriftBaseline` with per-Phoenix-version storage + schema
+  versioning + weighted-L2 distance.
+- `phoenix/admin/cognition_drift_admin.py` — two admin endpoints
+  (`POST /v1/admin/drift/cognition-baseline/capture` + `GET
+  /v1/admin/drift/cognition-baseline`).
+
+**New permission:** `can_capture_drift_baseline` (default deny;
+granted to bootstrap actors).
+
+**Extended:** `MLStatisticalChecker` consumes the baseline + threshold
+(`PHOENIX_DRIFT_COGNITION_DISTANCE_THRESHOLD` env-var overrides the
+0.5 default). `get_detector()` wires the cognition feature provider
+into the ML checker at daemon startup; graceful fallback to default
+checker list on wiring failures.
+
+**Auto-capture helper:** `maybe_auto_capture_baseline()` refreshes
+the running baseline after N consecutive healthy cycles. Helper is
+shipped as a callable; full integration into the `DriftDetector.run_cycle`
+loop is a v1.1.x followup.
+
+**Privacy contract:** the feature provider reads only aggregate
+fields (verdict, classification, cognition_provenance,
+cognition_disagreement_metric, prompt_disposition, axis). It does
+NOT access `prompt_verbatim` or `prompt_encrypted` payload fields.
+Whitelist enforced by `_extract_aggregate_fields` + pinned by a
+dedicated test that asserts the whitelist literal against the
+approved frozenset.
+
+**Aggregation rule unchanged.** Decision 17's three-checker
+aggregation is preserved; cognition signals roll into the existing
+ML checker rather than adding a fourth.
+
+**Tests added:** ~28 across 5 test files (features 10 + baseline 7 +
+permission 2 + admin endpoints 5 + ML checker integration 5 +
+auto-capture 3 = 32 — actual counts may vary slightly per
+implementer adjustments).
+
+**NOT shipped at 13.5** (deferred follow-ups):
+- Per-provider drift attribution
+- Drift-triggered cognition rerouting (router consumes signal)
+- Full integration of `maybe_auto_capture_baseline` into
+  `DriftDetector.run_cycle` (helper is shipped; auto-cycle wiring deferred)
+- Replacing the Tier-1 checker or `ml/drift_ensemble.py`
+
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
 quantum + classical-cognition substrate. The same audit-grade guarantees
 (typed errors, hashchained ledger, three-axis wobble verification,

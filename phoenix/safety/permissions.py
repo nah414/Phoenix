@@ -83,6 +83,12 @@ class ActorPermissions:
     - :attr:`can_rotate_encryption_key` — gate on
       ``POST /v1/admin/encryption/rotate-key`` admin endpoint. Default
       ``False`` (deny); admin-tier construction grants ``True``.
+
+    **Phase 13.5 extension** (cognition drift baseline):
+
+    - :attr:`can_capture_drift_baseline` — gate on capturing a
+      cognition-drift baseline snapshot. Default ``False`` (deny);
+      admin-tier construction grants ``True``.
     """
 
     can_submit_tasks: bool = True
@@ -103,6 +109,8 @@ class ActorPermissions:
     can_receive_token_stream: bool = True
     # ----- Phase 13.x.7 extension (encryption admin) -----
     can_rotate_encryption_key: bool = False
+    # ----- Phase 13.5 extension (cognition drift baseline) -----
+    can_capture_drift_baseline: bool = False
 
 
 def _default_permissions_for(actor_name: str) -> ActorPermissions:
@@ -134,6 +142,8 @@ def _default_permissions_for(actor_name: str) -> ActorPermissions:
             can_receive_token_stream=True,
             # ----- Phase 13.x.7 bootstrap grant -----
             can_rotate_encryption_key=True,
+            # ----- Phase 13.5 bootstrap grant -----
+            can_capture_drift_baseline=True,
         )
     return ActorPermissions()
 
