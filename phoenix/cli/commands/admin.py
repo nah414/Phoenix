@@ -131,6 +131,23 @@ def _cmd_generate_encryption_key(
     if getattr(args, "keys_dir", None):
         keys_dir = Path(args.keys_dir).expanduser().resolve()
 
+    # Phase 13.x.8: --actor routes the keypair under actors/<name>/.
+    # Takes precedence over --keys-dir's default; _actor_keys_dir is
+    # rooted at default_keys_dir()/actors/ and validates the name
+    # (path-traversal guard).
+    actor = getattr(args, "actor", None)
+    if actor:
+        from phoenix.ledger.encryption_actors import (
+            PerActorKeyError,
+            _actor_keys_dir,
+        )
+
+        try:
+            keys_dir = _actor_keys_dir(actor)
+        except PerActorKeyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
     try:
         result = generate_age_keypair(
             keys_dir=keys_dir,
@@ -150,6 +167,15 @@ def _cmd_generate_encryption_key(
     except ImportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    # Phase 13.x.8: keygen chmods the identity *file* 0o600 but leaves the
+    # actor *directory* at the default umask. Tighten it to 0o700 on POSIX
+    # so a per-actor key tree isn't world/group-readable. Windows: rely on
+    # NTFS ACLs (keygen already WARNs about identity-file perms there).
+    if actor and sys.platform != "win32":
+        import os  # noqa: PLC0415 -- lazy; only needed in the actor path
+
+        os.chmod(_actor_keys_dir(actor), 0o700)
 
     posix_mode_note = "(mode 0o600)" if sys.platform != "win32" else "(Windows NTFS ACL)"
     print(f"Identity:     {result.identity_path}      {posix_mode_note}")
