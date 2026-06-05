@@ -148,10 +148,16 @@ def _cmd_generate_encryption_key(
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+    # Per-actor layout pins the slug to 'primary' so the file is
+    # actors/<name>/identity.txt (what the registry + enumeration
+    # look for). Any --name value is ignored for per-actor provisioning
+    # (matches the admin rotate-key endpoint).
+    effective_name = "primary" if actor else getattr(args, "name", "primary")
+
     try:
         result = generate_age_keypair(
             keys_dir=keys_dir,
-            name=getattr(args, "name", "primary"),
+            name=effective_name,
             force=getattr(args, "force", False),
         )
     except KeyGenPathConflict as exc:

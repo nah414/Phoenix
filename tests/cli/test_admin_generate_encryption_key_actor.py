@@ -97,3 +97,19 @@ class TestGenerateEncryptionKeyActor:
         args = argparse.Namespace(name="primary", force=False, keys_dir=None, actor="../escape")
         rc = _call(args)
         assert rc == 1
+
+    def test_actor_flag_pins_slug_to_primary_ignoring_name(
+        self, fake_pyrage: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--actor pins the slug to 'primary' (identity.txt), ignoring --name,
+        so the registry + enumeration (which look for identity.txt) recognize
+        the actor."""
+        monkeypatch.setenv("PHOENIX_ENCRYPTION_KEYS_DIR", str(tmp_path))
+        args = argparse.Namespace(name="custom-ignored", force=False, keys_dir=None, actor="adam")
+        rc = _call(args)
+        assert rc == 0
+        # Slug pinned to primary → identity.txt + recipients/primary.pub,
+        # NOT identity-custom-ignored.txt.
+        assert (tmp_path / "actors" / "adam" / "identity.txt").is_file()
+        assert (tmp_path / "actors" / "adam" / "recipients" / "primary.pub").is_file()
+        assert not (tmp_path / "actors" / "adam" / "identity-custom-ignored.txt").exists()

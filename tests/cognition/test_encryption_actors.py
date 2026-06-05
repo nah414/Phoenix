@@ -131,11 +131,17 @@ class TestSetGetReset:
         assert get_prompt_encryptor_for_actor("adam") is sentinel
 
     def test_reset_one_actor(self, fake_pyrage: Any, tmp_path: Path) -> None:
+        # Prove the per-actor entry is actually evicted: with no on-disk
+        # actor keys, a post-reset lookup must fall back to the DISTINCT
+        # shared encryptor. (Asserting only `is not sentinel` would pass
+        # trivially even if eviction never happened.)
+        shared = _SentinelEncryptor("SHARED")
+        set_prompt_encryptor(shared)  # type: ignore[arg-type]
         sentinel = _SentinelEncryptor("adam")
         set_prompt_encryptor_for_actor("adam", sentinel)  # type: ignore[arg-type]
         reset_prompt_encryptor_for_actor("adam")
         result = get_prompt_encryptor_for_actor("adam")
-        assert result is not sentinel
+        assert result is shared
 
     def test_reset_all(self) -> None:
         set_prompt_encryptor_for_actor("adam", _SentinelEncryptor("a"))  # type: ignore[arg-type]
