@@ -87,8 +87,45 @@ class CognitionDriftFeatures:
 
     def as_vector(self) -> np.ndarray:
         """Return the 14-dim feature vector (excludes sample_size)."""
-        values = [getattr(self, f.name) for f in fields(self) if f.name != "sample_size"]
-        return np.array(values, dtype=np.float64)
+        return np.array(
+            [getattr(self, name) for name in _VECTOR_FIELDS],
+            dtype=np.float64,
+        )
+
+
+# Module-level guard: vector field list must match dataclass fields
+# excluding sample_size. Fail fast at import if the contract drifts.
+_VECTOR_FIELDS: tuple[str, ...] = (
+    "classifier_verdict_bit_exact_rate",
+    "classifier_verdict_semantic_match_rate",
+    "classifier_verdict_divergence_rate",
+    "classifier_verdict_unclassified_rate",
+    "classifier_confidence_mean",
+    "classifier_confidence_p10",
+    "cognition_disagreement_mean",
+    "cognition_disagreement_p90",
+    "provider_error_rate_overall",
+    "provider_refusal_rate_overall",
+    "cognition_latency_ms_p95",
+    "disposition_hash_only_rate",
+    "disposition_verbatim_rate",
+    "disposition_encrypted_opt_in_rate",
+)
+"""Ordered tuple of feature-vector field names (excludes sample_size).
+
+This is the single source of truth for the dimension and order of
+:meth:`CognitionDriftFeatures.as_vector` output. If you add a new
+feature field to :class:`CognitionDriftFeatures`, you MUST also add
+it here (and bump :data:`FEATURE_SCHEMA_VERSION`). The module-level
+assertion below catches accidental field-list drift at import time.
+"""
+
+assert _VECTOR_FIELDS == tuple(
+    f.name for f in fields(CognitionDriftFeatures) if f.name != "sample_size"
+), (
+    "_VECTOR_FIELDS must match CognitionDriftFeatures fields (excluding sample_size); "
+    "did you add a field without updating _VECTOR_FIELDS and bumping FEATURE_SCHEMA_VERSION?"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -267,4 +304,5 @@ __all__ = [
     "FEATURE_SCHEMA_VERSION",
     "CognitionDriftFeatures",
     "CognitionFeatureProvider",
+    "_VECTOR_FIELDS",
 ]

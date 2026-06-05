@@ -197,3 +197,31 @@ class TestCognitionFeatureProvider:
         provider = CognitionFeatureProvider(state_backend=backend, min_sample_size=50)
         result = provider()
         assert result is not None
+
+    def test_privacy_whitelist_contains_only_expected_fields(self) -> None:
+        """Pin the privacy whitelist against accidental widening.
+
+        Any addition to _AGGREGATE_FIELDS_ALLOWED must be deliberate
+        and reviewed; this test fails fast if a field appears that
+        wasn't approved in design review.
+        """
+        from phoenix.verification.cognition_drift_features import (
+            _AGGREGATE_FIELDS_ALLOWED,
+        )
+
+        expected = frozenset(
+            {
+                "verdict",
+                "classification",
+                "cognition_disagreement_metric",
+                "cognition_provenance",
+                "prompt_disposition",
+                "axis",
+            }
+        )
+        assert _AGGREGATE_FIELDS_ALLOWED == expected, (
+            f"Privacy whitelist diverged from approved set. "
+            f"Added: {_AGGREGATE_FIELDS_ALLOWED - expected}; "
+            f"removed: {expected - _AGGREGATE_FIELDS_ALLOWED}. "
+            f"Any change requires a Phase 13.5+ privacy review."
+        )
