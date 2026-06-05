@@ -46,6 +46,9 @@ from phoenix.admin import grant_prompt_verbatim as _grant_prompt_verbatim  # noq
 # Phase 13.x.7: encryption rotate-key admin endpoint.
 from phoenix.admin import encryption_admin as _encryption_admin  # noqa: F401
 
+# Phase 13.5: cognition drift baseline admin endpoints.
+from phoenix.admin import cognition_drift_admin as _cognition_drift_admin  # noqa: F401
+
 __all__ = [
     "AdapterNotLoaded",
     "AdminError",

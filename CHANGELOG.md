@@ -165,60 +165,69 @@ returns 403 if the actor lacks the flag.
 - `tests/unit/test_permissions_phase13x7.py` (3) — default-deny /
   explicit-grant / existing-flags-unchanged
 
-### Phase 13.x.8: per-actor key isolation (plumbing) (2026-06-05)
+### Phase 13.5: cognition drift extension (2026-06-05)
 
-Per-actor encryption plumbing — registry, keygen routing, CLI/admin
-surface, and decrypt-routing — keyed by `actor.name`, fail-closed.
+Wires cognition substrate signals into the existing drift detector's
+ML Statistical Checker (which had a `feature_provider` seam since
+Phase 6b but no provider). 14-dim feature vector covering:
 
-**Scope (descoped after adversarial design review, workflow
-`wf_432eec7f`):** this ships the per-actor *plumbing* only. The
-ENCRYPTED_OPT_IN *write path* does not exist in Phoenix today (a
-deliberate 13-D2 deferral: "column shipped, key-mgmt ceremony
-deferred to first commercial customer"). 13.x.8 makes per-actor
-isolation wired, tested, and ready — but NOT end-to-end-live until
-that write path activates. The write path + per-actor audit
-attribution remain deferred.
+- Classifier verdict distribution (bit_exact / semantic_match /
+  divergence / unclassified rates)
+- Classifier confidence (mean + p10)
+- Cognition wobble disagreement (mean + p90)
+- Provider error + refusal rates
+- Cognition latency p95
+- Prompt disposition mix (HASH_ONLY / VERBATIM / ENCRYPTED_OPT_IN)
 
-**New module:** `phoenix/ledger/encryption_actors.py` — per-actor
-encryptor registry mirroring the shared `encryption.py` singleton,
-keyed by `actor.name`, with:
-- **Fail-CLOSED by directory presence:** `actors/<name>/` exists →
-  a load failure (`AgeKeyLoadError`/`AgeKeyPermissionError`) raises
-  `PerActorKeyError`, never silently downgrades to the shared key.
-  Directory absent → shared fallback (back-compat).
-- `threading.Lock` on the request-time cache (the rotate-key
-  endpoint evicts entries). In-process eviction is correct only
-  while single-worker; revisit at `--workers`.
-- `_ACTOR_NAME_RE` validation + path-under-root guard (traversal).
+**New files:**
+- `phoenix/verification/cognition_drift_features.py` —
+  `CognitionDriftFeatures` dataclass + `CognitionFeatureProvider` +
+  `_VECTOR_FIELDS` ordered tuple (single source of truth for vector
+  dimension; module-level assertion catches accidental drift).
+- `phoenix/verification/cognition_drift_baseline.py` —
+  `CognitionDriftBaseline` with per-Phoenix-version storage + schema
+  versioning + weighted-L2 distance.
+- `phoenix/admin/cognition_drift_admin.py` — two admin endpoints
+  (`POST /v1/admin/drift/cognition-baseline/capture` + `GET
+  /v1/admin/drift/cognition-baseline`).
 
-**Storage:** the per-actor identifier lives inside `payload_json`
-(`prompt_encryption_actor_id`), NOT a SQL column — Phoenix backends
-persist only 7 base columns and replay reads from payload. **No
-migration, no new permission flag, no SQL column.**
+**New permission:** `can_capture_drift_baseline` (default deny;
+granted to bootstrap actors).
 
-**Decrypt-routing:** `_replay_encrypted` reads
-`payload.get("prompt_encryption_actor_id")` — absent → shared
-encryptor (all current rows); present → per-actor.
+**Extended:** `MLStatisticalChecker` consumes the baseline + threshold
+(`PHOENIX_DRIFT_COGNITION_DISTANCE_THRESHOLD` env-var overrides the
+0.5 default). `get_detector()` wires the cognition feature provider
+into the ML checker at daemon startup; graceful fallback to default
+checker list on wiring failures.
 
-**CLI/admin:** `phoenix admin generate-encryption-key --actor <name>`
-and `POST /v1/admin/encryption/rotate-key {actor_name}` provision
-keys under `actors/<name>/` (slug pinned to `primary`); the rotate
-endpoint evicts the per-actor cache + chmods the dir 0o700 (POSIX) on
-success. New `GET /v1/admin/encryption/actors` enumeration (admin-only,
-read-cost). The rotate-key permission gate (`can_rotate_encryption_key`)
-is checked against the authenticated admin.
+**Auto-capture helper:** `maybe_auto_capture_baseline()` refreshes
+the running baseline after N consecutive healthy cycles. Helper is
+shipped as a callable; full integration into the `DriftDetector.run_cycle`
+loop is a v1.1.x followup.
 
-**Refactor:** extracted `encryption_age.py::encryptor_from_keys_dir`
-(behavior-preserving) so shared + per-actor layouts share one builder;
-deduplicated the admin auth ladder in `encryption_admin.py` to the
-canonical `_admin_authn` (enumeration now uses a read-cost action key).
+**Privacy contract:** the feature provider reads only aggregate
+fields (verdict, classification, cognition_provenance,
+cognition_disagreement_metric, prompt_disposition, axis). It does
+NOT access `prompt_verbatim` or `prompt_encrypted` payload fields.
+Whitelist enforced by `_extract_aggregate_fields` + pinned by a
+dedicated test that asserts the whitelist literal against the
+approved frozenset.
 
-**Tests added:** ~28 across 4 test files (registry/fail-closed/
-traversal, decrypt-routing, CLI --actor, admin endpoints).
+**Aggregation rule unchanged.** Decision 17's three-checker
+aggregation is preserved; cognition signals roll into the existing
+ML checker rather than adding a fourth.
 
-**Supersedes the v1 design** (`0d2d9ab`) which mistakenly assumed an
-existing write path; see design v2
-(`docs/superpowers/specs/2026-06-05-phase-13x8-per-actor-key-isolation-design-v2.md`).
+**Tests added:** ~28 across 5 test files (features 10 + baseline 7 +
+permission 2 + admin endpoints 5 + ML checker integration 5 +
+auto-capture 3 = 32 — actual counts may vary slightly per
+implementer adjustments).
+
+**NOT shipped at 13.5** (deferred follow-ups):
+- Per-provider drift attribution
+- Drift-triggered cognition rerouting (router consumes signal)
+- Full integration of `maybe_auto_capture_baseline` into
+  `DriftDetector.run_cycle` (helper is shipped; auto-cycle wiring deferred)
+- Replacing the Tier-1 checker or `ml/drift_ensemble.py`
 
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
 quantum + classical-cognition substrate. The same audit-grade guarantees

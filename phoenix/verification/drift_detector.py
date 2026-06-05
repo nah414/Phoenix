@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from phoenix.state.backend_protocol import StateBackend
+    from phoenix.verification.cognition_drift_baseline import CognitionDriftBaseline
 
 logger = logging.getLogger(__name__)
 
@@ -397,16 +398,28 @@ class MLStatisticalChecker:
         feature_provider: Callable[[], np.ndarray | None] | None = None,
         *,
         drift_snr_threshold: float = 1.0,
+        cognition_baseline: CognitionDriftBaseline | None = None,
+        phoenix_version: str | None = None,
+        distance_threshold: float | None = None,
     ) -> None:
         self._feature_provider = feature_provider
         self._threshold = drift_snr_threshold
+        self._cognition_baseline = cognition_baseline
+        self._phoenix_version = phoenix_version
+        if distance_threshold is None:
+            env_val = os.environ.get("PHOENIX_DRIFT_COGNITION_DISTANCE_THRESHOLD")
+            try:
+                distance_threshold = float(env_val) if env_val is not None else 0.5
+            except (TypeError, ValueError):
+                distance_threshold = 0.5
+        self._distance_threshold = float(distance_threshold)
 
     def run(self) -> CheckerResult:
         if self._feature_provider is None:
             return CheckerResult(
                 name=self.name,
                 drifting=False,
-                summary="no feature provider configured (Phase 7+ wires this)",
+                summary="ml_checker_no_provider (Phase 7+ wires this)",
                 metadata={"skipped": True, "reason": "no_provider"},
             )
         try:
@@ -422,8 +435,28 @@ class MLStatisticalChecker:
             return CheckerResult(
                 name=self.name,
                 drifting=False,
-                summary="no features available yet",
+                summary="ml_checker_insufficient_data (no features available yet)",
                 metadata={"skipped": True, "reason": "empty_features"},
+            )
+
+        # Phase 13.5: when a cognition baseline is configured, compute
+        # weighted-L2 distance against the per-version baseline and fire
+        # if it exceeds threshold. This path supersedes the legacy
+        # predict_scale_separated path for cognition drift; the legacy
+        # path remains for callers that don't wire a baseline.
+        if self._cognition_baseline is not None and self._phoenix_version is not None:
+            return self._run_with_baseline(features)
+        if self._cognition_baseline is None and self._phoenix_version is None:
+            # Fall through to legacy path.
+            pass
+        else:
+            # Partial configuration (one of the two set without the other)
+            # is treated as missing baseline so admins notice and fix.
+            return CheckerResult(
+                name=self.name,
+                drifting=False,
+                summary="ml_checker_no_baseline (cognition_baseline or phoenix_version unset)",
+                metadata={"skipped": True, "reason": "no_baseline"},
             )
 
         try:
@@ -459,6 +492,61 @@ class MLStatisticalChecker:
                 f"stationary={result.get('stationary')}"
             ),
             metadata={"predict_scale_separated": result},
+        )
+
+    def _run_with_baseline(self, features_vec: "np.ndarray") -> CheckerResult:
+        """Phase 13.5 baseline-distance path.
+
+        Reads the on-disk baseline for ``self._phoenix_version``,
+        reconstructs the current feature vector into a
+        :class:`CognitionDriftFeatures`, computes weighted-L2 distance,
+        and fires if the distance exceeds the configured threshold.
+        """
+        assert self._cognition_baseline is not None  # for type-checker
+        assert self._phoenix_version is not None  # for type-checker
+
+        try:
+            baseline_features = self._cognition_baseline.read_baseline_for_version(
+                self._phoenix_version
+            )
+        except Exception as exc:
+            logger.warning("ML checker baseline read failed", exc_info=True)
+            return CheckerResult(
+                name=self.name,
+                drifting=False,
+                summary=f"ml_checker_baseline_error: {type(exc).__name__}",
+                metadata={"error": True, "reason": "baseline_error"},
+            )
+
+        if baseline_features is None:
+            return CheckerResult(
+                name=self.name,
+                drifting=False,
+                summary="ml_checker_no_baseline (no baseline captured for this version)",
+                metadata={"skipped": True, "reason": "no_baseline"},
+            )
+
+        # Reconstruct current features dataclass from vector for distance calc.
+        from phoenix.verification.cognition_drift_features import (
+            CognitionDriftFeatures,
+            _VECTOR_FIELDS,
+        )
+
+        feature_kwargs = dict(zip(_VECTOR_FIELDS, features_vec.tolist()))
+        feature_kwargs["sample_size"] = 0
+        current = CognitionDriftFeatures(**feature_kwargs)
+
+        distance = self._cognition_baseline.compute_distance(current, baseline_features)
+        drifting = distance > self._distance_threshold
+        summary = f"cognition_distance={distance:.3f} threshold={self._distance_threshold:.3f}"
+        return CheckerResult(
+            name=self.name,
+            drifting=drifting,
+            summary=summary,
+            metadata={
+                "cognition_distance": distance,
+                "distance_threshold": self._distance_threshold,
+            },
         )
 
 
@@ -843,6 +931,15 @@ def get_detector() -> DriftDetector:
     Constructs lazily with the configured state backend (via
     :func:`phoenix.state.get_state_backend`). The scheduler is NOT
     started -- callers opt in via :meth:`DriftDetector.start_scheduler`.
+
+    Phase 13.5: when the state backend is available, the singleton's
+    :class:`MLStatisticalChecker` is constructed with a
+    :class:`~phoenix.verification.cognition_drift_features.CognitionFeatureProvider`
+    and a per-version
+    :class:`~phoenix.verification.cognition_drift_baseline.CognitionDriftBaseline`.
+    ``$PHOENIX_COGNITION_DRIFT_BASELINE_PATH`` overrides the default
+    baseline file location. The Tier-1 analytical checker and the
+    cross-version checker are added alongside per Decision 17.
     """
     global _DETECTOR
     with _DETECTOR_LOCK:
@@ -856,7 +953,53 @@ def get_detector() -> DriftDetector:
                     "DriftDetector constructed without state backend (state-factory unavailable)"
                 )
                 backend = None
-            _DETECTOR = DriftDetector(state_backend=backend)
+
+            # Phase 13.5: wire the cognition feature provider + per-version
+            # baseline into the MLStatisticalChecker when a state backend
+            # is available. Without a backend we fall back to the default
+            # checker list (no provider, no baseline) so the detector is
+            # still constructible in degraded environments.
+            checkers: list[DriftCheckerProtocol] | None = None
+            if backend is not None:
+                try:
+                    from phoenix import __version__ as _phoenix_version
+                    from phoenix.verification.cognition_drift_baseline import (
+                        CognitionDriftBaseline,
+                    )
+                    from phoenix.verification.cognition_drift_features import (
+                        CognitionFeatureProvider,
+                    )
+
+                    cognition_provider = CognitionFeatureProvider(state_backend=backend)
+                    cognition_baseline_path_str = os.environ.get(
+                        "PHOENIX_COGNITION_DRIFT_BASELINE_PATH"
+                    )
+                    cognition_baseline = CognitionDriftBaseline(
+                        baseline_path=(
+                            Path(cognition_baseline_path_str)
+                            if cognition_baseline_path_str
+                            else None
+                        )
+                    )
+                    tier1 = Tier1AnalyticalChecker()
+                    ml = MLStatisticalChecker(
+                        feature_provider=cognition_provider,
+                        cognition_baseline=cognition_baseline,
+                        phoenix_version=_phoenix_version,
+                    )
+                    cross = CrossVersionChecker(
+                        current_version=_phoenix_version,
+                        current_results_provider=tier1.last_results,
+                    )
+                    checkers = [tier1, ml, cross]
+                except Exception:
+                    logger.exception(
+                        "Failed to wire cognition drift baseline into MLStatisticalChecker; "
+                        "falling back to default checker list"
+                    )
+                    checkers = None
+
+            _DETECTOR = DriftDetector(state_backend=backend, checkers=checkers)
         return _DETECTOR
 
 
@@ -874,3 +1017,56 @@ def reset_detector() -> None:
             except Exception:
                 logger.exception("Failed to stop drift scheduler on reset")
         _DETECTOR = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 13.5: auto-capture helper.
+
+
+def maybe_auto_capture_baseline(
+    *,
+    consecutive_healthy: int,
+    state: str,
+    provider: Callable[[], "np.ndarray | None"],
+    baseline: "CognitionDriftBaseline",
+    phoenix_version: str,
+    cycles_before_capture: int = 5,
+) -> bool:
+    """If state has been healthy for ``cycles_before_capture`` consecutive
+    cycles AND the current state is "healthy", capture the current
+    cognition features as the running baseline for ``phoenix_version``.
+
+    Returns True if capture happened, False otherwise. Idempotent if
+    called repeatedly past the threshold (overwrites baseline).
+
+    Phase 13.5 ships the helper only; wiring the auto-capture into the
+    production cycle loop is a v1.1.x followup (so the
+    :class:`DriftDetector.run_cycle` loop stays unchanged in this
+    phase). Ops or admin-driven integrations can call this directly
+    when ready.
+    """
+    if state != "healthy":
+        return False
+    if consecutive_healthy < cycles_before_capture:
+        return False
+
+    features_vec = provider()
+    if features_vec is None:
+        return False
+
+    # Reconstruct features from vector (same pattern as MLStatisticalChecker).
+    from phoenix.verification.cognition_drift_features import (
+        _VECTOR_FIELDS,
+        CognitionDriftFeatures,
+    )
+
+    feature_kwargs: dict[str, Any] = dict(zip(_VECTOR_FIELDS, features_vec.tolist()))
+    feature_kwargs["sample_size"] = 0
+    features = CognitionDriftFeatures(**feature_kwargs)
+
+    baseline.write_current(features, phoenix_version=phoenix_version)
+    logger.info(
+        "auto-captured cognition drift baseline after %d healthy cycles",
+        consecutive_healthy,
+    )
+    return True
