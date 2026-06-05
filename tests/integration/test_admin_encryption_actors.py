@@ -167,13 +167,19 @@ class TestEnumerationEndpoint:
             client.post("/v1/admin/encryption/rotate-key", json={"actor_name": "ash"})
             r = client.get("/v1/admin/encryption/actors")
         assert r.status_code == 200, r.text
-        assert sorted(r.json()["actors"]) == ["adam", "ash"]
+        body = r.json()
+        assert sorted(body["actors"]) == ["adam", "ash"]
+        # 13.x.8 step 5 fixup: enumeration body carries a ``count`` field
+        # for parity with other admin list endpoints.
+        assert body["count"] == 2
 
     def test_empty_when_no_actors(self, fake_pyrage: Any, isolated_runtime: Path) -> None:
         with TestClient(app) as client:
             r = client.get("/v1/admin/encryption/actors")
         assert r.status_code == 200, r.text
-        assert r.json()["actors"] == []
+        body = r.json()
+        assert body["actors"] == []
+        assert body["count"] == 0
 
     def test_enumeration_requires_admin(self, fake_pyrage: Any, isolated_runtime: Path) -> None:
         with TestClient(app) as client:
