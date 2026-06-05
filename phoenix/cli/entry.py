@@ -393,6 +393,14 @@ def _add_admin_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentPa
             "~/.phoenix/runtime/encryption_keys/."
         ),
     )
+    gen_key.add_argument(
+        "--actor",
+        default=None,
+        help=(
+            "Provision keys for a specific actor under actors/<name>/ "
+            "(Phase 13.x.8 per-actor isolation). Omit for the shared layout."
+        ),
+    )
 
 
 # --------------------------------------------------------------------

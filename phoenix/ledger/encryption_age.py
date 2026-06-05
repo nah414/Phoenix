@@ -599,26 +599,18 @@ def default_keys_dir() -> Path:
     return (Path.home() / _DEFAULT_KEYS_DIR_REL).resolve()
 
 
-def encryptor_from_default_layout() -> AgePromptEncryptor:
-    """Construct an :class:`AgePromptEncryptor` from the conventional layout.
+def encryptor_from_keys_dir(keys_dir: Path) -> AgePromptEncryptor:
+    """Construct an :class:`AgePromptEncryptor` from an arbitrary keys dir.
 
-    Convenience constructor for daemon startup:
-
-    .. code-block:: python
-
-        from phoenix.ledger.encryption import set_prompt_encryptor
-        from phoenix.ledger.encryption_age import encryptor_from_default_layout
-
-        set_prompt_encryptor(encryptor_from_default_layout())
-
-    Reads ``identity.txt`` + every ``*.pub`` under ``recipients/``
-    from the directory returned by :func:`default_keys_dir`.
+    Reads ``identity.txt`` + every ``*.pub`` under ``recipients/`` from
+    ``keys_dir``. Shared by :func:`encryptor_from_default_layout`
+    (keys_dir = :func:`default_keys_dir`) and the Phase 13.x.8 per-actor
+    layout (keys_dir = ``default_keys_dir()/'actors'/<actor_name>``).
 
     Raises:
-        AgeKeyLoadError: if the directory structure isn't as expected.
-        AgeKeyPermissionError: if the identity file is too permissive.
+        AgeKeyLoadError: directory structure not as expected.
+        AgeKeyPermissionError: identity file too permissive (POSIX).
     """
-    keys_dir = default_keys_dir()
     identity_path = keys_dir / "identity.txt"
     recipients_dir = keys_dir / "recipients"
     if not identity_path.is_file():
@@ -642,6 +634,28 @@ def encryptor_from_default_layout() -> AgePromptEncryptor:
     )
 
 
+def encryptor_from_default_layout() -> AgePromptEncryptor:
+    """Construct an :class:`AgePromptEncryptor` from the conventional layout.
+
+    Convenience constructor for daemon startup:
+
+    .. code-block:: python
+
+        from phoenix.ledger.encryption import set_prompt_encryptor
+        from phoenix.ledger.encryption_age import encryptor_from_default_layout
+
+        set_prompt_encryptor(encryptor_from_default_layout())
+
+    Reads ``identity.txt`` + every ``*.pub`` under ``recipients/``
+    from the directory returned by :func:`default_keys_dir`.
+
+    Raises:
+        AgeKeyLoadError: if the directory structure isn't as expected.
+        AgeKeyPermissionError: if the identity file is too permissive.
+    """
+    return encryptor_from_keys_dir(default_keys_dir())
+
+
 __all__ = [
     "AgeDecryptError",
     "AgeEncryptionError",
@@ -650,4 +664,5 @@ __all__ = [
     "AgePromptEncryptor",
     "default_keys_dir",
     "encryptor_from_default_layout",
+    "encryptor_from_keys_dir",
 ]

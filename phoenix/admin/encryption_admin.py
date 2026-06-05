@@ -23,26 +23,28 @@ secrets never appear in audit events.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from fastapi import Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from phoenix.admin.audit_decorator import emit_admin_audit
-from phoenix.admin.auth import require_admin
-from phoenix.admin.errors import AdminPrivilegeRequired
 from phoenix.admin.router import admin_router
-from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+
+# Phase 13.x.8 step 5 fixup: reuse the house-standard parameterized admin
+# auth ladder instead of carrying module-local copies. The canonical helper
+# runs identity → verify_request → require_admin → optional capability check;
+# its ``action_key`` + ``require_capability`` params let one function serve
+# both the read-only enumeration endpoint and the capability-gated rotate
+# endpoint. Imported from verification_inspect (the parameterized variant
+# 4+ call sites already share).
+from phoenix.admin.verification_inspect import _admin_authn
 from phoenix.ledger.keygen import (
     KeyGenError,
     KeyGenPathConflict,
     generate_age_keypair,
 )
-from phoenix.safety.errors import AuthError, PermissionDenied
-from phoenix.safety.gate import verify_request
-from phoenix.safety.kill_switch import KillSwitchEngaged
-from phoenix.safety.permissions import get_registry as get_permissions_registry
-from phoenix.safety.rate_limiter import RateLimitExceeded
 
 
 _EVENT_PREFIX = "admin.encryption.rotate"
@@ -77,106 +79,16 @@ class RotateKeyPayload(BaseModel):
             "path. Default False: a conflict returns 409."
         ),
     )
-
-
-def _admin_authn(
-    request: Request,
-    authorization: str | None,
-) -> Any:
-    """Standard admin auth chain (mirrors :mod:`phoenix.admin.kill_switch`).
-
-    Returns the verified :class:`Actor` on success. Raises the
-    appropriate :class:`HTTPException` on failure; the per-error audit
-    emit happens here so the routes don't need to repeat it.
-    """
-    request_id: str = request.state.request_id
-
-    try:
-        actor, _ = extract_or_bootstrap(authorization)
-    except IdentityError as exc:
-        emit_admin_audit(
-            actor=None,
-            event_type=f"{_EVENT_PREFIX}.error.identity",
-            parameters={"error": str(exc)},
-            request_id=request_id,
-        )
-        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
-
-    try:
-        verify_request(
-            actor,
-            action_key="admin.mutate",
-            request_id=request_id,
-            skip_kill_switch_check=True,
-        )
-    except KillSwitchEngaged as exc:
-        emit_admin_audit(
-            actor=actor,
-            event_type=f"{_EVENT_PREFIX}.error.kill_switch",
-            parameters={"error": str(exc)},
-            request_id=request_id,
-        )
-        raise HTTPException(status_code=503, detail=f"kill switch engaged: {exc}") from exc
-    except AuthError as exc:
-        emit_admin_audit(
-            actor=actor,
-            event_type=f"{_EVENT_PREFIX}.error.auth",
-            parameters={"error": str(exc)},
-            request_id=request_id,
-        )
-        raise HTTPException(status_code=401, detail=f"auth error: {exc}") from exc
-    except PermissionDenied as exc:
-        emit_admin_audit(
-            actor=actor,
-            event_type=f"{_EVENT_PREFIX}.error.permission",
-            parameters={"error": str(exc)},
-            request_id=request_id,
-        )
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except RateLimitExceeded as exc:
-        emit_admin_audit(
-            actor=actor,
-            event_type=f"{_EVENT_PREFIX}.error.rate_limit",
-            parameters={"error": str(exc)},
-            request_id=request_id,
-        )
-        raise HTTPException(
-            status_code=429,
-            detail=str(exc),
-            headers={"Retry-After": str(int(exc.retry_after_seconds + 1))},
-        ) from exc
-
-    try:
-        require_admin(actor)
-    except AdminPrivilegeRequired as exc:
-        emit_admin_audit(
-            actor=actor,
-            event_type=f"{_EVENT_PREFIX}.error.privilege",
-            parameters={"error": str(exc)},
-            request_id=request_id,
-        )
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-    # Phase 13.x.7 additional gate: the dedicated rotate-key permission.
-    # Bootstrap actors get this granted by default; revoke it via the
-    # grant-prompt-verbatim sibling endpoint family.
-    perms = get_permissions_registry().get(actor.name)
-    if not perms.can_rotate_encryption_key:
-        emit_admin_audit(
-            actor=actor,
-            event_type=f"{_EVENT_PREFIX}.error.permission",
-            parameters={"error": "actor lacks can_rotate_encryption_key"},
-            request_id=request_id,
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"actor {actor.name!r} lacks 'can_rotate_encryption_key' "
-                f"permission required for this endpoint."
-            ),
-        )
-
-    return actor
+    actor_name: str | None = Field(
+        default=None,
+        description=(
+            "Phase 13.x.8: when set, the keypair is written under "
+            "'actors/<actor_name>/' (per-actor isolation) instead of the "
+            "shared keys dir, and the per-actor encryptor cache is evicted "
+            "on success. Must match phoenix.ledger.encryption_actors's "
+            "actor-name regex; an invalid/escaping name returns 400."
+        ),
+    )
 
 
 def _default_name() -> str:
@@ -222,13 +134,49 @@ def rotate_encryption_key(
     new recipient; the response body says so explicitly.
     """
     request_id: str = request.state.request_id
-    actor = _admin_authn(request, authorization)
+    # Auth ladder: identity → verify_request (admin.mutate cost) → require_admin
+    # → can_rotate_encryption_key capability gate. The capability check is now
+    # folded into verify_request via ``require_capability`` (Phase 13.x.7's
+    # dedicated rotate-key permission); ``event_prefix`` preserves the existing
+    # ``admin.encryption.rotate.*`` audit-event names.
+    actor = _admin_authn(
+        request,
+        authorization,
+        event_prefix=_EVENT_PREFIX,
+        action_key="admin.mutate",
+        require_capability="can_rotate_encryption_key",
+    )
 
-    name = payload.name or _default_name()
+    # Phase 13.x.8: when ``actor_name`` is set, route the keypair under
+    # ``actors/<actor_name>/`` and pin the filename slug to ``primary`` so
+    # the identity lands at ``actors/<actor_name>/identity.txt`` (the layout
+    # ``encryptor_from_actor_default_layout`` + ``list_actors_with_keys``
+    # expect). ``rotate_keys_dir=None`` preserves the shared-layout default.
+    actor_name = payload.actor_name
+    rotate_keys_dir = None  # shared layout (existing behavior)
+    if actor_name:
+        from phoenix.ledger.encryption_actors import (
+            PerActorKeyError,
+            _actor_keys_dir,
+        )
+
+        try:
+            rotate_keys_dir = _actor_keys_dir(actor_name)
+        except PerActorKeyError as exc:
+            emit_admin_audit(
+                actor=actor,
+                event_type=f"{_EVENT_PREFIX}.error.actor_name",
+                parameters={"actor_name": actor_name, "error": str(exc)},
+                request_id=request_id,
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        name = "primary"
+    else:
+        name = payload.name or _default_name()
 
     try:
         result = generate_age_keypair(
-            keys_dir=None,
+            keys_dir=rotate_keys_dir,
             name=name,
             force=payload.force,
         )
@@ -277,6 +225,7 @@ def rotate_encryption_key(
         event_type=f"{_EVENT_PREFIX}.success",
         parameters={
             "name": name,
+            "actor_name": actor_name,
             "recipient_fingerprint": result.recipient_fingerprint,
             "recipient_path": str(result.recipient_path),
             "identity_path": str(result.identity_path),
@@ -284,6 +233,28 @@ def rotate_encryption_key(
         },
         request_id=request_id,
     )
+
+    # Phase 13.x.8: on a per-actor rotation, evict the cached encryptor so a
+    # single-worker daemon picks up the new key without a restart, and tighten
+    # the actor key directory to 0o700 on POSIX (keygen chmods the identity
+    # *file* 0o600 but leaves the *directory* at the default umask — mirrors
+    # the CLI --actor path).
+    if actor_name:
+        from phoenix.ledger.encryption_actors import (
+            reset_prompt_encryptor_for_actor,
+        )
+
+        reset_prompt_encryptor_for_actor(actor_name)
+        if sys.platform != "win32":
+            import os
+
+            # ``rotate_keys_dir`` already holds ``_actor_keys_dir(actor_name)``
+            # (resolved above when actor_name was set) — reuse it instead of
+            # re-resolving. The assert documents the invariant and narrows
+            # ``Path | None`` -> ``Path`` for mypy (we're inside ``if actor_name:``,
+            # so the line-164 assignment ran).
+            assert rotate_keys_dir is not None
+            os.chmod(rotate_keys_dir, 0o700)
 
     return {
         "identity_path": str(result.identity_path),
@@ -294,4 +265,62 @@ def rotate_encryption_key(
     }
 
 
-__all__ = ["RotateKeyPayload", "rotate_encryption_key"]
+# ---------------------------------------------------------------------------
+# Phase 13.x.8: enumeration endpoint.
+
+_ACTORS_EVENT_PREFIX = "admin.encryption.actors"
+
+
+@admin_router.get("/encryption/actors")
+def list_encryption_actors(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """List ``actor_name``s that have per-actor encryption keys configured.
+
+    Admin-only (``is_admin`` via :func:`require_admin`). Unlike the
+    rotate endpoint, this read does NOT require
+    ``can_rotate_encryption_key`` — listing is non-mutating. Phase
+    13.x.8.
+
+    Returns ``{"actors": [<name>, ...], "count": <int>}`` (sorted; only
+    actors with a valid ``actors/<name>/identity.txt`` on disk).
+
+    Status codes:
+
+    - 200: actor is admin; body returns the actor-name list.
+    - 401: missing / bad actor signature.
+    - 403: actor lacks ``is_admin``.
+    - 429: rate-limited.
+    - 503: kill switch engaged.
+    """
+    request_id: str = request.state.request_id
+    # Read-only enumeration: ``admin.read`` cost (1, not the mutate cost 5)
+    # and NO ``require_capability`` — plain ``is_admin`` suffices for a
+    # non-mutating list. The dedicated ``can_rotate_encryption_key`` gate
+    # only guards the mutating rotate endpoint.
+    actor = _admin_authn(
+        request,
+        authorization,
+        event_prefix=_ACTORS_EVENT_PREFIX,
+        action_key="admin.read",
+        require_capability=None,
+    )
+
+    from phoenix.ledger.encryption_actors import list_actors_with_keys
+
+    actors = list_actors_with_keys()
+    emit_admin_audit(
+        actor=actor,
+        event_type=f"{_ACTORS_EVENT_PREFIX}.success",
+        parameters={"count": len(actors)},
+        request_id=request_id,
+    )
+    return {"actors": actors, "count": len(actors)}
+
+
+__all__ = [
+    "RotateKeyPayload",
+    "list_encryption_actors",
+    "rotate_encryption_key",
+]
