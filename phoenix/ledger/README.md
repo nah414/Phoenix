@@ -111,6 +111,38 @@ lossless key rotation:
    slot — until then, ops can leave both recipients valid (multi-recipient
    rotation is lossless and forward-compatible).
 
+### Per-actor key isolation (Phase 13.x.8)
+
+For multi-tenant / compliance deployments, each actor can have their
+own age identity + recipients under `actors/<actor_name>/` (keyed by
+`actor.name`):
+
+```bash
+phoenix admin generate-encryption-key --actor <actor_name>
+# or, in-process:
+POST /v1/admin/encryption/rotate-key {"actor_name": "<actor_name>"}
+```
+
+`GET /v1/admin/encryption/actors` lists actors with per-actor keys
+configured (admin-only).
+
+**Naming note:** when `--actor` / `actor_name` is set, the keypair
+slug is pinned to `primary` (the file is always `identity.txt`); any
+`--name` / `name` value is ignored for per-actor provisioning. The
+`--force` flag still applies.
+
+**Fail-closed:** once `actors/<actor_name>/` exists, that actor is
+"configured for isolation" — if its keys are broken/unreadable, the
+encryptor resolution RAISES (`PerActorKeyError`) rather than silently
+downgrading to the shared key. An actor with NO per-actor directory
+falls back to the shared key (back-compat preserved).
+
+**Scope note (13.x.8 = plumbing):** the per-actor registry + keygen
+routing + decrypt-routing are wired and tested, but the
+ENCRYPTED_OPT_IN *write path* remains deferred (per design decision
+13-D2). Per-actor isolation is not end-to-end-live until that write
+path activates; this phase makes the plumbing ready for that day.
+
 ### Audit events
 
 Every encrypt + decrypt op emits a structured audit event:
@@ -135,18 +167,24 @@ with `sha256sum`.
 - **Failed decrypts are not retried.** A failed decrypt is
   structural (tampering or wrong key), not transient.
 
-### What's shipped through 13.x.7
+### What's shipped through 13.x.8
 
 - **Phase 13.x.6** — `AgePromptEncryptor` (this module's reference impl).
 - **Phase 13.x.7** — `phoenix admin generate-encryption-key` CLI +
   `POST /v1/admin/encryption/rotate-key` admin endpoint (both backed
   by `phoenix/ledger/keygen.py::generate_age_keypair`).
+- **Phase 13.x.8** — per-actor key isolation plumbing (registry +
+  CLI/admin `--actor` + decrypt-routing). See the "Per-actor key
+  isolation" subsection above; the per-actor *write path* remains
+  deferred.
 
 ### What's NOT shipped yet
 
 - **Batch decrypt-and-re-encrypt** of existing `ENCRYPTED_OPT_IN`
   ledger rows on rotation (deferred from 13.x.7's original scope).
-- **Phase 13.x.8** — per-actor key isolation.
+- **Per-actor WRITE path** — the per-actor isolation plumbing landed in
+  13.x.8, but the actual per-actor encrypt write depends on the deferred
+  `ENCRYPTED_OPT_IN` write activation (13-D2).
 - **`POST /v1/admin/encryption/reload`** — zero-downtime encryptor
   reload (daemon-restart pattern preserved for now).
 - **v1.2.x** — `AwsKmsPromptEncryptor` / `GcpKmsPromptEncryptor` /

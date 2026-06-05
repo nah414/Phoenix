@@ -165,6 +165,61 @@ returns 403 if the actor lacks the flag.
 - `tests/unit/test_permissions_phase13x7.py` (3) — default-deny /
   explicit-grant / existing-flags-unchanged
 
+### Phase 13.x.8: per-actor key isolation (plumbing) (2026-06-05)
+
+Per-actor encryption plumbing — registry, keygen routing, CLI/admin
+surface, and decrypt-routing — keyed by `actor.name`, fail-closed.
+
+**Scope (descoped after adversarial design review, workflow
+`wf_432eec7f`):** this ships the per-actor *plumbing* only. The
+ENCRYPTED_OPT_IN *write path* does not exist in Phoenix today (a
+deliberate 13-D2 deferral: "column shipped, key-mgmt ceremony
+deferred to first commercial customer"). 13.x.8 makes per-actor
+isolation wired, tested, and ready — but NOT end-to-end-live until
+that write path activates. The write path + per-actor audit
+attribution remain deferred.
+
+**New module:** `phoenix/ledger/encryption_actors.py` — per-actor
+encryptor registry mirroring the shared `encryption.py` singleton,
+keyed by `actor.name`, with:
+- **Fail-CLOSED by directory presence:** `actors/<name>/` exists →
+  a load failure (`AgeKeyLoadError`/`AgeKeyPermissionError`) raises
+  `PerActorKeyError`, never silently downgrades to the shared key.
+  Directory absent → shared fallback (back-compat).
+- `threading.Lock` on the request-time cache (the rotate-key
+  endpoint evicts entries). In-process eviction is correct only
+  while single-worker; revisit at `--workers`.
+- `_ACTOR_NAME_RE` validation + path-under-root guard (traversal).
+
+**Storage:** the per-actor identifier lives inside `payload_json`
+(`prompt_encryption_actor_id`), NOT a SQL column — Phoenix backends
+persist only 7 base columns and replay reads from payload. **No
+migration, no new permission flag, no SQL column.**
+
+**Decrypt-routing:** `_replay_encrypted` reads
+`payload.get("prompt_encryption_actor_id")` — absent → shared
+encryptor (all current rows); present → per-actor.
+
+**CLI/admin:** `phoenix admin generate-encryption-key --actor <name>`
+and `POST /v1/admin/encryption/rotate-key {actor_name}` provision
+keys under `actors/<name>/` (slug pinned to `primary`); the rotate
+endpoint evicts the per-actor cache + chmods the dir 0o700 (POSIX) on
+success. New `GET /v1/admin/encryption/actors` enumeration (admin-only,
+read-cost). The rotate-key permission gate (`can_rotate_encryption_key`)
+is checked against the authenticated admin.
+
+**Refactor:** extracted `encryption_age.py::encryptor_from_keys_dir`
+(behavior-preserving) so shared + per-actor layouts share one builder;
+deduplicated the admin auth ladder in `encryption_admin.py` to the
+canonical `_admin_authn` (enumeration now uses a read-cost action key).
+
+**Tests added:** ~28 across 4 test files (registry/fail-closed/
+traversal, decrypt-routing, CLI --actor, admin endpoints).
+
+**Supersedes the v1 design** (`0d2d9ab`) which mistakenly assumed an
+existing write path; see design v2
+(`docs/superpowers/specs/2026-06-05-phase-13x8-per-actor-key-isolation-design-v2.md`).
+
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
 quantum + classical-cognition substrate. The same audit-grade guarantees
 (typed errors, hashchained ledger, three-axis wobble verification,
