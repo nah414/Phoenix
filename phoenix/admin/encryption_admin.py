@@ -250,7 +250,10 @@ def rotate_encryption_key(
 
             # ``rotate_keys_dir`` already holds ``_actor_keys_dir(actor_name)``
             # (resolved above when actor_name was set) — reuse it instead of
-            # re-resolving.
+            # re-resolving. The assert documents the invariant and narrows
+            # ``Path | None`` -> ``Path`` for mypy (we're inside ``if actor_name:``,
+            # so the line-164 assignment ran).
+            assert rotate_keys_dir is not None
             os.chmod(rotate_keys_dir, 0o700)
 
     return {
