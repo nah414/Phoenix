@@ -63,6 +63,6 @@ The Apache 2.0 license is the explicit choice for Phoenix per architecture Decis
 
 ## Author
 
-**Adam** ([@nah414](https://github.com/nah414)) — solo researcher and builder. dr-frank-and-eddy is Adam's lab bench where physics evolves; Phoenix is the production middleware that vendors a frozen v6.6 snapshot of that work plus SynQc TDS Core into a single Trinity Core substrate.
+**Adam** ([@nah414](https://github.com/nah414)) — co-researcher and builder. dr-frank-and-eddy is our lab bench where physics evolves; Phoenix is the production middleware that vendors a frozen v6.6 snapshot of that work plus SynQc TDS Core into a single Trinity Core substrate.
 
 Phoenix is built with [Claude](https://claude.com/claude-code) as design partner.
