@@ -64,6 +64,7 @@ from cognition_wobble.disagreement_types import CognitionDisagreementType
 
 from phoenix.ledger.encryption import (
     EncryptedDispositionNotConfigured,
+    PromptEncryptor,
     get_prompt_encryptor,
 )
 from phoenix.ledger.prompt_disposition import (
@@ -969,6 +970,22 @@ def _replay_verbatim(
     )
 
 
+def _resolve_decrypt_encryptor(payload: dict[str, Any]) -> PromptEncryptor:
+    """Phase 13.x.8: pick the encryptor for an ENCRYPTED_OPT_IN replay.
+
+    Reads ``prompt_encryption_actor_id`` from the payload (stored in
+    payload_json, NOT a SQL column). Absent/null → shared encryptor
+    (back-compat: all pre-13.x.8 rows). Present → that actor's
+    per-actor encryptor.
+    """
+    actor_name = payload.get("prompt_encryption_actor_id")
+    if not actor_name:
+        return get_prompt_encryptor()
+    from phoenix.ledger.encryption_actors import get_prompt_encryptor_for_actor
+
+    return get_prompt_encryptor_for_actor(str(actor_name))
+
+
 def _replay_encrypted(
     *,
     entry_id: str,
@@ -995,7 +1012,7 @@ def _replay_encrypted(
     # EncryptedDispositionNotConfigured for the Phase 13 default.
     # Normalize the stored blob to raw ciphertext bytes — string values
     # are base64 per Phase 13 convention (Codex review 2026-05-28).
-    encryptor = get_prompt_encryptor()
+    encryptor = _resolve_decrypt_encryptor(payload)
     encrypted_bytes = _decode_encrypted_blob(entry_id=entry_id, raw_blob=encrypted_blob)
 
     canonical = encryptor.decrypt(encrypted_bytes)
