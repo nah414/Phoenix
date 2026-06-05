@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from phoenix.state.backend_protocol import StateBackend
+    from phoenix.verification.cognition_drift_baseline import CognitionDriftBaseline
 
 logger = logging.getLogger(__name__)
 
@@ -397,16 +398,28 @@ class MLStatisticalChecker:
         feature_provider: Callable[[], np.ndarray | None] | None = None,
         *,
         drift_snr_threshold: float = 1.0,
+        cognition_baseline: CognitionDriftBaseline | None = None,
+        phoenix_version: str | None = None,
+        distance_threshold: float | None = None,
     ) -> None:
         self._feature_provider = feature_provider
         self._threshold = drift_snr_threshold
+        self._cognition_baseline = cognition_baseline
+        self._phoenix_version = phoenix_version
+        if distance_threshold is None:
+            env_val = os.environ.get("PHOENIX_DRIFT_COGNITION_DISTANCE_THRESHOLD")
+            try:
+                distance_threshold = float(env_val) if env_val is not None else 0.5
+            except (TypeError, ValueError):
+                distance_threshold = 0.5
+        self._distance_threshold = float(distance_threshold)
 
     def run(self) -> CheckerResult:
         if self._feature_provider is None:
             return CheckerResult(
                 name=self.name,
                 drifting=False,
-                summary="no feature provider configured (Phase 7+ wires this)",
+                summary="ml_checker_no_provider (Phase 7+ wires this)",
                 metadata={"skipped": True, "reason": "no_provider"},
             )
         try:
@@ -422,8 +435,28 @@ class MLStatisticalChecker:
             return CheckerResult(
                 name=self.name,
                 drifting=False,
-                summary="no features available yet",
+                summary="ml_checker_insufficient_data (no features available yet)",
                 metadata={"skipped": True, "reason": "empty_features"},
+            )
+
+        # Phase 13.5: when a cognition baseline is configured, compute
+        # weighted-L2 distance against the per-version baseline and fire
+        # if it exceeds threshold. This path supersedes the legacy
+        # predict_scale_separated path for cognition drift; the legacy
+        # path remains for callers that don't wire a baseline.
+        if self._cognition_baseline is not None and self._phoenix_version is not None:
+            return self._run_with_baseline(features)
+        if self._cognition_baseline is None and self._phoenix_version is None:
+            # Fall through to legacy path.
+            pass
+        else:
+            # Partial configuration (one of the two set without the other)
+            # is treated as missing baseline so admins notice and fix.
+            return CheckerResult(
+                name=self.name,
+                drifting=False,
+                summary="ml_checker_no_baseline (cognition_baseline or phoenix_version unset)",
+                metadata={"skipped": True, "reason": "no_baseline"},
             )
 
         try:
@@ -459,6 +492,61 @@ class MLStatisticalChecker:
                 f"stationary={result.get('stationary')}"
             ),
             metadata={"predict_scale_separated": result},
+        )
+
+    def _run_with_baseline(self, features_vec: "np.ndarray") -> CheckerResult:
+        """Phase 13.5 baseline-distance path.
+
+        Reads the on-disk baseline for ``self._phoenix_version``,
+        reconstructs the current feature vector into a
+        :class:`CognitionDriftFeatures`, computes weighted-L2 distance,
+        and fires if the distance exceeds the configured threshold.
+        """
+        assert self._cognition_baseline is not None  # for type-checker
+        assert self._phoenix_version is not None  # for type-checker
+
+        try:
+            baseline_features = self._cognition_baseline.read_baseline_for_version(
+                self._phoenix_version
+            )
+        except Exception as exc:
+            logger.warning("ML checker baseline read failed", exc_info=True)
+            return CheckerResult(
+                name=self.name,
+                drifting=False,
+                summary=f"ml_checker_baseline_error: {type(exc).__name__}",
+                metadata={"error": True, "reason": "baseline_error"},
+            )
+
+        if baseline_features is None:
+            return CheckerResult(
+                name=self.name,
+                drifting=False,
+                summary="ml_checker_no_baseline (no baseline captured for this version)",
+                metadata={"skipped": True, "reason": "no_baseline"},
+            )
+
+        # Reconstruct current features dataclass from vector for distance calc.
+        from phoenix.verification.cognition_drift_features import (
+            CognitionDriftFeatures,
+            _VECTOR_FIELDS,
+        )
+
+        feature_kwargs = dict(zip(_VECTOR_FIELDS, features_vec.tolist()))
+        feature_kwargs["sample_size"] = 0
+        current = CognitionDriftFeatures(**feature_kwargs)
+
+        distance = self._cognition_baseline.compute_distance(current, baseline_features)
+        drifting = distance > self._distance_threshold
+        summary = f"cognition_distance={distance:.3f} threshold={self._distance_threshold:.3f}"
+        return CheckerResult(
+            name=self.name,
+            drifting=drifting,
+            summary=summary,
+            metadata={
+                "cognition_distance": distance,
+                "distance_threshold": self._distance_threshold,
+            },
         )
 
 
