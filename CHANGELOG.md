@@ -40,6 +40,57 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13 Step 5c: cognition-classifier training + eval harness (2026-06-09)
+
+**Scaffolding only — production behavior unchanged.** Builds the
+non-corpus-gated half of Step 5c so that, once a real labeled cognition
+corpus exists, training a classifier and swapping it in for the shipped
+`AlwaysUnclassifiedClassifier` default is mechanical. No model artifact
+is committed, the classifier registry default is untouched, and the
+**macro-F1 ≥ 0.70** acceptance gate stays unmet until a *real* model
+clears it.
+
+**New modules** (under `vendor/cognition_wobble/`, the Phoenix-authored
+classifier substrate):
+- `corpus.py` — documented **JSONL** corpus schema + `load_corpus()` →
+  `list[CalibrationExample]`, with fail-closed validation (unknown
+  field, missing field, malformed tool-call, or unrecognized
+  `gold_class` stops the load with the offending line number).
+- `training.py` — `train_gbm()` trains a lightgbm multiclass GBM over
+  the six **graded** classes (gold-`UNCLASSIFIED` rows dropped;
+  `UNCLASSIFIED` is the inference-time threshold escape valve, never a
+  trained label) and writes the **native-text** artifact + a
+  `*.meta.json` sidecar. The artifact loads verbatim through the shipped
+  `GBMClassifier(model_path=...)` — matching `lgb.Booster(model_file=…)`
+  is what makes the swap plug-and-play (hence `.txt`, not `.joblib`).
+  `build_training_matrix()` is dependency-free and testable without the
+  `[ml-classifier]` extra.
+- `acceptance.py` — `ACCEPTANCE_MACRO_F1 = 0.70`, `check_gate()`, and a
+  fixed-width `format_report()`, wrapping the existing `eval.evaluate()`.
+- `calibration/synthetic.py` — deterministic **synthetic** corpus
+  generator (loudly NOT real data; classes separable by construction so
+  the pipeline runs end-to-end without the real corpus).
+
+**New CLIs** (`scripts/`): `train_cognition_classifier.py`,
+`evaluate_cognition_classifier.py` (exit 0 = gate PASS, 1 = FAIL),
+`gen_synthetic_cognition_corpus.py`.
+
+**Fixture:** `tests/cognition/fixtures/synthetic_corpus.jsonl` (252 rows;
+6 graded × 40 + 12 gold-`UNCLASSIFIED`).
+
+**Tests added:** 31 across `test_corpus_loader.py` (loader/validation,
+always run), `test_classifier_acceptance.py` (gate/report + dependency-
+free training-matrix, always run), and `test_train_cognition_classifier.py`
+(training + full `load → train → eval` clearing the gate on a held-out
+split; `importorskip lightgbm`). Verified end-to-end against real
+lightgbm 4.6 locally; held-out macro-F1 = 1.0 on the synthetic set.
+
+**Still blocked on Adam's real corpus:** the labeled data itself
+(≥ 200 examples, ~28+ per graded class), earning the 0.70 gate on real
+held-out data, committing `models/gbm_classifier_v1.txt`, and the
+registry swap. Procedure documented in
+`docs/superpowers/plans/2026-06-09-phase-13-step5c-classifier-training-harness.md`.
+
 ### Phase 13.x.9: auto-capture baseline wiring (2026-06-09)
 
 **Wired:** `maybe_auto_capture_baseline()` is now called at the tail of
