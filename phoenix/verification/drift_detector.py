@@ -906,8 +906,14 @@ class DriftDetector:
             return
 
         if captured:
+            # Compare-and-swap reset: only zero the counter if no other
+            # cycle advanced or reset it since we snapshotted `consecutive`.
+            # In the normal single-threaded scheduler path this is identical
+            # to an unconditional reset; under a concurrent admin force-cycle
+            # it avoids clobbering the other cycle's increment.
             with self._lock:
-                self._consecutive_healthy = 0
+                if self._consecutive_healthy == consecutive:
+                    self._consecutive_healthy = 0
 
     def start_scheduler(self) -> None:
         """Start the background cadence thread. Idempotent.

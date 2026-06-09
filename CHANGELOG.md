@@ -59,8 +59,19 @@ Deps (provider + per-version baseline + version) flow from
 `get_detector()`; in degraded environments (no state backend) auto-capture
 stays inert.
 
-**Tests added:** 15 in `tests/integration/test_drift_detector.py`
-(7 wiring + 7 env-resolution + 1 get_detector wiring). The shipped-helper
+**Concurrency hardening** (from an adversarial review of this change):
+`CognitionDriftBaseline.write_current` now writes atomically (unique temp
+file + `os.replace`), so a reader (e.g. the ML checker reading the baseline
+mid-cycle) never observes a truncated file — this also protects the existing
+admin recapture path. The post-capture counter reset is now compare-and-swap
+(only zeroes the counter if unchanged since the cycle snapshotted it),
+avoiding a clobbered increment if an admin force-cycle overlaps the scheduler.
+Both are no-ops in the normal single-threaded scheduler path.
+
+**Tests added:** 20 in `tests/integration/test_drift_detector.py`
+(11 wiring + 7 env-resolution + 1 get_detector wiring, plus an explicit
+get_detector baseline-path isolation) and 1 atomic-write test in
+`tests/cognition/test_cognition_drift_baseline.py`. The shipped-helper
 tests in `tests/cognition/test_drift_detector_auto_capture.py` are
 unchanged.
 
