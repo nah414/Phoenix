@@ -44,6 +44,8 @@ from phoenix.verification.drift_detector import (
     DriftSnapshot,
     MLStatisticalChecker,
     Tier1AnalyticalChecker,
+    _resolve_auto_capture_cycles,
+    _resolve_auto_capture_enabled,
     _resolve_cadence_seconds,
     _snapshot_from_record,
     _snapshot_to_record,
@@ -473,6 +475,45 @@ def test_invalid_cadence_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_non_positive_cadence_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHOENIX_DRIFT_CADENCE_HOURS", "-1")
     assert _resolve_cadence_seconds() == 6 * 60 * 60
+
+
+# ---------------------------------------------------------------------------
+# Auto-capture env-var resolution
+
+
+def test_auto_capture_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PHOENIX_DRIFT_AUTO_CAPTURE", raising=False)
+    assert _resolve_auto_capture_enabled() is False
+
+
+def test_auto_capture_enabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_AUTO_CAPTURE", "1")
+    assert _resolve_auto_capture_enabled() is True
+
+
+def test_auto_capture_non_one_value_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_AUTO_CAPTURE", "true")
+    assert _resolve_auto_capture_enabled() is False
+
+
+def test_auto_capture_cycles_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES", raising=False)
+    assert _resolve_auto_capture_cycles() == 20
+
+
+def test_auto_capture_cycles_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES", "10")
+    assert _resolve_auto_capture_cycles() == 10
+
+
+def test_auto_capture_cycles_invalid_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES", "nope")
+    assert _resolve_auto_capture_cycles() == 20
+
+
+def test_auto_capture_cycles_non_positive_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES", "0")
+    assert _resolve_auto_capture_cycles() == 20
 
 
 # ---------------------------------------------------------------------------
