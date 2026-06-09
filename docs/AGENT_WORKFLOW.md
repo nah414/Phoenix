@@ -99,6 +99,16 @@ command(s) you propose — so it can be approved with one short reply.
 - **Pushing and PRs always require approval** (rule 3).
 - Do not skip hooks (`--no-verify`) or bypass signing unless explicitly asked.
 
+**PR cadence — consolidate, don't PR every change.** Batch related work onto a
+branch and open at most **one PR per work-session/batch**, not one per task or
+per individual change. It is expected and fine for a branch to accumulate many
+commits and to sit for days before any PR is opened — that is the normal state,
+not a backlog to clear. **Never open a PR proactively**; open one only when the
+maintainer explicitly asks. The default posture between tasks is *keep the work
+on the branch*, not *ship it*. (Opening, updating, or merging a PR is a
+halt-list action regardless — see §3 — so this rule governs cadence even once
+approval is on the table: prefer one consolidated PR over several small ones.)
+
 ## 5. Plan substantial work — but don't block on it
 
 For anything beyond a small, obvious change:
