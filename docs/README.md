@@ -25,6 +25,9 @@ remains at the repo root; everything else lives here.
 
 ## Internal development records
 
+- **[`AGENT_WORKFLOW.md`](AGENT_WORKFLOW.md)** — operating rules for AI agents
+  working in this repo (the long-form companion to the root
+  [`CLAUDE.md`](../CLAUDE.md), which auto-loads each session).
 - **[`build-guides/`](build-guides/README.md)** — the per-phase build guides
   used to execute the v1 build against the architecture spec. These are
   internal development records, not user-facing documentation.
