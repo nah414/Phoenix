@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -135,15 +137,40 @@ class CognitionDriftBaseline:
         """Record this snapshot as the baseline for ``phoenix_version``.
 
         Overwrites any existing baseline at :attr:`baseline_path`.
+
+        The write is atomic: the record is written to a uniquely-named
+        temp file in the same directory and then :func:`os.replace`d onto
+        :attr:`baseline_path`. This guarantees a concurrent reader (e.g.
+        the ML checker reading the baseline mid-cycle) never observes a
+        truncated or partially-written file, and two concurrent writers
+        cannot corrupt each other (each has its own temp file; the final
+        replace is last-writer-wins with a complete file either way).
+        ``os.replace`` is atomic on the same filesystem on both POSIX and
+        Windows.
         """
-        self._baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        parent = self._baseline_path.parent
+        parent.mkdir(parents=True, exist_ok=True)
         record = {
             "schema_version": FEATURE_SCHEMA_VERSION,
             "phoenix_version": phoenix_version,
             "captured_unix": time.time(),
             "features": asdict(features),
         }
-        self._baseline_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        payload = json.dumps(record, indent=2)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(parent), prefix=self._baseline_path.name + ".", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_name, self._baseline_path)
+        except BaseException:
+            # Best-effort cleanup if the replace never happened.
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def read_baseline_for_version(self, phoenix_version: str) -> CognitionDriftFeatures | None:
         """Read the baseline IFF the on-disk version matches the requested version.

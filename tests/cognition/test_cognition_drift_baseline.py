@@ -54,6 +54,21 @@ class TestBaselineWriteRead:
         loaded = baseline.read_baseline_for_version("1.1.0.dev0")
         assert loaded is None
 
+    def test_write_is_atomic_leaves_no_temp_file(self, tmp_path: Path) -> None:
+        """write_current writes via a temp file + os.replace; after a write
+        (and an overwrite) only the final baseline file remains, so a
+        concurrent reader can never observe a truncated/partial file."""
+        baseline = CognitionDriftBaseline(baseline_path=tmp_path / "baseline.json")
+        baseline.write_current(_make_features(sample_size=10), phoenix_version="1.1.0.dev0")
+        # Overwrite to exercise the replace-over-existing path.
+        baseline.write_current(_make_features(sample_size=20), phoenix_version="1.1.0.dev0")
+
+        names = sorted(p.name for p in tmp_path.iterdir())
+        assert names == ["baseline.json"]  # no *.tmp leftovers
+        loaded = baseline.read_baseline_for_version("1.1.0.dev0")
+        assert loaded is not None
+        assert loaded.sample_size == 20
+
     def test_version_mismatch_returns_none(self, tmp_path: Path) -> None:
         """Baseline recorded for v1.1.0.dev0 → reading for v1.2.0 returns None."""
         baseline = CognitionDriftBaseline(baseline_path=tmp_path / "baseline.json")

@@ -605,6 +605,90 @@ class TestDriftDetectorAutoCaptureWiring:
         detector.run_cycle()
         assert baseline.baseline_path.is_file()
 
+    def test_counter_increments_while_disabled(self, tmp_path: Path) -> None:
+        """The consecutive-healthy counter is tracked unconditionally, even
+        when auto-capture is disabled (documented contract)."""
+        baseline = self._baseline(tmp_path)
+        detector = DriftDetector(
+            checkers=[_ConstantChecker("a", False)],
+            cognition_provider=self._provider(),
+            cognition_baseline=baseline,
+            cognition_phoenix_version="1.1.0.dev0",
+            auto_capture_enabled=False,
+            auto_capture_cycles=3,
+        )
+        for _ in range(4):
+            detector.run_cycle()
+        assert detector._consecutive_healthy == 4
+        assert not baseline.baseline_path.is_file()
+
+    def test_capture_failure_preserves_trigger_then_recovers(self, tmp_path: Path) -> None:
+        """A transient capture failure must NOT consume the trigger: the
+        counter is not reset, so the next healthy cycle still captures."""
+        baseline = self._baseline(tmp_path)
+        good = self._provider()
+        calls = {"n": 0}
+
+        def flaky() -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient provider failure")
+            return good()
+
+        detector = DriftDetector(
+            checkers=[_ConstantChecker("a", False)],
+            cognition_provider=flaky,
+            cognition_baseline=baseline,
+            cognition_phoenix_version="1.1.0.dev0",
+            auto_capture_enabled=True,
+            auto_capture_cycles=1,
+        )
+        detector.run_cycle()  # threshold met, capture raises -> swallowed
+        assert not baseline.baseline_path.is_file()
+        assert detector._consecutive_healthy == 1  # trigger NOT consumed
+        detector.run_cycle()  # provider recovers -> capture happens
+        assert baseline.baseline_path.is_file()
+
+    def test_provider_returns_none_is_inert(self, tmp_path: Path) -> None:
+        """Provider present but yielding None at capture time: no raise, no
+        write, trigger not consumed (distinct from the provider-raises path)."""
+        baseline = self._baseline(tmp_path)
+        detector = DriftDetector(
+            checkers=[_ConstantChecker("a", False)],
+            cognition_provider=lambda: None,
+            cognition_baseline=baseline,
+            cognition_phoenix_version="1.1.0.dev0",
+            auto_capture_enabled=True,
+            auto_capture_cycles=1,
+        )
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "healthy"
+        assert not baseline.baseline_path.is_file()
+        assert detector._consecutive_healthy == 1  # not reset, retried next cycle
+
+    def test_high_confidence_warning_resets_counter(self, tmp_path: Path) -> None:
+        """A 2+-firing (high_confidence_warning) cycle resets the counter,
+        same as a single-firing warning."""
+        baseline = self._baseline(tmp_path)
+        c1 = _ConstantChecker("a", False)
+        c2 = _ConstantChecker("b", False)
+        detector = DriftDetector(
+            checkers=[c1, c2],
+            cognition_provider=self._provider(),
+            cognition_baseline=baseline,
+            cognition_phoenix_version="1.1.0.dev0",
+            auto_capture_enabled=True,
+            auto_capture_cycles=3,
+        )
+        detector.run_cycle()  # healthy 1
+        detector.run_cycle()  # healthy 2
+        c1._result = CheckerResult(name="a", drifting=True, summary="x")
+        c2._result = CheckerResult(name="b", drifting=True, summary="y")
+        snapshot = detector.run_cycle()
+        assert snapshot.state == "high_confidence_warning"
+        assert detector._consecutive_healthy == 0
+        assert not baseline.baseline_path.is_file()
+
 
 # ---------------------------------------------------------------------------
 # Cadence env-var resolution
@@ -690,10 +774,16 @@ def test_reset_detector_clears_singleton() -> None:
     assert first is not second
 
 
-def test_get_detector_wires_auto_capture_deps() -> None:
+def test_get_detector_wires_auto_capture_deps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """When a state backend is available, get_detector() must pass the
     cognition provider/baseline/version into the detector so auto-capture
     can run (the deps must not stay None when checkers wired OK)."""
+    # Explicit isolation: point the baseline at tmp_path so this test can
+    # never touch the developer's real ~/.phoenix baseline, even if a future
+    # change makes get_detector() (or a startup hook) write one.
+    monkeypatch.setenv("PHOENIX_COGNITION_DRIFT_BASELINE_PATH", str(tmp_path / "baseline.json"))
     reset_detector()
     detector = get_detector()
     # A backend is available in the test env, so the cognition deps wire.
