@@ -28,12 +28,17 @@ given session still take precedence over this file.**
 4. **Always work on a feature branch; never commit to `main`.** Never push or
    open a PR without explicit approval.
 
-5. **Plan substantial work, but don't block on it.** For substantial changes,
+5. **Never skip git hooks or bypass signing.** Do not use `--no-verify`, and
+   never disable, skip, or work around pre-commit / commit-msg hooks or commit
+   signing — unless the maintainer explicitly asks. If a hook fails, fix the
+   underlying issue rather than bypassing it.
+
+6. **Plan substantial work, but don't block on it.** For substantial changes,
    produce a brief plan and surface design choices in your **final report** for
    async review — proceed through them autonomously rather than blocking
    mid-flight.
 
-6. **Test before handing back.** Prefer running the relevant tests and
+7. **Test before handing back.** Prefer running the relevant tests and
    reporting results before you return control.
 
 See [`docs/AGENT_WORKFLOW.md`](docs/AGENT_WORKFLOW.md) for the detailed
