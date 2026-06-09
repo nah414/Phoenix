@@ -11,13 +11,13 @@ Phoenix v1.0 is released ([GitHub Release](https://github.com/nah414/Phoenix/rel
 ## Documents
 
 - **[`PHOENIX_ARCHITECTURE_v1.md`](PHOENIX_ARCHITECTURE_v1.md)** — the locked v1 architecture spec (revised to v1.1 on 2026-05-07). Covers the Trinity Core physics heart, the seven wrapping layers, mandatory three-axis wobble verification, hashchained Omega Ledger provenance, end-to-end cost-ceiling enforcement, and the Phoenix Cloud commercial path.
-- **[`BUILDGUIDE_phoenix_v1_phase0_skeleton.md`](BUILDGUIDE_phoenix_v1_phase0_skeleton.md)** — the Phase 0 build guide: the minimum repository skeleton (pinned dependencies, package layout, launcher chain, test and eval scaffolding).
+- **[`docs/`](docs/README.md)** — the documentation hub: distribution (install/run) and reproducibility guides, plus extension planning.
 
 ### Future extension planning (not part of locked v1)
 
-- **[`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`](PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md)** — **LOCKED v1 (2026-05-07).** Extension plan for a future Phoenix v1.x perception-harness extension (autonomous-system middleware for adverse-weather AV perception, industrial autonomy, defense), reusing 70-80% of v1's substrate.
+- **[`PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md`](docs/planning/PHOENIX_PERCEPTION_HARNESS_PLAN_v1.md)** — **LOCKED v1 (2026-05-07).** Extension plan for a future Phoenix v1.x perception-harness extension (autonomous-system middleware for adverse-weather AV perception, industrial autonomy, defense), reusing 70-80% of v1's substrate.
 
-  *Historical record:* [`PHOENIX_PERCEPTION_HARNESS_PLAN_v0.md`](PHOENIX_PERCEPTION_HARNESS_PLAN_v0.md) — the original v0, superseded by v1 above.
+  *Historical record:* [`PHOENIX_PERCEPTION_HARNESS_PLAN_v0.md`](docs/planning/archive/PHOENIX_PERCEPTION_HARNESS_PLAN_v0.md) — the original v0, superseded by v1 above.
 
 ## Status
 
