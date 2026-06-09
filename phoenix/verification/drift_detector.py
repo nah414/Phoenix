@@ -895,6 +895,37 @@ def _resolve_cadence_seconds() -> int:
     return int(hours * 3600)
 
 
+def _resolve_auto_capture_enabled() -> bool:
+    """Read ``$PHOENIX_DRIFT_AUTO_CAPTURE`` (default off).
+
+    Auto-capture refreshes the cognition baseline after N consecutive
+    healthy cycles. It is opt-in: ops sets ``PHOENIX_DRIFT_AUTO_CAPTURE=1``
+    to enable; otherwise :meth:`DriftDetector.run_cycle` never overwrites
+    the baseline. Any value other than ``"1"`` (and unset) means disabled.
+    """
+    return os.environ.get("PHOENIX_DRIFT_AUTO_CAPTURE") == "1"
+
+
+def _resolve_auto_capture_cycles() -> int:
+    """Read ``$PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES`` or fall back to 20.
+
+    The wired-path default (20 ~= 5 days at the 6h cadence) is
+    deliberately more conservative than the standalone
+    :func:`maybe_auto_capture_baseline` default of 5: re-baselining
+    should require a long run of clean cycles so slow/creeping drift is
+    not silently absorbed into the baseline. Non-integer and non-positive
+    values fall back to the default so a typo can't weaken the guard.
+    """
+    raw = os.environ.get("PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES")
+    if not raw:
+        return 20
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 20
+    return value if value > 0 else 20
+
+
 def _snapshot_to_record(snapshot: DriftSnapshot) -> dict[str, Any]:
     """Convert :class:`DriftSnapshot` to the dict shape stored via
     :meth:`StateBackend.put_drift_state_snapshot` per Phase 6b
