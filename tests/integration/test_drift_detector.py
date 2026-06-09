@@ -690,6 +690,20 @@ def test_reset_detector_clears_singleton() -> None:
     assert first is not second
 
 
+def test_get_detector_wires_auto_capture_deps() -> None:
+    """When a state backend is available, get_detector() must pass the
+    cognition provider/baseline/version into the detector so auto-capture
+    can run (the deps must not stay None when checkers wired OK)."""
+    reset_detector()
+    detector = get_detector()
+    # A backend is available in the test env, so the cognition deps wire.
+    # (If wiring failed, all three would be None together.)
+    assert detector._cognition_baseline is not None
+    assert detector._cognition_provider is not None
+    assert detector._cognition_phoenix_version is not None
+    reset_detector()
+
+
 # ---------------------------------------------------------------------------
 # drift_state.read_drift_state -- the wired contract
 

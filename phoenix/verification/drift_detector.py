@@ -1044,6 +1044,10 @@ def get_detector() -> DriftDetector:
     ``$PHOENIX_COGNITION_DRIFT_BASELINE_PATH`` overrides the default
     baseline file location. The Tier-1 analytical checker and the
     cross-version checker are added alongside per Decision 17.
+
+    Phase 13.x.9: the same provider/baseline/version are also passed to
+    the :class:`DriftDetector` itself so :meth:`DriftDetector.run_cycle`
+    can auto-capture the baseline when ``$PHOENIX_DRIFT_AUTO_CAPTURE=1``.
     """
     global _DETECTOR
     with _DETECTOR_LOCK:
@@ -1064,6 +1068,9 @@ def get_detector() -> DriftDetector:
             # checker list (no provider, no baseline) so the detector is
             # still constructible in degraded environments.
             checkers: list[DriftCheckerProtocol] | None = None
+            cognition_provider: Callable[[], np.ndarray | None] | None = None
+            cognition_baseline: CognitionDriftBaseline | None = None
+            cognition_version: str | None = None
             if backend is not None:
                 try:
                     from phoenix import __version__ as _phoenix_version
@@ -1085,6 +1092,7 @@ def get_detector() -> DriftDetector:
                             else None
                         )
                     )
+                    cognition_version = _phoenix_version
                     tier1 = Tier1AnalyticalChecker()
                     ml = MLStatisticalChecker(
                         feature_provider=cognition_provider,
@@ -1102,8 +1110,17 @@ def get_detector() -> DriftDetector:
                         "falling back to default checker list"
                     )
                     checkers = None
+                    cognition_provider = None
+                    cognition_baseline = None
+                    cognition_version = None
 
-            _DETECTOR = DriftDetector(state_backend=backend, checkers=checkers)
+            _DETECTOR = DriftDetector(
+                state_backend=backend,
+                checkers=checkers,
+                cognition_provider=cognition_provider,
+                cognition_baseline=cognition_baseline,
+                cognition_phoenix_version=cognition_version,
+            )
         return _DETECTOR
 
 
