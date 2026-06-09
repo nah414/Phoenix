@@ -40,6 +40,30 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13.x.9: auto-capture baseline wiring (2026-06-09)
+
+**Wired:** `maybe_auto_capture_baseline()` is now called at the tail of
+`DriftDetector.run_cycle`, completing the v1.1.x follow-up deferred at
+Phase 13.5. The detector owns a consecutive-healthy counter; after N
+consecutive healthy cycles it refreshes the per-version cognition
+baseline, then resets the counter (re-baseline every N healthy cycles).
+
+**Opt-in:** off by default. Set `PHOENIX_DRIFT_AUTO_CAPTURE=1` to enable;
+`PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES` overrides the threshold (wired-path
+default 20 ≈ 5 days at the 6h cadence — intentionally more conservative
+than the standalone helper's default of 5, to avoid absorbing slow drift).
+
+**Fail-safe:** capture failures are caught and logged inside `run_cycle`,
+never propagated — same contract as snapshot persistence and callbacks.
+Deps (provider + per-version baseline + version) flow from
+`get_detector()`; in degraded environments (no state backend) auto-capture
+stays inert.
+
+**Tests added:** 15 in `tests/integration/test_drift_detector.py`
+(7 wiring + 7 env-resolution + 1 get_detector wiring). The shipped-helper
+tests in `tests/cognition/test_drift_detector_auto_capture.py` are
+unchanged.
+
 ### Phase 13.x.4: classifier integration for cognition replay (2026-05-28)
 
 Upgrades `phoenix/ledger/cognition_replay.py`'s
@@ -227,6 +251,7 @@ implementer adjustments).
 - Drift-triggered cognition rerouting (router consumes signal)
 - Full integration of `maybe_auto_capture_baseline` into
   `DriftDetector.run_cycle` (helper is shipped; auto-cycle wiring deferred)
+  — **shipped in Phase 13.x.9, 2026-06-09**
 - Replacing the Tier-1 checker or `ml/drift_ensemble.py`
 
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid
