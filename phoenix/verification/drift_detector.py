@@ -719,6 +719,11 @@ class DriftDetector:
         checkers: list[DriftCheckerProtocol] | None = None,
         phoenix_release: str = "1.0.0rc1",
         feature_provider: Callable[[], np.ndarray | None] | None = None,
+        cognition_provider: Callable[[], np.ndarray | None] | None = None,
+        cognition_baseline: CognitionDriftBaseline | None = None,
+        cognition_phoenix_version: str | None = None,
+        auto_capture_enabled: bool | None = None,
+        auto_capture_cycles: int | None = None,
     ) -> None:
         self._backend = state_backend
         self._cadence = (
@@ -739,6 +744,25 @@ class DriftDetector:
         self._last_snapshot: DriftSnapshot | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+
+        # Phase 13.x.9: auto-capture wiring. Deps come from get_detector()
+        # (same provider/baseline/version it builds for the ML checker).
+        # Auto-capture is opt-in via $PHOENIX_DRIFT_AUTO_CAPTURE and resets
+        # the counter after a capture (re-baseline every N healthy cycles).
+        self._cognition_provider = cognition_provider
+        self._cognition_baseline = cognition_baseline
+        self._cognition_phoenix_version = cognition_phoenix_version
+        self._auto_capture_enabled = (
+            auto_capture_enabled
+            if auto_capture_enabled is not None
+            else _resolve_auto_capture_enabled()
+        )
+        self._auto_capture_cycles = (
+            auto_capture_cycles
+            if auto_capture_cycles is not None
+            else _resolve_auto_capture_cycles()
+        )
+        self._consecutive_healthy = 0
 
         # Hydrate from backend if available.
         if self._backend is not None:
@@ -834,7 +858,56 @@ class DriftDetector:
             except Exception:
                 logger.exception("Drift callback raised")
 
+        self._maybe_auto_capture(state)
+
         return snapshot
+
+    def _maybe_auto_capture(self, state: str) -> None:
+        """Phase 13.x.9: track consecutive-healthy cycles and, when
+        auto-capture is enabled and cognition deps are wired, refresh the
+        per-version baseline after ``auto_capture_cycles`` healthy cycles.
+
+        The counter is updated unconditionally (it reflects cycle health
+        regardless of whether capture is enabled). Capture is gated on
+        :attr:`_auto_capture_enabled` and the presence of provider +
+        baseline + version. A successful capture resets the counter so
+        re-baselining happens once every N healthy cycles, not every
+        cycle. Any failure is logged and swallowed so it never breaks a
+        cycle (same fail-safe contract as snapshot persistence and
+        callbacks).
+        """
+        with self._lock:
+            if state == "healthy":
+                self._consecutive_healthy += 1
+            else:
+                self._consecutive_healthy = 0
+            consecutive = self._consecutive_healthy
+
+        if not self._auto_capture_enabled:
+            return
+        if (
+            self._cognition_provider is None
+            or self._cognition_baseline is None
+            or self._cognition_phoenix_version is None
+        ):
+            return
+
+        try:
+            captured = maybe_auto_capture_baseline(
+                consecutive_healthy=consecutive,
+                state=state,
+                provider=self._cognition_provider,
+                baseline=self._cognition_baseline,
+                phoenix_version=self._cognition_phoenix_version,
+                cycles_before_capture=self._auto_capture_cycles,
+            )
+        except Exception:
+            logger.exception("auto-capture of cognition baseline failed")
+            return
+
+        if captured:
+            with self._lock:
+                self._consecutive_healthy = 0
 
     def start_scheduler(self) -> None:
         """Start the background cadence thread. Idempotent.
