@@ -64,3 +64,23 @@ workflow, the full halt list, branch/commit conventions, and reporting format.
   discipline against the architecture spec. Honor them.
 - Platform is **Windows / PowerShell**. Use PowerShell syntax (`$null`,
   `$env:VAR`, backtick line-continuation), and absolute `C:\` paths.
+
+## Working method & session log
+
+**Primary workflow — mobile Dispatch.** This repo is frequently driven via
+**mobile Dispatch**: Adam runs Claude Code sessions remotely from his phone
+while his desktop runs. Expect this to be a common, primary mode — which is
+exactly why the rules above (no pickers, plain-text questions, autonomous
+reversible defaults) exist.
+
+**Session log**
+
+- **2026-06-09** — README trimmed to a concise overview → PR #26 (merged);
+  root build-guide/planning docs reorganized into the `docs/` tree → PR #27
+  (merged); auto-capture baseline wired into `DriftDetector.run_cycle` →
+  branch `phase-13.x.9-auto-capture-wiring` (parked); these agent operating
+  rules established (this file +
+  [`docs/AGENT_WORKFLOW.md`](docs/AGENT_WORKFLOW.md)); Step 5c
+  cognition-classifier training + evaluation harness built → branch
+  `phase-13-step5c-cognition-training-harness` (parked; `lightgbm 4.6.0` kept
+  installed for local end-to-end runs).
