@@ -88,11 +88,14 @@ def main(argv: list[str] | None = None) -> int:
             empty = "  <-- EMPTY" if n == 0 else ""
             print(f"  {cls.value:<26} {n}{flag}{empty}")
 
-    # Import the trainer lazily so the corpus-loading errors above don't
-    # require lightgbm to be installed.
-    from cognition_wobble.training import train_gbm
-
+    # Import + run the trainer lazily so the corpus-loading errors above don't
+    # require lightgbm, and so an import-time failure is handled the same way as
+    # a call-time one. (lightgbm is imported inside train_gbm, so the import
+    # below does not itself raise MissingOptionalDependency, but keeping it in
+    # the try block makes the error path uniform and refactor-proof.)
     try:
+        from cognition_wobble.training import train_gbm
+
         result = train_gbm(
             examples,
             model_path=args.out,

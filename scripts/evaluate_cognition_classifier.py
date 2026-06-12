@@ -80,9 +80,13 @@ def main(argv: list[str] | None = None) -> int:
 
         classifier = AlwaysUnclassifiedClassifier()
     else:
-        from cognition_wobble.classifier_gbm import GBMClassifier
-
+        # Import + construct inside the try so an import-time failure is handled
+        # the same way as a construction-time one (lightgbm is imported inside
+        # GBMClassifier.__init__, so the import below does not itself raise
+        # MissingOptionalDependency, but this keeps the error path uniform).
         try:
+            from cognition_wobble.classifier_gbm import GBMClassifier
+
             classifier = GBMClassifier(model_path=args.model)
         except MissingOptionalDependency as exc:
             print(f"error: {exc}", file=sys.stderr)
