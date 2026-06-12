@@ -182,8 +182,12 @@ def format_confusion_matrix(report: CalibrationReport) -> str:
     lines.append(f"  legend: {legend}")
     lines.append("")
 
-    # Header row of predicted-class abbreviations.
-    header = f"{'gold \\ pred':<26}" + "".join(f"{_ABBREV[c]:>6}" for c in order)
+    # Header row of predicted-class abbreviations. The corner label is held in
+    # a variable (not interpolated inline) because a backslash inside an
+    # f-string expression is a SyntaxError on Python 3.11 (PEP 701 only relaxed
+    # this in 3.12, and CI runs 3.11).
+    corner = "gold \\ pred"
+    header = f"{corner:<26}" + "".join(f"{_ABBREV[c]:>6}" for c in order)
     lines.append(header)
     lines.append("-" * len(header))
     for gold in order:
