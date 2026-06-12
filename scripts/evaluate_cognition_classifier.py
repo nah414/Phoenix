@@ -38,6 +38,7 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "vendor")):
 from cognition_wobble.acceptance import (  # noqa: E402
     ACCEPTANCE_MACRO_F1,
     check_gate,
+    format_confusion_matrix,
     format_report,
 )
 from cognition_wobble.corpus import load_corpus  # noqa: E402
@@ -66,6 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=None,
         help="override the classifier's UNCLASSIFIED confidence cutoff",
+    )
+    parser.add_argument(
+        "--confusion",
+        action="store_true",
+        help="also print the confusion matrix (read it before retraining)",
     )
     args = parser.parse_args(argv)
 
@@ -101,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     report = evaluate(classifier, examples, **eval_kwargs)
 
     print(format_report(report, threshold=args.threshold))
+    if args.confusion:
+        print()
+        print(format_confusion_matrix(report))
     gate = check_gate(report, threshold=args.threshold)
     return 0 if gate.passed else 1
 
