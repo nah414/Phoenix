@@ -40,6 +40,38 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13 Step 5c: corpus scoping + generation/labeling tooling (2026-06-12)
+
+**Scaffolds the remaining Step 5c data work** (the labeled corpus itself is still
+Adam-side). Production behavior unchanged; nothing here trains or registers a
+classifier.
+
+- **Scope + annotation docs:** `docs/planning/STEP5C_CORPUS_PLAN.md` (honest sourcing
+  plan — SAC3/FELM/FINCH-ZK yield mostly the two factual classes; the four
+  under-represented classes must be Phoenix-generated and every pair labeled) and
+  `STEP5C_ANNOTATION_GUIDE.md` (ordered decision procedure + `[ADAM-DECIDE]` boundaries).
+- **Corpus audit + confusion reporting:** `scripts/corpus_stats.py` (per-class balance vs
+  the ~28 floor, dup detection, feature centroids) and a `--confusion` flag +
+  `acceptance.format_confusion_matrix()` (read the confusion matrix before retraining).
+- **Pair generation:** `cognition_wobble/generation.py` + `scripts/generate_cognition_pairs.py`
+  — run ≥2 providers (injectable; mock-tested) on per-class seed sets → UNLABELED candidate
+  pairs; catches `CognitionContentPolicyError` → synthesizes a refusal result.
+- **Judge labeling (path B):** `cognition_wobble/annotation.py` +
+  `scripts/label_cognition_pairs.py` — reuse `LLMJudgeClassifier` to propose `gold_class`,
+  flag the hard four / low-confidence / abstentions `NEEDS-VERIFY`.
+- **Embedding model:** `scripts/vendor_embedding_model.py` + loader prefers the vendored
+  `all-MiniLM-L6-v2` path; shared `cognition_wobble/provider_factory.py`; benign-but-borderline
+  seed prompt sets under `calibration/prompt_seeds/`.
+- **Atomic corpus writes:** `corpus.write_corpus()` (temp + `os.replace`) used by both CLIs.
+- **Adversarial-review fixes:** out-of-range `provider_index` now skips (not crashes) in
+  `generate_pairs`; `_load_seeds` reports malformed JSON with line numbers; `verify_summary`
+  always exposes all seven classes; the generate CLI exits non-zero when all specs skip.
+  Judge meta-prompt injection-hardening + confidence-clamp signalling were flagged as a
+  separate follow-up (the judge is shipped/locked).
+
+**Tests added:** 31 (corpus audit, confusion matrix, generation, annotation, vendored-model
+load preference, atomic write). Full cognition suite: 516 passed, 3 skipped.
+
 ### Phase 13 Step 5c: cognition-classifier training + eval harness (2026-06-09)
 
 **Scaffolding only — production behavior unchanged.** Builds the

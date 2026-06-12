@@ -16,30 +16,43 @@ from __future__ import annotations
 
 import math
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
 """The pinned sentence-transformers model. 22 MB; commits in Step 5c
 under ``vendor/cognition_wobble/embeddings/all-MiniLM-L6-v2/``."""
 
+_VENDORED_MODEL_PATH: Path = Path(__file__).parent / EMBEDDING_MODEL_NAME
+"""Vendored on-disk copy of the model (Step 5c, decision #3 vendor-first).
+When this directory exists it is loaded offline in preference to the
+network-based by-name download; ``scripts/vendor_embedding_model.py``
+populates it."""
+
 
 @lru_cache(maxsize=1)
 def _try_load_model() -> Any | None:
     """Lazy-load the sentence-transformers model.
 
-    Returns ``None`` on any failure (SDK missing, model file missing,
-    runtime error). Cached so the loader runs at most once per
-    process.
+    Resolution order: the vendored local copy at :data:`_VENDORED_MODEL_PATH`
+    (offline, no network) → the by-name HuggingFace download
+    (:data:`EMBEDDING_MODEL_NAME`) → ``None``. Returns ``None`` on any failure
+    (SDK missing, model files missing, runtime error). Cached so the loader runs
+    at most once per process.
     """
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError:
         return None
     try:
+        # Step 5c: prefer the vendored local copy (offline) when present.
+        if _VENDORED_MODEL_PATH.is_dir():
+            return SentenceTransformer(str(_VENDORED_MODEL_PATH))
+        # Fallback: by-name load (downloads from HF Hub on first use).
         return SentenceTransformer(EMBEDDING_MODEL_NAME)
     except Exception:
-        # The model may not be downloaded yet (Step 5c commits the
-        # local copy). Return None and let callers fall back.
+        # The model may not be downloaded/vendored yet. Return None and let
+        # callers fall back to exact-string distance.
         return None
 
 

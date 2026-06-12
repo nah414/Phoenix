@@ -70,6 +70,8 @@ Any unrecognized top-level key raises :class:`CorpusValidationError`
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +91,7 @@ __all__ = [
     "load_corpus",
     "parse_corpus_record",
     "example_to_record",
+    "write_corpus",
     "count_by_class",
 ]
 
@@ -344,6 +347,41 @@ def example_to_record(example: CalibrationExample) -> dict[str, Any]:
     if example.annotation_notes:
         record["annotation_notes"] = example.annotation_notes
     return record
+
+
+def write_corpus(
+    path: str | Path,
+    examples: list[CalibrationExample],
+    *,
+    header_lines: tuple[str, ...] = (),
+) -> Path:
+    """Atomically write ``examples`` to a JSONL corpus file.
+
+    Writes to a temp file in the destination directory and ``os.replace``s it
+    into place, so a reader (or an interrupted run) never observes a partial
+    corpus — a downstream load sees either the old file or the complete new one.
+    ``header_lines`` are written first as ``#``-prefixed comments (a leading
+    ``#`` and trailing newline are added if absent).
+
+    Round-trips through :func:`load_corpus`. Propagates :class:`OSError` on write
+    failure (the caller decides the exit code).
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            for line in header_lines:
+                text = line if line.startswith("#") else f"# {line}"
+                fh.write(text if text.endswith("\n") else text + "\n")
+            for ex in examples:
+                fh.write(json.dumps(example_to_record(ex), ensure_ascii=False, sort_keys=True) + "\n")
+        os.replace(tmp, p)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    return p
 
 
 def count_by_class(

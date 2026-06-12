@@ -144,26 +144,44 @@ Per the roadmap (do **not** add before fixing distribution): both append cleanly
 - Run the iterate-to-gate loop; commit the artifact when macro-F1 ≥ 0.70; do the swap.
 - Provide API keys for the Phoenix-generation step (multi-provider calls).
 
-**Claude-side (buildable now, NOT gated on the corpus — delivered in this pass):**
+**Claude-side (buildable now, NOT gated on the corpus):**
 - ✅ Corpus audit/stats CLI (`scripts/corpus_stats.py`) — step 2 of the loop.
 - ✅ Confusion-matrix reporting (`--confusion` on the eval CLI) — step 4 of the loop.
 - ✅ Annotation guide (`STEP5C_ANNOTATION_GUIDE.md`) — the labeling source of truth.
-- ⏳ (on request) Pair-generation harness — runs ≥2 providers on a prompt list → unlabeled
-  pairs JSONL. Needs API keys + a couple of design decisions (below).
+- ✅ Pair-generation harness (`cognition_wobble/generation.py` + `scripts/generate_cognition_pairs.py`)
+  — runs ≥2 providers on the per-class seed sets → unlabeled pairs JSONL.
+- ✅ LLM-judge labeler (`cognition_wobble/annotation.py` + `scripts/label_cognition_pairs.py`)
+  — reuses `LLMJudgeClassifier` to propose `gold_class`; flags hard/low-confidence rows.
+- ✅ Embedding-model vendoring (`scripts/vendor_embedding_model.py` + loader prefers the
+  vendored path) + provider factory (`cognition_wobble/provider_factory.py`) + seed prompt
+  sets (`vendor/cognition_wobble/calibration/prompt_seeds/`).
 - ⏳ (on request) SAC3/FELM dataset adapters — convert their raw formats → our JSONL.
 - ⏳ (after rebalance) NER-overlap + numerical-agreement features.
 
-## Open decisions for Adam
+### Generation + labeling workflow (delivered)
 
-1. **Annotation path:** (A) hand-label, or (B) LLM-judge bootstrap + human-verify? *(I lean B
-   for speed, hand-verify the hard four.)*
-2. **FINCH-ZK substitution:** if it's not accessible, OK to substitute TruthfulQA/HaluEval
-   slice? *(I lean yes; flag in notes.)*
-3. **Embedding model:** vendor `all-MiniLM-L6-v2` now, or train first on the binary fallback
-   and add it during the confusion-driven iteration? *(I lean: vendor it before the first
-   real run — it's a primary separator.)*
-4. **Pair-generation harness:** want me to build the multi-provider generation scaffold next
-   (you supply keys + prompt lists), or will you assemble pairs manually first?
+```bash
+# 1. Vendor the embedding model once (decision #3):
+pip install -e ".[ml-classifier]" && python scripts/vendor_embedding_model.py
+
+# 2. Generate candidate pairs for an under-represented class (needs keys):
+python scripts/generate_cognition_pairs.py --class refusal \
+    --providers anthropic:claude-sonnet-4-7-20260418,openai:gpt-4o --out pairs_refusal.jsonl
+
+# 3. Judge-label them (decision #1 path B), then human-verify the NEEDS-VERIFY rows:
+python scripts/label_cognition_pairs.py --pairs pairs_refusal.jsonl \
+    --judge-provider anthropic:claude-haiku-4-5-20251001 --out labeled_refusal.jsonl
+
+# 4. Combine with the SAC3/FELM/substitute factual pairs, audit, train, iterate to the gate.
+```
+
+## Decisions locked (2026-06-12)
+
+1. **Annotation path → (B)** LLM-judge bootstrap + human-verify (tooled above).
+2. **FINCH-ZK → substitute OK** (TruthfulQA/HaluEval slice if it stays missing; flag in notes).
+3. **Embedding model → vendor-first** (script + loader preference delivered; run before the
+   first real training run).
+4. **Pair-generation harness → build it** (delivered above).
 
 ## Risks
 

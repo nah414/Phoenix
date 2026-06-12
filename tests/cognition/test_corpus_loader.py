@@ -15,6 +15,7 @@ from cognition_wobble.corpus import (
     example_to_record,
     load_corpus,
     parse_corpus_record,
+    write_corpus,
 )
 from cognition_wobble.disagreement_types import CognitionDisagreementType
 
@@ -243,6 +244,27 @@ def test_count_by_class_covers_all_seven() -> None:
 
 # ---------------------------------------------------------------------------
 # committed synthetic fixture
+
+
+def test_write_corpus_round_trips_through_load(tmp_path: Path) -> None:
+    original = load_corpus(_FIXTURE)[:5]
+    out = tmp_path / "sub" / "written.jsonl"  # parent dir does not exist yet
+    written = write_corpus(out, original, header_lines=("a header note",))
+    assert written == out
+    # header comment was added with a leading '#', and the round-trip preserves rows
+    first_line = out.read_text(encoding="utf-8").splitlines()[0]
+    assert first_line.startswith("# a header note")
+    restored = load_corpus(out)
+    assert len(restored) == len(original)
+    assert [e.gold_class for e in restored] == [e.gold_class for e in original]
+
+
+def test_write_corpus_leaves_no_temp_files(tmp_path: Path) -> None:
+    examples = load_corpus(_FIXTURE)[:2]
+    out = tmp_path / "c.jsonl"
+    write_corpus(out, examples)
+    # only the final file remains -- the temp file was os.replace'd away
+    assert {p.name for p in tmp_path.iterdir()} == {"c.jsonl"}
 
 
 def test_committed_fixture_loads() -> None:
