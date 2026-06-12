@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no seed prompts in {prompts_path}", file=sys.stderr)
         return 2
 
-    provider_specs = [s for s in args.providers.split(",") if s.strip()]
+    provider_specs = [s.strip() for s in args.providers.split(",") if s.strip()]
     needs_two = args.cls in ("refusal", "interpretive")
     if needs_two and len(provider_specs) < 2:
         print(

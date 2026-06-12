@@ -14,8 +14,8 @@ directory::
     python scripts/vendor_embedding_model.py
     git add vendor/cognition_wobble/embeddings/all-MiniLM-L6-v2
 
-Exit codes: 0 = vendored (or already present); 3 = sentence-transformers not
-installed.
+Exit codes: 0 = vendored (or already present); 2 = write error; 3 =
+sentence-transformers not installed.
 """
 
 from __future__ import annotations
@@ -51,9 +51,13 @@ def main() -> int:
     print(f"downloading {EMBEDDING_MODEL_NAME} from HuggingFace ...")
     model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
-    _TARGET.parent.mkdir(parents=True, exist_ok=True)
-    print(f"saving offline copy to {_TARGET} ...")
-    model.save(str(_TARGET))
+    try:
+        _TARGET.parent.mkdir(parents=True, exist_ok=True)
+        print(f"saving offline copy to {_TARGET} ...")
+        model.save(str(_TARGET))
+    except OSError as exc:
+        print(f"error: could not write embedding model to {_TARGET}: {exc}", file=sys.stderr)
+        return 2
 
     # Verify it loads offline from the vendored path.
     offline = SentenceTransformer(str(_TARGET))
