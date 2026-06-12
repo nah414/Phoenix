@@ -40,6 +40,92 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13 Step 5c: cognition-classifier training + eval harness (2026-06-09)
+
+**Scaffolding only — production behavior unchanged.** Builds the
+non-corpus-gated half of Step 5c so that, once a real labeled cognition
+corpus exists, training a classifier and swapping it in for the shipped
+`AlwaysUnclassifiedClassifier` default is mechanical. No model artifact
+is committed, the classifier registry default is untouched, and the
+**macro-F1 ≥ 0.70** acceptance gate stays unmet until a *real* model
+clears it.
+
+**New modules** (under `vendor/cognition_wobble/`, the Phoenix-authored
+classifier substrate):
+- `corpus.py` — documented **JSONL** corpus schema + `load_corpus()` →
+  `list[CalibrationExample]`, with fail-closed validation (unknown
+  field, missing field, malformed tool-call, or unrecognized
+  `gold_class` stops the load with the offending line number).
+- `training.py` — `train_gbm()` trains a lightgbm multiclass GBM over
+  the six **graded** classes (gold-`UNCLASSIFIED` rows dropped;
+  `UNCLASSIFIED` is the inference-time threshold escape valve, never a
+  trained label) and writes the **native-text** artifact + a
+  `*.meta.json` sidecar. The artifact loads verbatim through the shipped
+  `GBMClassifier(model_path=...)` — matching `lgb.Booster(model_file=…)`
+  is what makes the swap plug-and-play (hence `.txt`, not `.joblib`).
+  `build_training_matrix()` is dependency-free and testable without the
+  `[ml-classifier]` extra.
+- `acceptance.py` — `ACCEPTANCE_MACRO_F1 = 0.70`, `check_gate()`, and a
+  fixed-width `format_report()`, wrapping the existing `eval.evaluate()`.
+- `calibration/synthetic.py` — deterministic **synthetic** corpus
+  generator (loudly NOT real data; classes separable by construction so
+  the pipeline runs end-to-end without the real corpus).
+
+**New CLIs** (`scripts/`): `train_cognition_classifier.py`,
+`evaluate_cognition_classifier.py` (exit 0 = gate PASS, 1 = FAIL),
+`gen_synthetic_cognition_corpus.py`.
+
+**Fixture:** `tests/cognition/fixtures/synthetic_corpus.jsonl` (252 rows;
+6 graded × 40 + 12 gold-`UNCLASSIFIED`).
+
+**Tests added:** 31 across `test_corpus_loader.py` (loader/validation,
+always run), `test_classifier_acceptance.py` (gate/report + dependency-
+free training-matrix, always run), and `test_train_cognition_classifier.py`
+(training + full `load → train → eval` clearing the gate on a held-out
+split; `importorskip lightgbm`). Verified end-to-end against real
+lightgbm 4.6 locally; held-out macro-F1 = 1.0 on the synthetic set.
+
+**Still blocked on Adam's real corpus:** the labeled data itself
+(≥ 200 examples, ~28+ per graded class), earning the 0.70 gate on real
+held-out data, committing `models/gbm_classifier_v1.txt`, and the
+registry swap. Procedure documented in
+`docs/superpowers/plans/2026-06-09-phase-13-step5c-classifier-training-harness.md`.
+
+### Phase 13.x.9: auto-capture baseline wiring (2026-06-09)
+
+**Wired:** `maybe_auto_capture_baseline()` is now called at the tail of
+`DriftDetector.run_cycle`, completing the v1.1.x follow-up deferred at
+Phase 13.5. The detector owns a consecutive-healthy counter; after N
+consecutive healthy cycles it refreshes the per-version cognition
+baseline, then resets the counter (re-baseline every N healthy cycles).
+
+**Opt-in:** off by default. Set `PHOENIX_DRIFT_AUTO_CAPTURE=1` to enable;
+`PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES` overrides the threshold (wired-path
+default 20 ≈ 5 days at the 6h cadence — intentionally more conservative
+than the standalone helper's default of 5, to avoid absorbing slow drift).
+
+**Fail-safe:** capture failures are caught and logged inside `run_cycle`,
+never propagated — same contract as snapshot persistence and callbacks.
+Deps (provider + per-version baseline + version) flow from
+`get_detector()`; in degraded environments (no state backend) auto-capture
+stays inert.
+
+**Concurrency hardening** (from an adversarial review of this change):
+`CognitionDriftBaseline.write_current` now writes atomically (unique temp
+file + `os.replace`), so a reader (e.g. the ML checker reading the baseline
+mid-cycle) never observes a truncated file — this also protects the existing
+admin recapture path. The post-capture counter reset is now compare-and-swap
+(only zeroes the counter if unchanged since the cycle snapshotted it),
+avoiding a clobbered increment if an admin force-cycle overlaps the scheduler.
+Both are no-ops in the normal single-threaded scheduler path.
+
+**Tests added:** 20 in `tests/integration/test_drift_detector.py`
+(11 wiring + 7 env-resolution + 1 get_detector wiring, plus an explicit
+get_detector baseline-path isolation) and 1 atomic-write test in
+`tests/cognition/test_cognition_drift_baseline.py`. The shipped-helper
+tests in `tests/cognition/test_drift_detector_auto_capture.py` are
+unchanged.
+
 ### Phase 13.x.4: classifier integration for cognition replay (2026-05-28)
 
 Upgrades `phoenix/ledger/cognition_replay.py`'s
@@ -227,6 +313,7 @@ implementer adjustments).
 - Drift-triggered cognition rerouting (router consumes signal)
 - Full integration of `maybe_auto_capture_baseline` into
   `DriftDetector.run_cycle` (helper is shipped; auto-cycle wiring deferred)
+  — **shipped in Phase 13.x.9, 2026-06-09**
 - Replacing the Tier-1 checker or `ml/drift_ensemble.py`
 
 Phase 13 extends Phoenix from a quantum-only middleware into a hybrid

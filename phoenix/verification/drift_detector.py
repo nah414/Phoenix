@@ -719,6 +719,11 @@ class DriftDetector:
         checkers: list[DriftCheckerProtocol] | None = None,
         phoenix_release: str = "1.0.0rc1",
         feature_provider: Callable[[], np.ndarray | None] | None = None,
+        cognition_provider: Callable[[], np.ndarray | None] | None = None,
+        cognition_baseline: CognitionDriftBaseline | None = None,
+        cognition_phoenix_version: str | None = None,
+        auto_capture_enabled: bool | None = None,
+        auto_capture_cycles: int | None = None,
     ) -> None:
         self._backend = state_backend
         self._cadence = (
@@ -739,6 +744,25 @@ class DriftDetector:
         self._last_snapshot: DriftSnapshot | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+
+        # Phase 13.x.9: auto-capture wiring. Deps come from get_detector()
+        # (same provider/baseline/version it builds for the ML checker).
+        # Auto-capture is opt-in via $PHOENIX_DRIFT_AUTO_CAPTURE and resets
+        # the counter after a capture (re-baseline every N healthy cycles).
+        self._cognition_provider = cognition_provider
+        self._cognition_baseline = cognition_baseline
+        self._cognition_phoenix_version = cognition_phoenix_version
+        self._auto_capture_enabled = (
+            auto_capture_enabled
+            if auto_capture_enabled is not None
+            else _resolve_auto_capture_enabled()
+        )
+        self._auto_capture_cycles = (
+            auto_capture_cycles
+            if auto_capture_cycles is not None
+            else _resolve_auto_capture_cycles()
+        )
+        self._consecutive_healthy = 0
 
         # Hydrate from backend if available.
         if self._backend is not None:
@@ -834,7 +858,62 @@ class DriftDetector:
             except Exception:
                 logger.exception("Drift callback raised")
 
+        self._maybe_auto_capture(state)
+
         return snapshot
+
+    def _maybe_auto_capture(self, state: str) -> None:
+        """Phase 13.x.9: track consecutive-healthy cycles and, when
+        auto-capture is enabled and cognition deps are wired, refresh the
+        per-version baseline after ``auto_capture_cycles`` healthy cycles.
+
+        The counter is updated unconditionally (it reflects cycle health
+        regardless of whether capture is enabled). Capture is gated on
+        :attr:`_auto_capture_enabled` and the presence of provider +
+        baseline + version. A successful capture resets the counter so
+        re-baselining happens once every N healthy cycles, not every
+        cycle. Any failure is logged and swallowed so it never breaks a
+        cycle (same fail-safe contract as snapshot persistence and
+        callbacks).
+        """
+        with self._lock:
+            if state == "healthy":
+                self._consecutive_healthy += 1
+            else:
+                self._consecutive_healthy = 0
+            consecutive = self._consecutive_healthy
+
+        if not self._auto_capture_enabled:
+            return
+        if (
+            self._cognition_provider is None
+            or self._cognition_baseline is None
+            or self._cognition_phoenix_version is None
+        ):
+            return
+
+        try:
+            captured = maybe_auto_capture_baseline(
+                consecutive_healthy=consecutive,
+                state=state,
+                provider=self._cognition_provider,
+                baseline=self._cognition_baseline,
+                phoenix_version=self._cognition_phoenix_version,
+                cycles_before_capture=self._auto_capture_cycles,
+            )
+        except Exception:
+            logger.exception("auto-capture of cognition baseline failed")
+            return
+
+        if captured:
+            # Compare-and-swap reset: only zero the counter if no other
+            # cycle advanced or reset it since we snapshotted `consecutive`.
+            # In the normal single-threaded scheduler path this is identical
+            # to an unconditional reset; under a concurrent admin force-cycle
+            # it avoids clobbering the other cycle's increment.
+            with self._lock:
+                if self._consecutive_healthy == consecutive:
+                    self._consecutive_healthy = 0
 
     def start_scheduler(self) -> None:
         """Start the background cadence thread. Idempotent.
@@ -895,6 +974,37 @@ def _resolve_cadence_seconds() -> int:
     return int(hours * 3600)
 
 
+def _resolve_auto_capture_enabled() -> bool:
+    """Read ``$PHOENIX_DRIFT_AUTO_CAPTURE`` (default off).
+
+    Auto-capture refreshes the cognition baseline after N consecutive
+    healthy cycles. It is opt-in: ops sets ``PHOENIX_DRIFT_AUTO_CAPTURE=1``
+    to enable; otherwise :meth:`DriftDetector.run_cycle` never overwrites
+    the baseline. Any value other than ``"1"`` (and unset) means disabled.
+    """
+    return os.environ.get("PHOENIX_DRIFT_AUTO_CAPTURE") == "1"
+
+
+def _resolve_auto_capture_cycles() -> int:
+    """Read ``$PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES`` or fall back to 20.
+
+    The wired-path default (20 ~= 5 days at the 6h cadence) is
+    deliberately more conservative than the standalone
+    :func:`maybe_auto_capture_baseline` default of 5: re-baselining
+    should require a long run of clean cycles so slow/creeping drift is
+    not silently absorbed into the baseline. Non-integer and non-positive
+    values fall back to the default so a typo can't weaken the guard.
+    """
+    raw = os.environ.get("PHOENIX_DRIFT_AUTO_CAPTURE_CYCLES")
+    if not raw:
+        return 20
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 20
+    return value if value > 0 else 20
+
+
 def _snapshot_to_record(snapshot: DriftSnapshot) -> dict[str, Any]:
     """Convert :class:`DriftSnapshot` to the dict shape stored via
     :meth:`StateBackend.put_drift_state_snapshot` per Phase 6b
@@ -940,6 +1050,10 @@ def get_detector() -> DriftDetector:
     ``$PHOENIX_COGNITION_DRIFT_BASELINE_PATH`` overrides the default
     baseline file location. The Tier-1 analytical checker and the
     cross-version checker are added alongside per Decision 17.
+
+    Phase 13.x.9: the same provider/baseline/version are also passed to
+    the :class:`DriftDetector` itself so :meth:`DriftDetector.run_cycle`
+    can auto-capture the baseline when ``$PHOENIX_DRIFT_AUTO_CAPTURE=1``.
     """
     global _DETECTOR
     with _DETECTOR_LOCK:
@@ -960,6 +1074,9 @@ def get_detector() -> DriftDetector:
             # checker list (no provider, no baseline) so the detector is
             # still constructible in degraded environments.
             checkers: list[DriftCheckerProtocol] | None = None
+            cognition_provider: Callable[[], np.ndarray | None] | None = None
+            cognition_baseline: CognitionDriftBaseline | None = None
+            cognition_version: str | None = None
             if backend is not None:
                 try:
                     from phoenix import __version__ as _phoenix_version
@@ -981,6 +1098,7 @@ def get_detector() -> DriftDetector:
                             else None
                         )
                     )
+                    cognition_version = _phoenix_version
                     tier1 = Tier1AnalyticalChecker()
                     ml = MLStatisticalChecker(
                         feature_provider=cognition_provider,
@@ -998,8 +1116,17 @@ def get_detector() -> DriftDetector:
                         "falling back to default checker list"
                     )
                     checkers = None
+                    cognition_provider = None
+                    cognition_baseline = None
+                    cognition_version = None
 
-            _DETECTOR = DriftDetector(state_backend=backend, checkers=checkers)
+            _DETECTOR = DriftDetector(
+                state_backend=backend,
+                checkers=checkers,
+                cognition_provider=cognition_provider,
+                cognition_baseline=cognition_baseline,
+                cognition_phoenix_version=cognition_version,
+            )
         return _DETECTOR
 
 
