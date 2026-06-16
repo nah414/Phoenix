@@ -65,10 +65,17 @@ powershell -ExecutionPolicy Bypass -File scripts/install_desktop_shortcut.ps1
 python scripts/gen_app_icon.py
 ```
 
-Double-clicking the shortcut runs `scripts/phoenix_cognition_launch.ps1`, which
-starts the daemon headlessly (via `pythonw`) if it isn't already running, waits
-for `/health`, and opens `http://127.0.0.1:8003/cognition`. Stop the daemon from
-Task Manager (the `pythonw` / `phoenix` process) when you're done.
+Double-clicking the shortcut runs `scripts/phoenix_cognition_launch.ps1`, which:
+
+- opens the panel immediately if a daemon is already up (any session);
+- otherwise starts the daemon headlessly (via `pythonw`), polls **`/v1/health`**
+  (Phoenix's readiness probe — architecture v1 §5.2) until it answers, then opens
+  `http://127.0.0.1:8003/cognition` (ready in ~4s on a warm start);
+- on failure (Python not on PATH, or the daemon never becomes ready) pops a
+  dismissible dialog with the reason + a path to the diagnostic log
+  (`%TEMP%\phoenix-cognition.log`) — it never fails silently.
+
+Stop the daemon from Task Manager (the `pythonw` / `phoenix` process) when done.
 
 The icon is `phoenix/ui/static/phoenix-cognition.ico` (multi-resolution). The same
 mark ships as the PWA app icon (`apple-touch-icon.png` 180×180 + `icon-512.png`),
