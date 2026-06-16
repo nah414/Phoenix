@@ -40,6 +40,26 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13 Step 5c: `phoenix cognition` operator console (2026-06-12)
+
+Unify the cognition-corpus harness behind one discoverable CLI command group so
+operators drive the whole pipeline from `phoenix cognition` instead of seven
+separate `scripts/*.py`.
+
+- `phoenix/cli/commands/cognition.py` + wiring in `phoenix/cli/entry.py`:
+  `phoenix cognition adapt | generate | label | audit | train | evaluate |
+  vendor-embeddings`. Offline, file-based handlers that lazy-import the shipped
+  `cognition_wobble` library (CLI startup stays fast) and emit structured
+  payloads honouring `--format {json|text|table}`. Exit codes: 0 ok / gate
+  pass, 1 gate fail (`evaluate`), 2 usage, 4 missing `[ml-classifier]` extra.
+- `samples/step5c/` — runnable FELM/SAC3 sample records (no keys) so the
+  adapt → audit → train → evaluate path works out of the box.
+- `docs/planning/STEP5C_OPERATOR_GUIDE.md` — the end-to-end runbook.
+
+Purely additive (new subcommand group); the standalone scripts remain. Tests:
++8 console tests; all 82 existing CLI/adapter integration tests green; mypy
+(strict on `phoenix/`) + ruff clean; verified on Python 3.11.
+
 ### Phase 13 Step 5c: FELM/SAC3 dataset adapters (2026-06-12)
 
 The last corpus-tooling piece: adapters that convert the factual-class source

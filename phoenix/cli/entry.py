@@ -15,6 +15,7 @@ Top-level command groups:
 - ``phoenix audit <subcommand>``      -- Step 8
 - ``phoenix calibration <subcommand>``-- Step 8
 - ``phoenix admin <subcommand>``      -- Step 8
+- ``phoenix cognition <subcommand>``  -- Phase 13 Step 5c (corpus + classifier)
 
 Global flags:
 
@@ -39,6 +40,7 @@ from phoenix._internal.version import __version__
 from phoenix.cli.commands import admin as admin_cmd
 from phoenix.cli.commands import audit as audit_cmd
 from phoenix.cli.commands import calibration as calibration_cmd
+from phoenix.cli.commands import cognition as cognition_cmd
 from phoenix.cli.commands import identity as identity_cmd
 from phoenix.cli.commands import lora as lora_cmd
 from phoenix.cli.commands import mcp_server as mcp_cmd
@@ -211,6 +213,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Step 9 -- MCP server
     _add_mcp_group(subparsers)
 
+    # Phase 13 Step 5c -- cognition corpus + classifier operator console
+    _add_cognition_group(subparsers)
+
     return parser
 
 
@@ -218,6 +223,85 @@ def _add_mcp_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentPars
     sp = subparsers.add_parser("mcp", help="MCP server commands.")
     inner = sp.add_subparsers(dest="mcp_command")
     inner.add_parser("serve", help="Boot the MCP server on stdio.")
+
+
+def _add_cognition_group(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> None:
+    """``phoenix cognition ...`` -- the Step 5c corpus + classifier console.
+
+    Offline, file-based operations over the ``cognition_wobble`` harness; see
+    ``phoenix/cli/commands/cognition.py``.
+    """
+    sp = subparsers.add_parser("cognition", help="Cognition corpus + classifier commands.")
+    inner = sp.add_subparsers(dest="cognition_command")
+
+    adapt = inner.add_parser("adapt", help="FELM/SAC3 source dataset -> corpus pairs.")
+    adapt.add_argument("--dataset", required=True, choices=["felm", "sac3"])
+    adapt.add_argument("--in", dest="inp", type=Path, required=True, help="source JSONL.")
+    adapt.add_argument("--out", type=Path, required=True, help="output corpus JSONL.")
+    adapt.add_argument("--source-tag", default=None, help="source_dataset tag.")
+    adapt.add_argument(
+        "--no-prelabel",
+        action="store_true",
+        help="sac3 only: UNLABELED pairs instead of vote-labeled.",
+    )
+
+    gen = inner.add_parser(
+        "generate", help="Run providers -> UNLABELED candidate pairs (needs keys)."
+    )
+    gen.add_argument(
+        "--class",
+        dest="cog_class",
+        required=True,
+        choices=["refusal", "tool_choice", "interpretive", "stylistic"],
+    )
+    gen.add_argument("--providers", required=True, help="comma 'kind:model' specs.")
+    gen.add_argument("--out", type=Path, required=True, help="output pairs JSONL.")
+    gen.add_argument("--prompts", type=Path, default=None, help="seed prompts (default: bundled).")
+    gen.add_argument("--max-tokens", type=int, default=512)
+    gen.add_argument("--temperature", type=float, default=0.7)
+    gen.add_argument(
+        "--register-a", default="Answer in one casual sentence.", help="stylistic register A."
+    )
+    gen.add_argument(
+        "--register-b",
+        default="Answer as a formal encyclopedia entry.",
+        help="stylistic register B.",
+    )
+
+    label = inner.add_parser("label", help="LLM-judge label generated pairs (needs a judge key).")
+    label.add_argument("--pairs", type=Path, required=True, help="UNLABELED pairs JSONL.")
+    label.add_argument("--judge-provider", required=True, help="'kind:model' for the judge.")
+    label.add_argument("--out", type=Path, required=True, help="labeled corpus JSONL.")
+    label.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.5,
+        help="flag NEEDS-VERIFY below this judge confidence.",
+    )
+
+    audit = inner.add_parser("audit", help="Corpus class-balance report.")
+    audit.add_argument("--corpus", type=Path, required=True)
+    audit.add_argument("--min", type=int, default=28, help="per-graded-class floor.")
+    audit.add_argument("--strict", action="store_true", help="exit non-zero if under floor.")
+
+    train = inner.add_parser("train", help="Train the GBM classifier (needs [ml-classifier]).")
+    train.add_argument("--corpus", type=Path, required=True)
+    train.add_argument("--out", type=Path, required=True, help="output lightgbm .txt artifact.")
+    train.add_argument("--version", default="gbm-v1.0.0", help="classifier version metadata.")
+
+    ev = inner.add_parser("evaluate", help="Evaluate a model/stub against a corpus + the gate.")
+    ev.add_argument("--corpus", type=Path, required=True)
+    ev_src = ev.add_mutually_exclusive_group(required=True)
+    ev_src.add_argument("--model", type=Path, help="trained lightgbm .txt artifact.")
+    ev_src.add_argument(
+        "--stub", action="store_true", help="AlwaysUnclassifiedClassifier baseline."
+    )
+    ev.add_argument("--threshold", type=float, default=0.70, help="macro-F1 gate.")
+    ev.add_argument("--confusion", action="store_true", help="include the confusion matrix.")
+
+    inner.add_parser("vendor-embeddings", help="Vendor all-MiniLM-L6-v2 for the semantic feature.")
 
 
 # --------------------------------------------------------------------
@@ -439,6 +523,7 @@ _GROUP_HANDLER_MAPS: dict[str, dict[str, _CommandHandler]] = {
     "calibration": calibration_cmd.HANDLERS,
     "admin": admin_cmd.HANDLERS,
     "mcp": mcp_cmd.HANDLERS,
+    "cognition": cognition_cmd.HANDLERS,
 }
 
 
