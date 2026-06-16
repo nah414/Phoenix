@@ -1,6 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Phoenix">
-  <rect width="512" height="512" rx="112" fill="#0b0d12"/>
-  <path d="M256 96 L392 336 H120 Z" fill="none" stroke="#ff7a45" stroke-width="34" stroke-linejoin="round"/>
-  <path d="M256 188 L316 300 H196 Z" fill="#ff7a45"/>
-  <circle cx="256" cy="392" r="22" fill="#3ecf8e"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="Phoenix">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="46%" r="40%">
+      <stop offset="0%" stop-color="#ff7a3c" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ff7a3c" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1000" height="1000" rx="220" fill="#0b0d12"/>
+  <rect width="1000" height="1000" rx="220" fill="url(#glow)"/>
+
+  <!-- tail plumes -->
+  <g fill="#ff7a45">
+    <path d="M374,612 L454,612 Q440,740 380,808 Q374,720 374,612 Z"/>
+    <path d="M546,612 L626,612 Q626,720 620,808 Q560,740 546,612 Z"/>
+    <path d="M448,612 L552,612 Q552,760 500,880 Q448,760 448,612 Z"/>
+  </g>
+  <!-- ember tips -->
+  <g fill="#d63a1f">
+    <path d="M388,718 L440,718 Q420,772 380,808 Q384,765 388,718 Z"/>
+    <path d="M560,718 L612,718 Q616,772 620,808 Q580,772 560,718 Z"/>
+    <path d="M466,756 L534,756 Q520,832 500,880 Q480,832 466,756 Z"/>
+  </g>
+
+  <!-- body + wings + head -->
+  <g fill="#ff7a45">
+    <path d="M444,470 C430,560 460,612 500,632 C540,612 570,560 556,470 C540,392 536,372 526,356 L474,356 C464,372 460,392 444,470 Z"/>
+    <path d="M482,470 C404,330 248,232 128,250 L180,372 L200,300 L268,432 L292,360 L370,470 L392,408 L456,520 Z"/>
+    <path d="M518,470 C596,330 752,232 872,250 L820,372 L800,300 L732,432 L708,360 L630,470 L608,408 L544,520 Z"/>
+    <path d="M462,356 C456,300 474,268 500,262 C526,268 544,300 538,356 Z"/>
+  </g>
+
+  <!-- gold leading edges + crest + beak -->
+  <g fill="#ffc14d">
+    <path d="M482,470 C404,330 248,232 128,250 L170,268 L268,270 L404,372 L470,466 Z"/>
+    <path d="M518,470 C596,330 752,232 872,250 L830,268 L732,270 L596,372 L530,466 Z"/>
+    <path d="M494,268 L460,188 L476,258 Z"/>
+    <path d="M488,264 L500,156 L514,262 Z"/>
+    <path d="M506,268 L540,188 L524,258 Z"/>
+    <path d="M530,300 L596,286 L534,332 Z"/>
+  </g>
+
+  <circle cx="516" cy="318" r="10" fill="#0b0d12"/>
 </svg>
