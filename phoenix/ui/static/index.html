@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Phoenix" />
+  <title>Phoenix Cognition</title>
+  <link rel="manifest" href="/cognition/static/manifest.webmanifest" />
+  <link rel="icon" href="/cognition/static/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/cognition/static/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/cognition/static/app.css" />
+</head>
+<body>
+  <header>
+    <h1><span class="spark">▲</span> Phoenix Cognition</h1>
+    <p class="sub">Step 5c corpus &amp; classifier console</p>
+  </header>
+
+  <details id="settings">
+    <summary>Connection</summary>
+    <label>API base <input id="base" placeholder="(same origin)" autocomplete="off" /></label>
+    <label>UI token <input id="token" type="password" placeholder="X-Phoenix-UI-Token" autocomplete="off" /></label>
+    <p class="hint">Token only needed when the daemon is bound beyond localhost (e.g. Tailscale).</p>
+  </details>
+
+  <main>
+    <!-- Audit -->
+    <section class="card">
+      <h2>Audit</h2>
+      <p class="desc">Per-class balance vs the ~28 floor + duplicate check.</p>
+      <label>Corpus <input class="corpus" list="corpora" placeholder="corpus.jsonl" /></label>
+      <button data-act="audit">Run audit</button>
+      <pre class="out"></pre>
+    </section>
+
+    <!-- Evaluate -->
+    <section class="card">
+      <h2>Evaluate</h2>
+      <p class="desc">Score a model (or the stub baseline) + the macro-F1 ≥ 0.70 gate.</p>
+      <label>Corpus <input class="corpus" list="corpora" placeholder="heldout.jsonl" /></label>
+      <label>Model <input class="model" placeholder="models/gbm_classifier_v1.txt" /></label>
+      <label class="inline"><input type="checkbox" class="stub" /> use stub baseline</label>
+      <label class="inline"><input type="checkbox" class="confusion" checked /> confusion matrix</label>
+      <button data-act="evaluate">Evaluate</button>
+      <pre class="out"></pre>
+    </section>
+
+    <!-- Adapt -->
+    <section class="card">
+      <h2>Adapt</h2>
+      <p class="desc">FELM/SAC3 source dataset → corpus pairs (factual classes).</p>
+      <label>Dataset
+        <select class="dataset"><option value="felm">felm</option><option value="sac3">sac3</option></select>
+      </label>
+      <label>Input <input class="path" placeholder="felm_*.jsonl" /></label>
+      <label>Output <input class="out-path" placeholder="felm_pairs.jsonl" /></label>
+      <button data-act="adapt">Adapt</button>
+      <pre class="out"></pre>
+    </section>
+
+    <!-- Train -->
+    <section class="card">
+      <h2>Train</h2>
+      <p class="desc">Train the GBM (runs as a background job; needs [ml-classifier]).</p>
+      <label>Corpus <input class="corpus" list="corpora" placeholder="train.jsonl" /></label>
+      <label>Output <input class="out-path" placeholder="models/gbm_classifier_v1.txt" /></label>
+      <label>Version <input class="version" value="gbm-v1.0.0" /></label>
+      <button data-act="train">Train</button>
+      <pre class="out"></pre>
+    </section>
+  </main>
+
+  <datalist id="corpora"></datalist>
+  <footer>Phoenix v1.1 · cognition operator console</footer>
+  <script src="/cognition/static/app.js"></script>
+</body>
+</html>
