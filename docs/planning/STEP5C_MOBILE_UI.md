@@ -54,11 +54,24 @@ metrics render inline. (`train` needs the `[ml-classifier]` extra.)
 | `POST /v1/cognition/train` | `{corpus, out, version?}` | `{job_id, status}` |
 | `GET  /v1/cognition/jobs/{id}` | — | job status / result |
 
-## Custom icon (optional polish)
+## Desktop shortcut (Windows)
 
-A vector `icon.svg` ships as the app icon. For a crisp iOS home-screen icon, drop
-a 180×180 PNG at `phoenix/ui/static/apple-touch-icon.png` and add a
-`<link rel="apple-touch-icon" href="/cognition/static/apple-touch-icon.png">` to
-`index.html`. Not required — install works without it.
+A custom Phoenix icon and a one-click launcher ship with the repo:
+
+```powershell
+# create the "Phoenix Cognition" shortcut on your Desktop:
+powershell -ExecutionPolicy Bypass -File scripts/install_desktop_shortcut.ps1
+# (regenerate the icon if you tweak the design:)
+python scripts/gen_app_icon.py
+```
+
+Double-clicking the shortcut runs `scripts/phoenix_cognition_launch.ps1`, which
+starts the daemon headlessly (via `pythonw`) if it isn't already running, waits
+for `/health`, and opens `http://127.0.0.1:8003/cognition`. Stop the daemon from
+Task Manager (the `pythonw` / `phoenix` process) when you're done.
+
+The icon is `phoenix/ui/static/phoenix-cognition.ico` (multi-resolution). The same
+mark ships as the PWA app icon (`apple-touch-icon.png` 180×180 + `icon-512.png`),
+so the iOS "Add to Home Screen" icon is crisp too.
 
 Pipeline reference: [`STEP5C_OPERATOR_GUIDE.md`](./STEP5C_OPERATOR_GUIDE.md).
