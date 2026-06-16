@@ -40,6 +40,28 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13 Step 5c: FELM/SAC3 dataset adapters (2026-06-12)
+
+The last corpus-tooling piece: adapters that convert the factual-class source
+datasets into our JSONL pairs. Inert (no model calls in the FELM path); the real
+data is still Adam-side.
+
+- `cognition_wobble/datasets.py` + `scripts/adapt_dataset.py`:
+  - **FELM** (`hkust-nlp/felm`) — each record with a verified error becomes a
+    deterministic, pre-labeled **FACTUAL_DISAGREEMENT** pair (original response
+    vs. a corrected reconstruction built from FELM's `comment` ground-truth).
+    Fully-factual / uncorrectable records are skipped (with reasons).
+  - **SAC3** (`intuit/sac3` method output) — pairs the first sampled response
+    with each other; the `sc2_vote` consistency vote pre-labels
+    **FACTUAL_AGREEMENT** (consistent) / **FACTUAL_DISAGREEMENT** (inconsistent)
+    candidates (weaker than FELM's human labels — re-judge/verify). `--no-prelabel`
+    emits UNLABELED pairs for the judge.
+  - Adapters return per-record skip reasons; the CLI writes via the atomic
+    `corpus.write_corpus()` and exits non-zero when nothing is emitted.
+- **Tests:** +11 (FELM error→pair, true-segment preservation, skip paths; SAC3
+  vote pre-labeling + UNLABELED mode; corpus round-trip; CLI end-to-end +
+  malformed-JSON). Verified on Python **3.11** (compile + run) as well as 3.13.
+
 ### Phase 13 Step 5c: corpus scoping + generation/labeling tooling (2026-06-12)
 
 **Scaffolds the remaining Step 5c data work** (the labeled corpus itself is still

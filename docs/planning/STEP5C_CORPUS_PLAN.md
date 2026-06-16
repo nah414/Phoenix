@@ -155,7 +155,12 @@ Per the roadmap (do **not** add before fixing distribution): both append cleanly
 - ✅ Embedding-model vendoring (`scripts/vendor_embedding_model.py` + loader prefers the
   vendored path) + provider factory (`cognition_wobble/provider_factory.py`) + seed prompt
   sets (`vendor/cognition_wobble/calibration/prompt_seeds/`).
-- ⏳ (on request) SAC3/FELM dataset adapters — convert their raw formats → our JSONL.
+- ✅ SAC3/FELM dataset adapters (`cognition_wobble/datasets.py` +
+  `scripts/adapt_dataset.py`) — **FELM** verified-error records → deterministic,
+  pre-labeled `FACTUAL_DISAGREEMENT` pairs (original vs. correction from FELM's
+  `comment`, no model calls); **SAC3** method output → candidate factual-class
+  pairs from the consistency votes (re-judge/verify). Run:
+  `python scripts/adapt_dataset.py --dataset felm --in felm_*.jsonl --out felm_pairs.jsonl`.
 - ⏳ (after rebalance) NER-overlap + numerical-agreement features.
 
 ### Generation + labeling workflow (delivered)
