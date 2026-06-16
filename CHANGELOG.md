@@ -40,6 +40,31 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Phase 13 Step 5c: mobile control panel (PWA) for the cognition harness (2026-06-12)
+
+Serve a small same-origin web control panel from the Phoenix daemon so the corpus
++ classifier harness is drivable from a phone (over Tailscale) or a desktop
+browser — no native app, App Store, or build toolchain.
+
+- `phoenix/api/cognition_ui.py` (router mounted by `phoenix/api/routes.py`):
+  serves the SPA at `GET /cognition` + JSON endpoints
+  `POST /v1/cognition/{audit,adapt,evaluate,train}`, `GET /v1/cognition/corpora`,
+  `GET /v1/cognition/jobs/{id}`. Calls the shipped `cognition_wobble` library
+  in-process; long-running `train` runs as an in-process background job the UI
+  polls. **Auth:** bootstrap actor (single-user) + an optional
+  `X-Phoenix-UI-Token` shared secret (`PHOENIX_UI_TOKEN`) required when bound
+  beyond localhost; optional `PHOENIX_CORPUS_DIR` path sandbox.
+- `phoenix/ui/static/{index.html,app.js,app.css,manifest.webmanifest,sw.js,icon.svg}`:
+  a mobile-first, no-build PWA (home-screen installable, offline shell). Packaged
+  into the wheel via `[tool.setuptools.package-data]`.
+- `cognition_wobble/audit.py` — shared `audit_corpus()` now used by both the CLI
+  `phoenix cognition audit` handler and the `/v1/cognition/audit` endpoint.
+- `docs/planning/STEP5C_MOBILE_UI.md` — Tailscale + install runbook.
+
+Tests: +8 (FastAPI `TestClient`: page, audit, evaluate-stub, adapt, token gate,
+async train job, 404). Verified on the live uvicorn daemon. mypy (strict on
+`phoenix/`) + ruff clean; Python 3.11 verified. Full cognition suite: 551 passed.
+
 ### Phase 13 Step 5c: `phoenix cognition` operator console (2026-06-12)
 
 Unify the cognition-corpus harness behind one discoverable CLI command group so

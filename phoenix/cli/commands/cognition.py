@@ -119,8 +119,8 @@ def _cmd_adapt(
 def _cmd_audit(
     args: argparse.Namespace, _config: CLIConfig, _client: CLIHTTPClient, fmt: str
 ) -> int:
-    from cognition_wobble.corpus import count_by_class, load_corpus
-    from cognition_wobble.disagreement_types import GRADED_CLASSES, CognitionDisagreementType
+    from cognition_wobble.audit import audit_corpus
+    from cognition_wobble.corpus import load_corpus
 
     try:
         examples = load_corpus(args.corpus)
@@ -128,34 +128,9 @@ def _cmd_audit(
         print(f"error: {exc}")
         return _EXIT_USAGE
 
-    counts = count_by_class(examples)
-    graded_total = sum(counts[c] for c in GRADED_CLASSES)
-    under = [c.value for c in GRADED_CLASSES if counts[c] < args.min]
-
-    seen: dict[tuple[str, ...], int] = {}
-    for ex in examples:
-        key = (
-            "".join(str(m.get("content", "")) for m in ex.prompt.messages),
-            ex.response_a.text,
-            ex.response_b.text,
-        )
-        seen[key] = seen.get(key, 0) + 1
-    duplicates = sum(v - 1 for v in seen.values() if v > 1)
-
-    ready = not under and graded_total >= 200
-    print_payload(
-        {
-            "graded_total": graded_total,
-            "floor": args.min,
-            "per_class": {c.value: counts[c] for c in GRADED_CLASSES},
-            "unclassified": counts[CognitionDisagreementType.UNCLASSIFIED],
-            "under_floor": under,
-            "duplicates": duplicates,
-            "ready": ready,
-        },
-        fmt,
-    )
-    return _EXIT_USAGE if (args.strict and not ready) else _EXIT_OK
+    report = audit_corpus(examples, min_per_class=args.min)
+    print_payload(report, fmt)
+    return _EXIT_USAGE if (args.strict and not report["ready"]) else _EXIT_OK
 
 
 # ---------------------------------------------------------------------------

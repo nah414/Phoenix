@@ -204,6 +204,14 @@ from phoenix.admin import admin_router  # noqa: E402
 app.include_router(admin_router)
 
 
+# Phase 13 Step 5c: mount the cognition operator control panel (a same-origin
+# PWA + JSON endpoints) so the corpus/classifier harness is drivable from a
+# phone (over Tailscale) or a desktop browser. See phoenix/api/cognition_ui.py.
+from phoenix.api.cognition_ui import register_cognition_ui  # noqa: E402
+
+register_cognition_ui(app)
+
+
 # ---------------------------------------------------------------------------
 # Phase 7 Step 2: HTTP audit middleware -- emit api.request.* events for
 # every REST request (entry + completion + error). The middleware also

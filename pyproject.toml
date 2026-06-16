@@ -213,7 +213,9 @@ namespaces = true
 # a 2700-line doc; users who need it read it from the repo); only
 # the package-internal READMEs travel with the install.
 [tool.setuptools.package-data]
-phoenix = ["README.md", "**/README.md"]
+# Phase 13 Step 5c: ship the cognition operator-console PWA assets so a
+# `pip install` serves the UI at /cognition.
+phoenix = ["README.md", "**/README.md", "ui/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "evals"]

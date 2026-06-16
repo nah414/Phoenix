@@ -1,0 +1,13 @@
+{
+  "name": "Phoenix Cognition",
+  "short_name": "Phoenix",
+  "description": "Operator console for the Phoenix Step 5c cognition corpus + classifier harness.",
+  "start_url": "/cognition",
+  "scope": "/cognition",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "icons": [
+    { "src": "/cognition/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
