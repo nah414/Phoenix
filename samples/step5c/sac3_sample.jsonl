@@ -1,0 +1,9 @@
+# SAMPLE SAC3-format records (Step 5c) -- small, hand-crafted, mimics intuit/sac3
+# method OUTPUT (per question: multiple sampled responses + a per-response
+# consistency vote). NOT real SAC3 output; for local testing only.
+# Run: python scripts/adapt_dataset.py --dataset sac3 --in samples/step5c/sac3_sample.jsonl --out sac3_pairs.jsonl
+# sc2_vote 1 = consistent (-> FACTUAL_AGREEMENT candidate), 0 = inconsistent (-> FACTUAL_DISAGREEMENT candidate).
+{"question": "Is 3691 a prime number?", "target_answer": "No, it is not prime", "self_responses": ["No, 3691 = 7 x 17 x 31, so it is not prime.", "No, 3691 is composite, not prime.", "Yes, 3691 is a prime number."], "sc2_vote": [1, 1, 0]}
+{"question": "What is the capital of Australia?", "target_answer": "Canberra", "self_responses": ["The capital of Australia is Canberra.", "Canberra is the capital of Australia.", "The capital of Australia is Sydney."], "sc2_vote": [1, 1, 0]}
+{"question": "Who painted the Mona Lisa?", "target_answer": "Leonardo da Vinci", "self_responses": ["Leonardo da Vinci painted the Mona Lisa.", "It was painted by Leonardo da Vinci.", "The Mona Lisa was painted by Michelangelo."], "sc2_vote": [1, 1, 0]}
+{"question": "How many continents are there?", "target_answer": "Seven", "self_responses": ["There are seven continents.", "Seven continents."], "sc2_vote": [1, 1]}
