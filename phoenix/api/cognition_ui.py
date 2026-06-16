@@ -18,7 +18,6 @@ send a matching ``X-Phoenix-UI-Token`` header. Unset → localhost convenience.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import uuid
@@ -157,20 +156,17 @@ def adapt(
     from cognition_wobble.corpus import count_by_class, write_corpus
     from cognition_wobble.datasets import from_felm, from_sac3
     from cognition_wobble.disagreement_types import GRADED_CLASSES
+    from cognition_wobble.jsonl import read_jsonl_records
 
     path = _safe_path(req.path)
     if not path.exists():
         raise HTTPException(status_code=400, detail=f"input not found: {req.path}")
+    # Same loader as the CLI: skips blank/# lines, enforces object records, and
+    # reports `path line N` errors so UI + CLI behave identically.
     try:
-        records = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"invalid JSON in {req.path}: {exc.msg}"
-        ) from exc
+        records = read_jsonl_records(path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if req.dataset == "felm":
         report = from_felm(records, source_tag=req.source_tag or "FELM")

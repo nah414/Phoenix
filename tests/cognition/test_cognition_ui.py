@@ -57,6 +57,19 @@ def test_adapt_felm_sample(client: TestClient, tmp_path: Path) -> None:
     assert out.exists()
 
 
+def test_adapt_rejects_non_object_line_with_line_number(client: TestClient, tmp_path: Path) -> None:
+    # The UI shares the CLI's JSONL loader, so a non-object record is a 400 that
+    # names the offending line (not a silent decode of arbitrary JSON values).
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"prompt": "ok"}\n[1, 2, 3]\n', encoding="utf-8")
+    r = client.post(
+        "/v1/cognition/adapt",
+        json={"dataset": "felm", "path": str(bad), "out": str(tmp_path / "o.jsonl")},
+    )
+    assert r.status_code == 400
+    assert "line 2" in r.json()["detail"]
+
+
 def test_ui_token_gate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHOENIX_UI_TOKEN", "s3cret")
     # no token header -> 401

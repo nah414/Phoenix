@@ -24,10 +24,8 @@ Exit codes: 0 = ok; 2 = usage/load error / nothing emitted.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
-from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "vendor")):
@@ -37,28 +35,7 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "vendor")):
 from cognition_wobble.corpus import count_by_class, write_corpus  # noqa: E402
 from cognition_wobble.datasets import AdapterReport, from_felm, from_sac3  # noqa: E402
 from cognition_wobble.disagreement_types import GRADED_CLASSES  # noqa: E402
-
-
-def _load_records(path: Path) -> list[dict[str, Any]]:
-    """Load JSONL source records, skipping blank/comment lines.
-
-    Raises :class:`ValueError` (with the 1-based line number) on malformed JSON
-    or a non-object line so the CLI can report it cleanly.
-    """
-    records: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fh:
-        for line_no, raw in enumerate(fh, start=1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path} line {line_no}: invalid JSON: {exc.msg}") from exc
-            if not isinstance(obj, dict):
-                raise ValueError(f"{path} line {line_no}: each record must be a JSON object")
-            records.append(obj)
-    return records
+from cognition_wobble.jsonl import read_jsonl_records  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: input not found: {args.inp}", file=sys.stderr)
         return 2
     try:
-        records = _load_records(args.inp)
+        records = read_jsonl_records(args.inp)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

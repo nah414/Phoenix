@@ -21,7 +21,6 @@ in use. Output is a structured payload rendered per ``--format``
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
@@ -35,28 +34,6 @@ _EXIT_USAGE = 2
 _EXIT_MISSING_EXTRA = 4
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Load JSONL objects, skipping blank / ``#`` lines.
-
-    Raises :class:`ValueError` (with the 1-based line number) on malformed JSON
-    or a non-object line.
-    """
-    out: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fh:
-        for line_no, raw in enumerate(fh, start=1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path} line {line_no}: invalid JSON: {exc.msg}") from exc
-            if not isinstance(obj, dict):
-                raise ValueError(f"{path} line {line_no}: each record must be a JSON object")
-            out.append(obj)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # adapt
 
@@ -67,12 +44,13 @@ def _cmd_adapt(
     from cognition_wobble.corpus import count_by_class, write_corpus
     from cognition_wobble.datasets import from_felm, from_sac3
     from cognition_wobble.disagreement_types import GRADED_CLASSES
+    from cognition_wobble.jsonl import read_jsonl_records
 
     if not args.inp.exists():
         print(f"error: input not found: {args.inp}")
         return _EXIT_USAGE
     try:
-        records = _read_jsonl(args.inp)
+        records = read_jsonl_records(args.inp)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}")
         return _EXIT_USAGE
@@ -242,8 +220,10 @@ def _seed_dir() -> Path:
 
 
 def _load_seeds(path: Path) -> list[tuple[str, str]]:
+    from cognition_wobble.jsonl import read_jsonl_records
+
     seeds: list[tuple[str, str]] = []
-    for rec in _read_jsonl(path):
+    for rec in read_jsonl_records(path):
         if "prompt" not in rec:
             raise ValueError(f"{path}: seed record missing 'prompt'")
         seeds.append((str(rec["prompt"]), str(rec.get("notes", ""))))

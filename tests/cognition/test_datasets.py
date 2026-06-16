@@ -5,9 +5,12 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from cognition_wobble.corpus import load_corpus, write_corpus
 from cognition_wobble.datasets import from_felm, from_sac3
 from cognition_wobble.disagreement_types import CognitionDisagreementType as C
+from cognition_wobble.jsonl import read_jsonl_records
 
 # --- representative source records (match the documented dataset schemas) ---
 
@@ -171,3 +174,29 @@ def test_adapt_cli_all_skipped_exits_2(tmp_path: Path) -> None:
     out = tmp_path / "o.jsonl"
     assert cli.main(["--dataset", "felm", "--in", str(inp), "--out", str(out)]) == 2
     assert not out.exists()
+
+
+# --- shared JSONL reader (used by CLI, script, and the /v1/cognition/adapt UI) ---
+
+
+def test_read_jsonl_records_skips_blanks_and_comments(tmp_path: Path) -> None:
+    p = tmp_path / "in.jsonl"
+    p.write_text(
+        '# a comment\n\n{"a": 1}\n   \n  # indented comment\n{"b": 2}\n',
+        encoding="utf-8",
+    )
+    assert read_jsonl_records(p) == [{"a": 1}, {"b": 2}]
+
+
+def test_read_jsonl_records_bad_json_reports_line(tmp_path: Path) -> None:
+    p = tmp_path / "in.jsonl"
+    p.write_text('{"a": 1}\n{bad}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"line 2: invalid JSON"):
+        read_jsonl_records(p)
+
+
+def test_read_jsonl_records_rejects_non_object(tmp_path: Path) -> None:
+    p = tmp_path / "in.jsonl"
+    p.write_text('{"a": 1}\n[1, 2, 3]\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"line 2: each record must be a JSON object"):
+        read_jsonl_records(p)
