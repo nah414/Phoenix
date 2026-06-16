@@ -29,6 +29,7 @@ __all__ = [
     "GateResult",
     "check_gate",
     "format_report",
+    "format_confusion_matrix",
 ]
 
 
@@ -141,4 +142,58 @@ def format_report(
             "the shipped default stays AlwaysUnclassifiedClassifier.)"
         )
     lines.append("=" * 64)
+    return "\n".join(lines)
+
+
+# Two-letter abbreviations for the confusion-matrix grid (ASCII-only so the
+# table renders on a Windows cp1252 console).
+_ABBREV: dict[CognitionDisagreementType, str] = {
+    CognitionDisagreementType.FACTUAL_AGREEMENT: "FA",
+    CognitionDisagreementType.STYLISTIC_DIVERGENCE: "SD",
+    CognitionDisagreementType.FACTUAL_DISAGREEMENT: "FD",
+    CognitionDisagreementType.INTERPRETIVE_DIVERGENCE: "ID",
+    CognitionDisagreementType.REFUSAL_DIVERGENCE: "RD",
+    CognitionDisagreementType.TOOL_CHOICE_DIVERGENCE: "TC",
+    CognitionDisagreementType.UNCLASSIFIED: "UNCL",
+}
+
+
+def format_confusion_matrix(report: CalibrationReport) -> str:
+    """Render the report's confusion matrix as a fixed-width grid.
+
+    Rows are the gold class, columns the predicted class; both span the six
+    graded classes plus ``UNCLASSIFIED`` (predictions can be UNCLASSIFIED via
+    the threshold escape valve, and gold-UNCLASSIFIED rows can exist). This is
+    step 4 of the Step 5c iterate-to-gate loop: read the confusion matrix
+    *before* retraining to see which class pairs the classifier confuses
+    (e.g. FA<->SD confusion -> need a factual-overlap feature; FD<->ID -> need a
+    topical-overlap feature; high RD precision + low recall -> refusal patterns
+    too narrow).
+
+    Off-diagonal cells are where the misclassifications live; the diagonal is
+    correct predictions.
+    """
+    order: tuple[CognitionDisagreementType, ...] = (*_DISPLAY_ORDER, CognitionDisagreementType.UNCLASSIFIED)
+    cm = report.confusion_matrix
+
+    lines: list[str] = []
+    lines.append("confusion matrix (rows=gold, cols=predicted):")
+    legend = ", ".join(f"{_ABBREV[c]}={c.value}" for c in order)
+    lines.append(f"  legend: {legend}")
+    lines.append("")
+
+    # Header row of predicted-class abbreviations. The corner label is held in
+    # a variable (not interpolated inline) because a backslash inside an
+    # f-string expression is a SyntaxError on Python 3.11 (PEP 701 only relaxed
+    # this in 3.12, and CI runs 3.11).
+    corner = "gold \\ pred"
+    header = f"{corner:<26}" + "".join(f"{_ABBREV[c]:>6}" for c in order)
+    lines.append(header)
+    lines.append("-" * len(header))
+    for gold in order:
+        row_total = sum(cm.get((gold, pred), 0) for pred in order)
+        if row_total == 0:
+            continue  # no gold examples of this class; skip the empty row
+        cells = "".join(f"{cm.get((gold, pred), 0):>6d}" for pred in order)
+        lines.append(f"{gold.value:<26}{cells}")
     return "\n".join(lines)

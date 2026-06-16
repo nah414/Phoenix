@@ -1,0 +1,13 @@
+# Seed prompts targeting TOOL_CHOICE_DIVERGENCE (Step 5c generation).
+# Tool-eligible queries. Generation runs each twice -- once with tools exposed,
+# once without -- so one side may emit a tool call and the other answer directly.
+{"prompt": "What's the current weather in Boston right now?", "notes": "weather tool eligible"}
+{"prompt": "What time is it in Tokyo at this moment?", "notes": "clock/time tool eligible"}
+{"prompt": "Search for the latest news about quantum computing breakthroughs.", "notes": "web_search eligible"}
+{"prompt": "What is 4839 * 2.7 + 19?", "notes": "calculator eligible"}
+{"prompt": "Convert 100 kilometers to miles.", "notes": "unit-convert eligible"}
+{"prompt": "What's today's USD to EUR exchange rate?", "notes": "finance/lookup eligible"}
+{"prompt": "Find recent research papers about protein folding.", "notes": "search eligible"}
+{"prompt": "Look up the current population of Canada.", "notes": "lookup eligible"}
+{"prompt": "Calculate the compound interest on $1000 at 5% annually for 10 years.", "notes": "calculator eligible"}
+{"prompt": "What's the stock price of a major tech company today?", "notes": "finance lookup eligible"}

@@ -13,6 +13,7 @@ from cognition_wobble.acceptance import (
     ACCEPTANCE_MACRO_F1,
     GateResult,
     check_gate,
+    format_confusion_matrix,
     format_report,
 )
 from cognition_wobble.calibration.synthetic import generate_synthetic_corpus
@@ -155,3 +156,46 @@ def test_training_matrix_raises_when_all_unclassified() -> None:
     examples = generate_synthetic_corpus(n_per_class=0, n_unclassified=4)
     with pytest.raises(ValueError, match="no graded training examples"):
         build_training_matrix(examples)
+
+
+# ---------------------------------------------------------------------------
+# format_confusion_matrix
+
+
+def test_confusion_matrix_perfect_classifier_is_diagonal() -> None:
+    golds = [c for c in _GBM_CLASS_ORDER for _ in range(3)]
+    examples = [_example(g) for g in golds]
+    report = evaluate(_OracleClassifier(golds), examples)
+    text = format_confusion_matrix(report)
+    assert "confusion matrix" in text
+    assert "legend:" in text
+    for cls in GRADED_CLASSES:
+        assert cls.value in text
+    # A perfect classifier puts each gold row's mass (3) on the diagonal; every
+    # row's trailing UNCL column is therefore 0.
+    fa_row = next(li for li in text.splitlines() if li.startswith("factual_agreement"))
+    assert fa_row.split()[-1] == "0"  # UNCL column
+    assert "3" in fa_row  # the diagonal cell
+
+
+def test_confusion_matrix_stub_lands_in_unclassified_column() -> None:
+    examples = [_example(c) for c in _GBM_CLASS_ORDER]
+    report = evaluate(AlwaysUnclassifiedClassifier(), examples)
+    text = format_confusion_matrix(report)
+    # Every gold row's single example is predicted UNCLASSIFIED -> last column.
+    fa_row = next(li for li in text.splitlines() if li.startswith("factual_agreement"))
+    assert fa_row.split()[-1] == "1"
+
+
+def test_confusion_matrix_skips_empty_gold_rows() -> None:
+    # Only FACTUAL_AGREEMENT golds -> only that gold row should appear.
+    examples = [_example(CognitionDisagreementType.FACTUAL_AGREEMENT) for _ in range(3)]
+    report = evaluate(
+        _OracleClassifier([CognitionDisagreementType.FACTUAL_AGREEMENT] * 3), examples
+    )
+    text = format_confusion_matrix(report)
+    assert "factual_agreement" in text
+    # a gold row is a line that STARTS with the class name; only FA has golds, so
+    # no other class should appear as a row (the legend mentions them mid-line).
+    assert any(li.startswith("factual_agreement") for li in text.splitlines())
+    assert not any(li.startswith("refusal_divergence") for li in text.splitlines())

@@ -19,6 +19,7 @@ site.
 from __future__ import annotations
 
 import json
+import warnings
 from typing import TYPE_CHECKING
 
 from cognition_wobble.classifier import (
@@ -53,6 +54,17 @@ Output ONLY a JSON object with this exact shape (no commentary, no markdown fenc
 _NAME_TO_CLASS: dict[str, CognitionDisagreementType] = {
     cls.name: cls for cls in CognitionDisagreementType
 }
+
+
+class JudgeConfidenceClampedWarning(UserWarning):
+    """Raised when the judge reports a confidence outside ``[0, 1]``.
+
+    The value is still clamped to the unit range (behaviour is
+    unchanged), but a judge consistently breaching the contract signals
+    it isn't following the output format — worth surfacing rather than
+    swallowing. ``LLMJudgeClassifier.classify`` also records this as the
+    ``judge_confidence_clamped`` feature flag for the Step 5c labeler.
+    """
 
 
 class LLMJudgeClassifier:
@@ -115,7 +127,17 @@ class LLMJudgeClassifier:
             temperature=self._temperature,
         )
 
-        parsed = _parse_judge_output(judge_response.text)
+        # Record (rather than swallow) a confidence-clamp so it becomes a
+        # structured feature flag for the Step 5c labeler / audit tooling.
+        # ``always`` defeats Python's once-per-site dedup, so every clamp
+        # across a batch is caught, not just the first.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", JudgeConfidenceClampedWarning)
+            parsed = _parse_judge_output(judge_response.text)
+        confidence_clamped = any(
+            isinstance(w.message, JudgeConfidenceClampedWarning) for w in caught
+        )
+
         if parsed is None:
             return ClassificationResult(
                 disagreement_type=CognitionDisagreementType.UNCLASSIFIED,
@@ -131,11 +153,15 @@ class LLMJudgeClassifier:
         if confidence < confidence_threshold:
             cls = CognitionDisagreementType.UNCLASSIFIED
 
+        feature_values: dict[str, float] = {}
+        if confidence_clamped:
+            feature_values["judge_confidence_clamped"] = 1.0
+
         return ClassificationResult(
             disagreement_type=cls,
             confidence=confidence,
             classifier_version=self.version,
-            feature_values={},
+            feature_values=feature_values,
             escalated_to_judge=False,
         )
 
@@ -152,20 +178,41 @@ class LLMJudgeClassifier:
         # full original conversation context).
         from phoenix.providers.cognition.types import Prompt as _Prompt
 
+        # Defense-in-depth (13-D3): neutralise line breaks in the
+        # untrusted, interpolated fields so injected content cannot
+        # visually masquerade as a separate section header (e.g. a
+        # forged "Response B:" block) or a fake instruction line. The
+        # only real newlines in ``body`` are the section separators we
+        # emit below; section labels and the fixed system prompt are
+        # unchanged, so the judge semantics are preserved.
         user_messages = "\n".join(
-            str(msg.get("content", ""))
+            _sanitize_interpolated(str(msg.get("content", "")))
             for msg in prompt.messages
             if msg.get("role") == "user"
         )
         body = (
             f"User prompt:\n{user_messages}\n\n"
-            f"Response A:\n{response_a.text}\n\n"
-            f"Response B:\n{response_b.text}"
+            f"Response A:\n{_sanitize_interpolated(response_a.text)}\n\n"
+            f"Response B:\n{_sanitize_interpolated(response_b.text)}"
         )
         return _Prompt(
             system=_JUDGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": body}],
         )
+
+
+def _sanitize_interpolated(text: str) -> str:
+    """Neutralise line breaks in untrusted text spliced into the judge prompt.
+
+    Collapses every line break (``\\r\\n``, ``\\r``, ``\\n``) into the
+    literal two-character escape ``\\n`` so the content stays on one
+    logical line. This is defense-in-depth against prompt injection:
+    it prevents attacker-controlled newlines from forging a new section
+    header (``Response B:`` ...) or a fake instruction block in the
+    judge's user message. Content is preserved verbatim apart from the
+    visual escaping, so the 13-D3 judge semantics are unaffected.
+    """
+    return text.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
 
 
 def _parse_judge_output(text: str) -> tuple[str, float, str] | None:
@@ -204,4 +251,13 @@ def _parse_judge_output(text: str) -> tuple[str, float, str] | None:
     except (TypeError, ValueError):
         return None
 
-    return cls_name, max(0.0, min(1.0, conf_value)), str(reasoning)
+    clamped = max(0.0, min(1.0, conf_value))
+    if clamped != conf_value:
+        warnings.warn(
+            f"Judge reported confidence {conf_value!r} outside [0, 1]; "
+            f"clamped to {clamped}. The judge may not be following the "
+            f"output-format contract.",
+            JudgeConfidenceClampedWarning,
+            stacklevel=2,
+        )
+    return cls_name, clamped, str(reasoning)

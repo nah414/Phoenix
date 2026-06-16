@@ -1,0 +1,14 @@
+# Seed prompts targeting STYLISTIC_DIVERGENCE (Step 5c generation).
+# Plain factual questions. Generation renders each in two registers via system
+# overrides (e.g. --register-a "one casual sentence" / --register-b "formal,
+# detailed encyclopedia entry"), so the facts match but presentation diverges.
+{"prompt": "Explain what photosynthesis is.", "notes": "biology fact"}
+{"prompt": "What causes the seasons?", "notes": "astronomy fact"}
+{"prompt": "Describe how a vaccine works.", "notes": "immunology fact"}
+{"prompt": "What is compound interest?", "notes": "finance fact"}
+{"prompt": "Explain why the sky is blue.", "notes": "physics fact"}
+{"prompt": "What is the water cycle?", "notes": "earth-science fact"}
+{"prompt": "How does a combustion engine work?", "notes": "engineering fact"}
+{"prompt": "What is DNA?", "notes": "biology fact"}
+{"prompt": "Explain what gravity is.", "notes": "physics fact"}
+{"prompt": "What is inflation in economics?", "notes": "economics fact"}

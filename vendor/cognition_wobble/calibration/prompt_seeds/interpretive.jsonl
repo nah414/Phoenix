@@ -1,0 +1,13 @@
+# Seed prompts targeting INTERPRETIVE_DIVERGENCE (Step 5c generation).
+# Deliberately ambiguous / polysemous prompts. Generation runs each on >=2
+# providers; they may read the prompt differently (answer question A vs B).
+{"prompt": "What's the best language?", "notes": "programming vs spoken language"}
+{"prompt": "How do I handle this case?", "notes": "code exception vs legal case vs luggage"}
+{"prompt": "Tell me about Mercury.", "notes": "planet vs element vs Roman god vs car brand"}
+{"prompt": "What's a good model?", "notes": "ML model vs fashion vs role model vs product"}
+{"prompt": "How do I get to the bank?", "notes": "river bank vs financial institution"}
+{"prompt": "Explain the role of a driver.", "notes": "software driver vs person vs golf club"}
+{"prompt": "Should I use a spring?", "notes": "season vs metal coil vs water source"}
+{"prompt": "What does 'play' mean here?", "notes": "theater vs game vs mechanical slack"}
+{"prompt": "How do I improve my form?", "notes": "exercise technique vs a document vs physical shape"}
+{"prompt": "What's the best way to run a kernel?", "notes": "OS kernel vs popcorn kernel vs ML kernel"}
