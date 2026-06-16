@@ -42,6 +42,12 @@ metrics render inline. (`train` needs the `[ml-classifier]` extra.)
 - **Path sandbox (optional):** set `PHOENIX_CORPUS_DIR` to confine which files the
   endpoints may read/write (corpus paths must resolve inside it). Unset → any path
   the process can access (convenient for localhost).
+- **The health probe is unauthenticated.** `GET /v1/health` (used by the launcher
+  and Docker/K8s probes) is open by design and returns the Phoenix version + vendor
+  manifest; `PHOENIX_UI_TOKEN` gates only `/v1/cognition/*`, not this. On loopback
+  that's immaterial; over Tailscale anyone on the tailnet can read those version
+  strings (no corpus/secrets are exposed). If version disclosure matters, keep the
+  daemon loopback-only or front it with a reverse proxy.
 
 ## Endpoints (for scripting / a future native client)
 
@@ -67,13 +73,17 @@ python scripts/gen_app_icon.py
 
 Double-clicking the shortcut runs `scripts/phoenix_cognition_launch.ps1`, which:
 
-- opens the panel immediately if a daemon is already up (any session);
-- otherwise starts the daemon headlessly (via `pythonw`), polls **`/v1/health`**
-  (Phoenix's readiness probe — architecture v1 §5.2) until it answers, then opens
-  `http://127.0.0.1:8003/cognition` (ready in ~4s on a warm start);
-- on failure (Python not on PATH, or the daemon never becomes ready) pops a
-  dismissible dialog with the reason + a path to the diagnostic log
-  (`%TEMP%\phoenix-cognition.log`) — it never fails silently.
+- opens the panel immediately if Phoenix is already serving (this or another
+  session — it verifies the **`/v1/health`** body, not merely any HTTP 200);
+- if port 8003 is free, starts the daemon headlessly (via `pythonw`), waits for
+  `/v1/health` (Phoenix's readiness probe — architecture v1 §5.2), then opens
+  `http://127.0.0.1:8003/cognition` (~4s cold, instant when already up);
+- if port 8003 is held by something that isn't Phoenix (a stuck/orphaned daemon
+  or another app), it does **not** spawn a doomed second daemon — it reports the
+  conflict and points you at Task Manager;
+- never fails silently: any failure (Python missing, port conflict, slow start)
+  pops a dismissible foreground dialog with the reason + a per-launch diagnostic
+  log at `%TEMP%\phoenix-cognition-<pid>.log`.
 
 Stop the daemon from Task Manager (the `pythonw` / `phoenix` process) when done.
 
