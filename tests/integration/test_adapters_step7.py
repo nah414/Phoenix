@@ -25,6 +25,7 @@ pipeline.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -41,6 +42,10 @@ from phoenix.cli.commands._shared import (
     write_task_cache,
 )
 from phoenix.cli.entry import main as cli_main
+
+# Loopback, so the configured default_actor is signed (see
+# phoenix/cli/http_client.py). Every request is bridged in-process.
+_REST_URL = "http://127.0.0.1:8003"
 
 
 @pytest.fixture
@@ -76,9 +81,16 @@ def isolated_runtime(
     permissions_module._REGISTRY = None
     reset_adapter_registry()
 
-    # Build a config pointing at the in-process app
+    # Build a config pointing at the in-process app. The CLI never signs
+    # as adam implicitly, so the actor is configured explicitly, the way
+    # run.md's one-time setup does it (a default_actor is signed only for
+    # a loopback rest_url). The daemon lifespan below creates the master
+    # key in the redirected home, so signing never depends on test order.
     config_path = runtime / "config.yaml"
-    config_path.write_text("rest_url: http://testserver\n", encoding="utf-8")
+    config_path.write_text(
+        f"rest_url: {_REST_URL}\ndefault_actor: adam\n",
+        encoding="utf-8",
+    )
 
     # Route all httpx.Client(...) calls through MockTransport that
     # forwards to the FastAPI app via TestClient (sync ASGI bridge).
@@ -92,8 +104,8 @@ def isolated_runtime(
         def _patched_init(self: httpx.Client, *args: object, **kwargs: object) -> None:
             def _handler(request: httpx.Request) -> httpx.Response:
                 method = request.method
-                # Strip the http://testserver prefix
-                url_path = str(request.url).replace("http://testserver", "")
+                # Strip the rest_url prefix
+                url_path = str(request.url).replace(_REST_URL, "")
                 resp = test_client.request(
                     method,
                     url_path,
@@ -243,6 +255,26 @@ class TestIdentityGroup:
         assert "actor" in out
         assert "rest_url" in out
         assert "daemon_reachable" in out
+        payload = json.loads(out)
+        assert payload["actor"] == "adam"
+        assert payload["actor_source"] == "default_actor"
+        assert payload["signing"] == "signed"
+        assert payload["daemon_reachable"] is True
+
+    def test_identity_enroll_without_configured_actor_is_401_with_setup_hint(
+        self,
+        isolated_runtime: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """No implicit adam: with no actor configured the CLI sends no header."""
+        bare = isolated_runtime / "bare.yaml"
+        bare.write_text(f"rest_url: {_REST_URL}\n", encoding="utf-8")
+        rc = _cli("identity", "enroll", "bob", config_path=bare)
+        assert rc == 3  # EXIT_HTTP_ERROR
+        err = capsys.readouterr().err
+        assert "401" in err
+        assert "default_actor" in err
+        assert "--actor" in err
 
     def test_identity_enroll_with_permissions(
         self,

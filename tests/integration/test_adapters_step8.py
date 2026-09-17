@@ -13,8 +13,11 @@ the same MockTransport bridge used in Step 7's tests. Covers:
   ``phoenix admin budget``            -> GET /v1/admin/budget
   ``phoenix admin override``          -> POST /v1/admin/tasks-pending-review/{id}/override
 
-The default bootstrap actor (``adam``) has admin = True, so the
-admin-only endpoints round-trip cleanly.
+The test config names ``default_actor: adam`` (admin = True) with a
+loopback ``rest_url``, so the CLI signs every request as ``adam`` with
+the local master key and the admin-only endpoints round-trip cleanly.
+Nothing is implicit: with no actor configured the CLI sends no header,
+and the daemon answers header-less requests with 401.
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ from fastapi.testclient import TestClient
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app as fastapi_app
 from phoenix.cli.entry import main as cli_main
+
+# Loopback, so the configured default_actor is signed (see
+# phoenix/cli/http_client.py). Every request is bridged in-process.
+_REST_URL = "http://127.0.0.1:8003"
 
 
 @pytest.fixture
@@ -60,8 +67,13 @@ def isolated_runtime(
     permissions_module._REGISTRY = None
     reset_adapter_registry()
 
+    # Explicit actor (no implicit adam), loopback rest_url so the
+    # default_actor is signed. The lifespan below creates the master key.
     config_path = runtime / "config.yaml"
-    config_path.write_text("rest_url: http://testserver\n", encoding="utf-8")
+    config_path.write_text(
+        f"rest_url: {_REST_URL}\ndefault_actor: adam\n",
+        encoding="utf-8",
+    )
 
     test_client = TestClient(fastapi_app)
     test_client.__enter__()  # noqa: SLF001
@@ -71,7 +83,7 @@ def isolated_runtime(
         def _patched_init(self: httpx.Client, *args: object, **kwargs: object) -> None:
             def _handler(request: httpx.Request) -> httpx.Response:
                 method = request.method
-                url_path = str(request.url).replace("http://testserver", "")
+                url_path = str(request.url).replace(_REST_URL, "")
                 resp = test_client.request(
                     method,
                     url_path,
@@ -248,6 +260,30 @@ class TestAdminKillSwitch:
                 config_path=_cfg(isolated_runtime),
             )
         assert excinfo.value.code == 2
+
+    def test_engage_without_configured_actor_is_refused_and_changes_nothing(
+        self,
+        isolated_runtime: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """No implicit adam: an unconfigured CLI cannot engage the kill switch."""
+        from phoenix.safety.kill_switch import get_store
+
+        bare = isolated_runtime / "bare.yaml"
+        bare.write_text(f"rest_url: {_REST_URL}\n", encoding="utf-8")
+        rc = _cli(
+            "admin",
+            "kill-switch",
+            "engage",
+            "--reason",
+            "no actor configured",
+            config_path=bare,
+        )
+        err = capsys.readouterr().err
+        assert rc == 3, err  # EXIT_HTTP_ERROR
+        assert "401" in err
+        assert "default_actor" in err
+        assert get_store().read().engaged is False
 
 
 # ---------------------------------------------------------------------

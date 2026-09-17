@@ -6,6 +6,10 @@ Combined into one test file for tight coverage of the small modules.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 import phoenix  # noqa: F401  -- triggers sys.path injection for vendored modules
 
 
@@ -38,28 +42,78 @@ def test_mint_bootstrap_actor_signs_validly() -> None:
     assert actor.is_valid_now()
 
 
-def test_extract_or_bootstrap_with_header_round_trip() -> None:
+def test_require_actor_with_header_round_trip() -> None:
     """Sign -> serialize -> header -> parse -> matches original."""
     import base64
     import json
 
-    from phoenix.identity.bootstrap import extract_or_bootstrap, mint_bootstrap_actor
+    from phoenix.identity.bootstrap import (
+        actor_authorization_header,
+        mint_bootstrap_actor,
+        require_actor,
+    )
 
     original = mint_bootstrap_actor()
     payload = original.to_payload()
     header = "Phoenix-Actor " + base64.b64encode(json.dumps(payload).encode()).decode("ascii")
-    parsed, was_bootstrapped = extract_or_bootstrap(header)
-    assert was_bootstrapped is False
+    assert actor_authorization_header(original) == header
+    parsed = require_actor(header)
     assert parsed.name == original.name
     assert parsed.signature == original.signature
 
 
-def test_extract_or_bootstrap_without_header_mints() -> None:
-    from phoenix.identity.bootstrap import extract_or_bootstrap
+def test_require_actor_without_header_is_refused() -> None:
+    """Security (2026-09-16): no header never mints the admin ``adam``.
 
-    actor, was_bootstrapped = extract_or_bootstrap(None)
-    assert was_bootstrapped is True
-    assert actor.name == "adam"
+    Replaces the Phase 6a ``extract_or_bootstrap(None) -> adam`` contract,
+    which let any caller that reached the port act as the install owner.
+    """
+    from phoenix.identity import bootstrap
+    from phoenix.identity.bootstrap import IdentityError, require_actor
+
+    for missing in (None, "", "   ", "\t"):
+        with pytest.raises(IdentityError, match="Missing Authorization header"):
+            require_actor(missing)
+    # The silent mint must not come back under its old name.
+    assert not hasattr(bootstrap, "extract_or_bootstrap")
+
+
+def test_sign_local_actor_header_verifies_and_never_creates_a_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from phoenix.identity import keystore
+    from phoenix.identity.bootstrap import (
+        IdentityError,
+        require_actor,
+        sign_local_actor_header,
+    )
+
+    # Setup: a fresh install keystore under tmp_path whose key the daemon side
+    # created, so the signing half never depends on test order or the real home.
+    installed = tmp_path / "fresh-home" / ".phoenix" / "runtime"
+    monkeypatch.setattr(keystore, "_keystore_dir", lambda: installed)
+    keystore.load_or_generate_master_key()
+
+    assert require_actor(sign_local_actor_header("adam")).name == "adam"
+    assert require_actor(sign_local_actor_header("alice")).name == "alice"
+
+    empty = tmp_path / "no-keystore"
+    monkeypatch.setattr(keystore, "_keystore_dir", lambda: empty)
+    with pytest.raises(IdentityError, match="No Phoenix master key"):
+        sign_local_actor_header("adam")
+    with pytest.raises(keystore.KeystoreError):
+        keystore.load_master_key()
+    assert not (empty / "master_key.bin").exists()
+
+
+def test_sign_local_actor_header_has_no_default_actor() -> None:
+    """Clients sign only as a named actor; there is no implicit ``adam``."""
+    import inspect
+
+    from phoenix.identity.bootstrap import sign_local_actor_header
+
+    name = inspect.signature(sign_local_actor_header).parameters["name"]
+    assert name.default is inspect.Parameter.empty
 
 
 def test_extract_actor_rejects_bad_header() -> None:
@@ -71,6 +125,56 @@ def test_extract_actor_rejects_bad_header() -> None:
         extract_actor_from_header("Bearer not-a-phoenix-actor-header")
     with pytest.raises(IdentityError):
         extract_actor_from_header("Phoenix-Actor not!base64!@#")
+
+
+_DEEP = 5000
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # int(float("inf")) -> OverflowError inside the vendored verifier.
+        b'{"name": "adam", "identity_fingerprint": "x", "issued_at": 1e400, "signature": "AAAA"}',
+        b'{"name": "adam", "identity_fingerprint": "x", "issued_at": -1e400, "signature": "AAAA"}',
+        # json.loads -> RecursionError.
+        b"[" * _DEEP + b"]" * _DEEP,
+        b'{"name": ' + b"[" * _DEEP + b"]" * _DEEP + b"}",
+        b'{"a": ' * _DEEP + b"1" + b"}" * _DEEP,
+    ],
+    ids=["issued_at=1e400", "issued_at=-1e400", "nested-list", "nested-name", "nested-object"],
+)
+def test_extract_actor_malformed_payload_raises_identity_error(raw: bytes) -> None:
+    """Security (2026-09-16): a malformed payload is a 401, never an escaping 500."""
+    import base64
+
+    from phoenix.identity.bootstrap import IdentityError, extract_actor_from_header
+
+    header = "Phoenix-Actor " + base64.b64encode(raw).decode("ascii")
+    with pytest.raises(IdentityError) as excinfo:
+        extract_actor_from_header(header)
+    # The detail is bounded even though the payload is large.
+    assert len(str(excinfo.value)) < 400
+
+
+def test_extract_actor_wraps_any_verifier_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whatever the vendored verifier raises becomes IdentityError."""
+    from actor.actor import Actor
+
+    from phoenix.identity.bootstrap import (
+        IdentityError,
+        actor_authorization_header,
+        extract_actor_from_header,
+        mint_bootstrap_actor,
+    )
+
+    header = actor_authorization_header(mint_bootstrap_actor("adam"))
+
+    def _boom(*_args: object, **_kwargs: object) -> Actor:
+        raise RuntimeError("unexpected verifier failure")
+
+    monkeypatch.setattr(Actor, "from_signed_payload", _boom)
+    with pytest.raises(IdentityError, match="unexpected verifier failure"):
+        extract_actor_from_header(header)
 
 
 # ----- Permissions registry -----

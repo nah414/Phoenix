@@ -36,6 +36,7 @@ import pytest
 
 import phoenix  # noqa: F401  -- triggers sys.path injection for vendored modules
 from phoenix.audit import AuditEmitter, AuditEvent, get_emitter, reset_emitter
+from tests._signed_actor import signed_client
 
 
 class _RecordingSink:
@@ -195,12 +196,10 @@ class TestSafetyGateAudit:
 
 class TestVerificationGateAudit:
     def test_solve_emits_verification_started_and_completed(self, recorder: _RecordingSink) -> None:
-        from fastapi.testclient import TestClient
-
         from phoenix.api.routes import app
 
         _reset_safety_global_state()
-        client = TestClient(app)
+        client = signed_client(app)
         body = {
             "physics_context": {
                 "mass_kg": 9.1093837015e-31,
@@ -239,11 +238,9 @@ class TestVerificationGateAudit:
 
 class TestHTTPMiddlewareAudit:
     def test_health_request_emits_start_and_complete(self, recorder: _RecordingSink) -> None:
-        from fastapi.testclient import TestClient
-
         from phoenix.api.routes import app
 
-        client = TestClient(app)
+        client = signed_client(app)
         response = client.get("/v1/health")
         assert response.status_code == 200
 
@@ -262,12 +259,11 @@ class TestHTTPMiddlewareAudit:
         """The middleware's request_id should appear on the safety-gate
         audit event for the same request -- this is the single thread
         admins use to correlate API + safety + verification + ledger."""
-        from fastapi.testclient import TestClient
 
         from phoenix.api.routes import app
 
         _reset_safety_global_state()
-        client = TestClient(app)
+        client = signed_client(app)
         response = client.post("/v1/identity/ws-token")
         assert response.status_code == 200
 
@@ -289,12 +285,11 @@ class TestWebSocketAudit:
     def test_ws_rejects_missing_token_emits_connect_rejected(
         self, recorder: _RecordingSink
     ) -> None:
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
         from phoenix.api.routes import app
 
-        client = TestClient(app)
+        client = signed_client(app)
         with pytest.raises(WebSocketDisconnect):
             with client.websocket_connect("/v1/ws/tasks/req_test/stream"):
                 pass
@@ -307,12 +302,11 @@ class TestWebSocketAudit:
         assert event.parameters["task_id"] == "req_test"
 
     def test_ws_rejects_bad_token_emits_connect_rejected(self, recorder: _RecordingSink) -> None:
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
         from phoenix.api.routes import app
 
-        client = TestClient(app)
+        client = signed_client(app)
         with pytest.raises(WebSocketDisconnect):
             with client.websocket_connect("/v1/ws/tasks/req_test/stream?token=not-a-real-token"):
                 pass
@@ -326,13 +320,11 @@ class TestWebSocketAudit:
     def test_ws_accepts_token_and_emits_connect_accepted_and_closed(
         self, recorder: _RecordingSink
     ) -> None:
-        from fastapi.testclient import TestClient
-
         from phoenix.api.event_broker import get_broker
         from phoenix.api.routes import app
 
         _reset_safety_global_state()
-        client = TestClient(app)
+        client = signed_client(app)
         broker = get_broker()
         broker.clear_all()
         task_id = "req_audit_ws_smoke"
@@ -378,12 +370,11 @@ def test_full_request_chain_shares_request_id(recorder: _RecordingSink) -> None:
     """A single POST /v1/tasks emits api.request.start, safety.gate.allowed,
     verification.gate.started, verification.gate.completed, and
     api.request.complete -- and all five carry the same request_id."""
-    from fastapi.testclient import TestClient
 
     from phoenix.api.routes import app
 
     _reset_safety_global_state()
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1093837015e-31,

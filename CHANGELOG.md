@@ -40,6 +40,45 @@ warranted; the GitHub Release at this tag does not require it.
 
 ## [1.1.0.dev0] — 2026-05-20
 
+### Security: no header-less `adam`; the CLI signs only as a named actor (2026-09-16)
+
+**Fixes F1 (CWE-306).** Every authenticated route minted the admin `adam` for a request with
+no `Authorization` header, so anything that reached the port was the install owner.
+Supersedes Phase 6a Decision 4 and Phase 6b Decision 7.
+
+- `extract_or_bootstrap` is removed: `require_actor` answers a missing or unverifiable
+  header with 401 on every route, and a malformed payload (`issued_at=1e400`, deeply nested
+  JSON) is 401, not 500. Replay answers 409 when the recorded `actor_name` is missing.
+- CLI and `phoenix mcp serve` sign per request, only as `--actor` or `default_actor` (no
+  implicit `adam`). `default_actor` is signed only for a loopback IP `rest_url` (not
+  `localhost`, which can resolve to a squattable `::1`); other hosts get a refusal unless
+  `--actor` is given. `/v1/health` is never signed, local requests never use a proxy, and the
+  default `rest_url` is the daemon's `http://127.0.0.1:8003` (was `localhost:8000`). New
+  `phoenix identity header`.
+- `/v1/cognition/*` needs `X-Phoenix-UI-Token` (when `PHOENIX_UI_TOKEN` is set) or a signed
+  actor; there is no loopback no-token mode. The desktop launcher starts the daemon with a
+  random per-launch token in the URL fragment and a default `PHOENIX_CORPUS_DIR`, inside
+  which the UI's relative paths now resolve.
+- **Migration.** Once (pip/standalone): `rest_url: http://127.0.0.1:8003` and
+  `default_actor: adam` in `~/.phoenix/config.yaml`. curl or `/docs`:
+  `Authorization: $(phoenix identity header)`. Docker: rebuild (the image sets
+  `PHOENIX_REST_URL`), then `docker exec phoenix phoenix --actor adam ...`. Remote daemon:
+  `--actor`. UI: the shortcut, or `PHOENIX_UI_TOKEN` plus `/cognition#token=...` (desktop)
+  or the Connection field (phone). See `run.md`.
+
+Tests: +270, mainly `tests/integration/test_auth_headerless_rejected.py`; header-less
+`TestClient`s sign via `tests/_signed_actor.py`, and no assertion was weakened. Full suite
+(`-m "not distribution"`): 1715 passed, 8 failed, 41 skipped (before: 1446 passed, 7 failed).
+Every failure is pre-existing: `mcp` extra (2), flaky `test_omega_ledger` (4 this run), stale
+pricing data (2).
+
+**Known issues / follow-ups (not fixed here):**
+- NATS listens unauthenticated on all interfaces (`phoenix/launcher.py` `_spawn_nats`; the
+  Dockerfile publishes 4222).
+- `C:\Phoenix\build\` is a stale copy with the pre-fix code: delete it before any in-tree
+  build, and rebuild any image built before this fix.
+- `POST /v1/adapters` imports an arbitrary module for any signed actor with `can_load_adapter`.
+
 ### Phase 13 Step 5c: mobile control panel (PWA) for the cognition harness (2026-06-12)
 
 Serve a small same-origin web control panel from the Phoenix daemon so the corpus

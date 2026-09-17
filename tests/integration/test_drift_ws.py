@@ -40,6 +40,7 @@ from phoenix.verification.drift_detector import (
     DriftSnapshot,
     reset_detector,
 )
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture(autouse=True)
@@ -204,12 +205,11 @@ class TestCalibrationDriftWSEndpoint:
     """
 
     def test_missing_token_closes_1008(self) -> None:
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
         from phoenix.api.routes import app
 
-        client = TestClient(app)
+        client = signed_client(app)
         try:
             with client.websocket_connect("/v1/ws/calibration/drift"):
                 pass
@@ -219,12 +219,11 @@ class TestCalibrationDriftWSEndpoint:
         raise AssertionError("expected WebSocketDisconnect with code 1008")
 
     def test_bad_token_closes_1008(self) -> None:
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
         from phoenix.api.routes import app
 
-        client = TestClient(app)
+        client = signed_client(app)
         try:
             with client.websocket_connect("/v1/ws/calibration/drift?token=not-a-real-token"):
                 pass
@@ -237,13 +236,12 @@ class TestCalibrationDriftWSEndpoint:
         """Per architecture §5.3 + Section 5.5: tokens expire after
         the 60s validity window. The handler rejects expired tokens
         with the same 1008 close code as missing/bad ones."""
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
         from phoenix.api.routes import app
         from phoenix.api.ws_auth import get_store as get_ws_token_store
 
-        client = TestClient(app)
+        client = signed_client(app)
         with client:
             token_resp = client.post("/v1/identity/ws-token")
             assert token_resp.status_code == 200
@@ -268,13 +266,12 @@ class TestCalibrationDriftWSEndpoint:
     def test_reused_token_closes_1008(self) -> None:
         """Single-use semantics per architecture §5.3: a token consumed
         once cannot be reused on a second WS handshake."""
-        from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
         from phoenix.api.routes import app
         from phoenix.api.ws_auth import get_store as get_ws_token_store
 
-        client = TestClient(app)
+        client = signed_client(app)
         with client:
             token_resp = client.post("/v1/identity/ws-token")
             assert token_resp.status_code == 200
@@ -295,11 +292,10 @@ class TestCalibrationDriftWSEndpoint:
     def test_valid_token_receives_pre_buffered_drift_alert(self) -> None:
         """Inject a drift alert into the broker before connecting;
         the WS handler must replay it from cursor=0 on connect."""
-        from fastapi.testclient import TestClient
 
         from phoenix.api.routes import app
 
-        client = TestClient(app)
+        client = signed_client(app)
         with client:
             # Lifespan has installed the bridge. Emit a synthetic
             # alert directly into the broker (skipping the detector
@@ -334,14 +330,13 @@ class TestCalibrationDriftWSEndpoint:
         """After TestClient enter, the detector singleton must have
         an emitter registered such that run_cycle produces a broker
         event on state transition."""
-        from fastapi.testclient import TestClient
 
         from phoenix.api.routes import app
         from phoenix.verification.drift_detector import (
             DriftDetector,
         )
 
-        client = TestClient(app)
+        client = signed_client(app)
         with client:
             broker = get_broker()
             broker.clear_all()

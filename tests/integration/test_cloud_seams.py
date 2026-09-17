@@ -203,14 +203,27 @@ def test_seam_1_synthesized_actor_flows_through_safety_gate(
 
     # Build a synthetic request to confirm extract_actor returns a
     # valid Actor (the Phoenix-native auth path is what makes this
-    # work; the mock just simulates tenant lookup)
+    # work; the mock just simulates tenant lookup). The request carries
+    # a real signed Actor header: header-less requests no longer mint
+    # a default actor (2026-09-16).
+    from phoenix.identity.bootstrap import IdentityError
+    from tests._signed_actor import actor_header
+
     class _FakeRequest:
-        headers = {"X-Tenant-Id": "tenant-foo"}
+        headers = {"X-Tenant-Id": "tenant-foo", "Authorization": actor_header("adam")}
 
     actor = mock_auth.extract_actor(_FakeRequest())
     assert actor is not None
+    assert actor.name == "adam"
     # The mock recorded the tenant lookup
     assert mock_auth.calls == ["tenant-foo"]
+
+    # The seam cannot be used to launder an unsigned request into an actor.
+    class _UnsignedRequest:
+        headers = {"X-Tenant-Id": "tenant-bar"}
+
+    with pytest.raises(IdentityError):
+        mock_auth.extract_actor(_UnsignedRequest())
 
     # End-to-end: hitting /v1/health succeeds (no Actor refusal at
     # the safety gate). The default route doesn't yet read the seam

@@ -21,10 +21,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ class TestRotateKeyEndpoint:
         isolated_runtime: Path,
     ) -> None:
         keys_dir = Path(os.environ["PHOENIX_ENCRYPTION_KEYS_DIR"])
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/encryption/rotate-key",
                 json={"name": "rotation-2026-05-28"},
@@ -169,7 +169,7 @@ class TestRotateKeyEndpoint:
     ) -> None:
         keys_dir = Path(os.environ["PHOENIX_ENCRYPTION_KEYS_DIR"])
         expected_name = f"rotation-{date.today().isoformat()}"
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/encryption/rotate-key",
                 json={},
@@ -185,7 +185,7 @@ class TestRotateKeyEndpoint:
         fake_pyrage: Any,
         isolated_runtime: Path,
     ) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             first = client.post(
                 "/v1/admin/encryption/rotate-key",
                 json={"name": "dup"},
@@ -204,7 +204,7 @@ class TestRotateKeyEndpoint:
         isolated_runtime: Path,
     ) -> None:
         keys_dir = Path(os.environ["PHOENIX_ENCRYPTION_KEYS_DIR"])
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             first = client.post(
                 "/v1/admin/encryption/rotate-key",
                 json={"name": "force-test"},
@@ -225,7 +225,7 @@ class TestRotateKeyEndpoint:
         fake_pyrage: Any,
         isolated_runtime: Path,
     ) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/encryption/rotate-key",
                 json={"name": "alice-attempt"},

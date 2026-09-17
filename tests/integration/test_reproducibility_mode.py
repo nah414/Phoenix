@@ -27,7 +27,6 @@ import os
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix._internal.reproducibility import (
@@ -37,6 +36,7 @@ from phoenix._internal.reproducibility import (
     pin_single_thread_blas,
     restore_environment,
 )
+from tests._signed_actor import signed_client
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ def test_default_mode_records_empty_env_snapshot(isolated_runtime: Path) -> None
     from phoenix.api.routes import app
     from phoenix.state import get_state_backend
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body("default"))
     assert resp.status_code == 200
 
@@ -278,7 +278,7 @@ def test_strict_mode_records_populated_env_snapshot(isolated_runtime: Path) -> N
     from phoenix.api.routes import app
     from phoenix.state import get_state_backend
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body("strict"))
     assert resp.status_code == 200
 
@@ -308,7 +308,7 @@ def test_strict_mode_snapshots_isolated_across_solves(
     from phoenix.api.routes import app
     from phoenix.state import get_state_backend
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         r1 = client.post("/v1/tasks", json=_qho_body("strict"))
         r2 = client.post("/v1/tasks", json=_qho_body("strict"))
     assert r1.status_code == 200
@@ -339,7 +339,7 @@ def test_pipeline_restores_env_after_strict_solve(
 
     monkeypatch.setenv("OMP_NUM_THREADS", "8")
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body("strict"))
     assert resp.status_code == 200
     # Pipeline restored the pre-solve env vars.

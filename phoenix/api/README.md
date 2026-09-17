@@ -32,3 +32,4 @@ After Step 7: if `python -m phoenix.api` fails to bind port 8003, check for coll
 
 ## Recent changes
 - 2026-05-06 — Phase 0 (BUILDGUIDE_phoenix_v1_phase0_skeleton.md): module created as empty stub.
+- 2026-09-16 — Security (CHANGELOG `[1.1.0.dev0]`): every authenticated route calls `require_actor`, so a request without a signed `Phoenix-Actor` header is a 401 (no more header-less `adam`), and malformed actor payloads are 401 rather than 500. `/v1/cognition/*` (`cognition_ui.py`) also accepts `X-Phoenix-UI-Token` when `PHOENIX_UI_TOKEN` is set; there is no loopback no-token mode. The desktop shortcut starts the daemon with a per-launch token delivered in the URL fragment. With `PHOENIX_CORPUS_DIR` set, the UI's relative paths resolve inside it and a 403 names the directory. Replay answers 409 when the recorded `actor_name` is missing.

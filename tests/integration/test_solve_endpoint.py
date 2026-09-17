@@ -16,10 +16,9 @@ Status-code mapping under test (architecture v1 Section 5.2):
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 import phoenix  # noqa: F401  -- triggers sys.path injection for vendored modules
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 HBAR = 1.054571817e-34
 
@@ -32,7 +31,7 @@ def test_solve_endpoint_qho_returns_full_result_envelope() -> None:
     ``sigma`` / ``agreement_type`` / ``kpi_bundle_orchestrate`` plus a
     flattened ``provenance`` carrying solver + control + orchestrate.
     """
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1093837015e-31,
@@ -105,7 +104,7 @@ def test_solve_endpoint_qho_returns_full_result_envelope() -> None:
 
 def test_solve_endpoint_streaming_returns_501() -> None:
     """``streaming_realtime`` is defined-but-not-routable -> 501."""
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1e-31,
@@ -127,7 +126,7 @@ def test_solve_endpoint_streaming_returns_501() -> None:
 
 def test_solve_endpoint_perception_returns_501() -> None:
     """``perception_realtime`` is routed only by Phase 12+ -> 501."""
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1e-31,
@@ -149,7 +148,7 @@ def test_solve_endpoint_perception_returns_501() -> None:
 
 def test_solve_endpoint_unknown_latency_tier_returns_400() -> None:
     """Unknown ``latency_tier`` string -> 400 with a helpful detail."""
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1e-31,
@@ -174,7 +173,7 @@ def test_solve_endpoint_unknown_latency_tier_returns_400() -> None:
 
 def test_solve_endpoint_frontier_physics_refused_returns_403() -> None:
     """Frontier-physics regime without opt-in -> 403."""
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1093837015e-31,
@@ -202,7 +201,7 @@ def test_solve_endpoint_frontier_physics_refused_returns_403() -> None:
 
 def test_solve_endpoint_invalid_regime_hint_returns_400() -> None:
     """An unknown ``regime_hint`` -> 400 NoEligibleSolver."""
-    client = TestClient(app)
+    client = signed_client(app)
     body = {
         "physics_context": {
             "mass_kg": 9.1093837015e-31,
@@ -224,7 +223,7 @@ def test_solve_endpoint_invalid_regime_hint_returns_400() -> None:
 
 def test_solve_endpoint_health_still_works() -> None:
     """Phase 2's additions don't break the Phase 0 health probe."""
-    client = TestClient(app)
+    client = signed_client(app)
     response = client.get("/v1/health")
     assert response.status_code == 200
     payload = response.json()

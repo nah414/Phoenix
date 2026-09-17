@@ -22,7 +22,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from phoenix.admin.audit_decorator import emit_admin_audit
 from phoenix.admin.auth import require_admin
 from phoenix.admin.errors import AdminPrivilegeRequired
-from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.identity.bootstrap import IdentityError, require_actor
 from phoenix.safety.errors import AuthError, PermissionDenied
 from phoenix.safety.gate import verify_request
 from phoenix.safety.kill_switch import KillSwitchEngaged
@@ -39,7 +39,7 @@ def _admin_ping(
     """Sanity-check endpoint that exercises the full admin auth chain.
 
     Phase 8 Step 1 registers this so the composition of
-    :func:`extract_or_bootstrap` + :func:`verify_request` +
+    :func:`require_actor` + :func:`verify_request` +
     :func:`require_admin` + :func:`emit_admin_audit` can be tested
     end-to-end before Steps 2-9 fill in the real handlers.
 
@@ -55,7 +55,7 @@ def _admin_ping(
     request_id: str = request.state.request_id
 
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         emit_admin_audit(
             actor=None,

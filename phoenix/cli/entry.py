@@ -21,8 +21,12 @@ Global flags:
 
 - ``--config <path>``    -- override ~/.phoenix/config.yaml.
 - ``--rest-url <url>``   -- override config + env REST URL.
-- ``--actor <name>``     -- run as the given actor (default:
-  config or bootstrap).
+- ``--actor <name>``     -- sign requests as the given actor, for any
+  ``rest_url``. Default: config ``default_actor``, which is signed for a
+  loopback IP ``rest_url`` only (``127.0.0.1`` / ``[::1]``, not
+  ``localhost``). With neither, requests are unsigned (there is no
+  implicit ``adam``). ``/v1/health`` is never signed. Signing uses this
+  machine's install master key.
 - ``--format <fmt>``     -- output format (``auto`` | ``json`` |
   ``text`` | ``table``); default: config or ``auto``.
 - ``--version``          -- print version + exit 0.
@@ -185,7 +189,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--actor",
         default=None,
-        help="Actor name (default: config or bootstrap).",
+        help=(
+            "Actor to sign requests as, for any rest_url (default: config default_actor, "
+            "signed only for a loopback IP rest_url such as http://127.0.0.1:8003; with "
+            "neither, requests are unsigned)."
+        ),
     )
     parser.add_argument(
         "--format",
@@ -356,7 +364,16 @@ def _add_identity_group(subparsers: "argparse._SubParsersAction[argparse.Argumen
     sp = subparsers.add_parser("identity", help="Identity commands.")
     inner = sp.add_subparsers(dest="identity_command")
 
-    inner.add_parser("show", help="Show effective actor + daemon reachability.")
+    inner.add_parser(
+        "show", help="Show the configured actor, whether requests are signed, and reachability."
+    )
+    inner.add_parser(
+        "header",
+        help=(
+            "Print a signed Phoenix-Actor Authorization header (valid ~5 min) for curl or "
+            "/docs, for --actor or default_actor (exit 4 when neither is configured)."
+        ),
+    )
 
     enroll = inner.add_parser("enroll", help="POST /v1/identity/enroll.")
     enroll.add_argument("actor_name")
@@ -502,7 +519,9 @@ def _cmd_health(
     """Hit ``GET /v1/health`` and print the response.
 
     Smoke command for Step 6: exercises config -> client ->
-    REST -> output formatting end-to-end.
+    REST -> output formatting end-to-end. The request is always sent
+    unsigned (``http_client.UNAUTHENTICATED_PATHS``), whatever actor is
+    configured.
     """
     payload = client.get("/v1/health")
     print(render(payload, format_name=output_format))

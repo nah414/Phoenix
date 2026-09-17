@@ -11,10 +11,11 @@ Verifies POST/GET/DELETE under ``/v1/adapters``:
   respectively -- non-admin "alice" gets 403; bootstrap "adam"
   (all-True) succeeds.
 
-The dev-mode "no Authorization header" path uses
-:func:`extract_or_bootstrap`, which mints a bootstrap actor and
-falls back to ``adam`` permissions -- so calls without a header
-exercise the admin (load/unload-capable) path.
+Admin-path calls use ``tests._signed_actor.signed_client``, which
+signs every request as ``adam`` with the install master key. (Until
+2026-09-16 a request without an Authorization header was silently
+treated as ``adam``; that fallback is gone and such requests get 401 --
+see ``test_auth_headerless_rejected.py``.)
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.adapters import (
@@ -34,6 +34,7 @@ from phoenix.adapters import (
     reset_registry as reset_adapter_registry,
 )
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -94,7 +95,7 @@ _IDENTITY_SPEC = "phoenix.adapters.identity_adapter:make_identity_adapter"
 
 class TestAdapterLifecycle:
     def test_post_loads_identity_adapter(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
         assert resp.status_code == 200
         payload = resp.json()
@@ -107,7 +108,7 @@ class TestAdapterLifecycle:
         assert payload["validation_history_length"] == 1
 
     def test_get_after_post_shows_one_adapter(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             resp = client.get("/v1/adapters")
         assert resp.status_code == 200
@@ -116,18 +117,18 @@ class TestAdapterLifecycle:
         assert body["adapters"][0]["name"] == "identity"
 
     def test_delete_unregisters(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             resp = client.delete("/v1/adapters/identity")
         assert resp.status_code == 200
         assert resp.json() == {"adapter_id": "identity", "unloaded": True}
         # Registry is now empty
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/adapters")
         assert resp.json()["count"] == 0
 
     def test_get_with_empty_registry(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/adapters")
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "adapters": []}
@@ -140,7 +141,7 @@ class TestAdapterLifecycle:
 
 class TestAdapterErrors:
     def test_post_with_bad_module_returns_400(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",
                 json={"spec": "nonexistent.module.path:thing"},
@@ -149,7 +150,7 @@ class TestAdapterErrors:
         assert "Cannot import" in resp.json()["detail"]
 
     def test_post_with_bad_spec_format_returns_400(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",
                 json={"spec": "no_colon_form"},
@@ -157,7 +158,7 @@ class TestAdapterErrors:
         assert resp.status_code == 400
 
     def test_post_with_file_path_spec_returns_501(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",
                 json={"spec": "/tmp/my_adapter.py"},
@@ -166,7 +167,7 @@ class TestAdapterErrors:
         assert "Phase 9 v1" in resp.json()["detail"]
 
     def test_post_duplicate_returns_409(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r1 = client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             assert r1.status_code == 200
             r2 = client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
@@ -177,7 +178,7 @@ class TestAdapterErrors:
         """A factory that returns a whitespace-stripping adapter must
         be refused with 503 + failed_cases listing.
         """
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",
                 json={"spec": ("tests.integration.test_adapters_step3:make_broken_adapter")},
@@ -190,18 +191,18 @@ class TestAdapterErrors:
 
     def test_post_empty_spec_returns_422(self, isolated_runtime: Path) -> None:
         """Pydantic rejects an empty string before the handler runs."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/adapters", json={"spec": ""})
         # 422 from pydantic validation (min_length=1)
         assert resp.status_code == 422
 
     def test_post_missing_spec_returns_422(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/adapters", json={})
         assert resp.status_code == 422
 
     def test_delete_unknown_returns_404(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.delete("/v1/adapters/never-loaded")
         assert resp.status_code == 404
         assert "never-loaded" in resp.json()["detail"]
@@ -214,7 +215,7 @@ class TestAdapterErrors:
 
 class TestAdapterPermissions:
     def test_post_without_can_load_adapter_returns_403(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",
                 json={"spec": _IDENTITY_SPEC},
@@ -225,7 +226,7 @@ class TestAdapterPermissions:
 
     def test_delete_without_can_unload_adapter_returns_403(self, isolated_runtime: Path) -> None:
         # adam first registers it, then alice tries to delete.
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             resp = client.delete(
                 "/v1/adapters/identity",
@@ -236,7 +237,7 @@ class TestAdapterPermissions:
 
     def test_get_is_open_to_non_admin(self, isolated_runtime: Path) -> None:
         """GET /v1/adapters requires no special capability."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             resp = client.get(
                 "/v1/adapters",
@@ -255,7 +256,7 @@ def test_openapi_advertises_three_adapter_routes(
     isolated_runtime: Path,
 ) -> None:
     """All three routes appear in the OpenAPI schema."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     paths = schema["paths"]
     assert "/v1/adapters" in paths
@@ -268,7 +269,6 @@ def test_openapi_advertises_three_adapter_routes(
 # ---------------------------------------------------------------------
 # Broken-adapter factory exposed for the test above
 # ---------------------------------------------------------------------
-
 
 from dataclasses import dataclass, field  # noqa: E402
 
@@ -310,7 +310,7 @@ def test_routes_see_same_registry_singleton(isolated_runtime: Path) -> None:
     on the REST surface.
     """
     get_adapter_registry().register(IdentityAdapter())
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.get("/v1/adapters")
     assert resp.status_code == 200
     assert resp.json()["count"] == 1

@@ -29,6 +29,9 @@ case "$(uname -s)" in
     Linux)  xdg-open "http://localhost:$PHOENIX_PORT/docs" 2>/dev/null || true ;;
 esac
 
+echo "Authenticated endpoints need a signed actor header: run 'phoenix --actor adam identity header'"
+echo "(or set 'default_actor: adam' in ~/.phoenix/config.yaml once) and paste the"
+echo "output into the endpoint's authorization field."
 echo "Phoenix v1 (Phase 0) running (daemon PID $DAEMON_PID). Press Ctrl+C to stop."
 
 # Wait for the daemon and clean up on Ctrl+C.

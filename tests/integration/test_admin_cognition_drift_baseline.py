@@ -22,10 +22,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ class TestCaptureBaselineEndpoint:
     def test_happy_path_returns_200(self, isolated_runtime: Path) -> None:
         baseline_path = isolated_runtime / "cognition_drift_baseline.json"
         _populate_cognition_entries(80)
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/admin/drift/cognition-baseline/capture")
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -149,7 +149,7 @@ class TestCaptureBaselineEndpoint:
 
     def test_unauthorized_returns_403(self, isolated_runtime: Path) -> None:
         _populate_cognition_entries(80)
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/drift/cognition-baseline/capture",
                 headers={"Authorization": _alice_header()},
@@ -158,7 +158,7 @@ class TestCaptureBaselineEndpoint:
 
     def test_insufficient_data_returns_409(self, isolated_runtime: Path) -> None:
         """No cognition entries in the backend → 409 with insufficient_data."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/admin/drift/cognition-baseline/capture")
         assert resp.status_code == 409, resp.text
         assert "insufficient" in resp.json()["detail"].lower()
@@ -170,13 +170,13 @@ class TestCaptureBaselineEndpoint:
 
 class TestGetBaselineEndpoint:
     def test_get_returns_404_when_no_baseline(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/drift/cognition-baseline")
         assert resp.status_code == 404, resp.text
 
     def test_get_returns_baseline_when_captured(self, isolated_runtime: Path) -> None:
         _populate_cognition_entries(80)
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             capture = client.post("/v1/admin/drift/cognition-baseline/capture")
             assert capture.status_code == 200, capture.text
             resp = client.get("/v1/admin/drift/cognition-baseline")

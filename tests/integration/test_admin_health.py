@@ -26,11 +26,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
 from phoenix.audit import AuditEvent
+from tests._signed_actor import signed_client
 
 
 class _Recorder:
@@ -147,7 +147,7 @@ class TestRateLimiterSnapshot:
 
 class TestDetailedHealth:
     def test_returns_200_with_subsystem_rollup(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/health/detailed")
         assert resp.status_code == 200
         body = resp.json()
@@ -166,7 +166,7 @@ class TestDetailedHealth:
             assert key in body, f"missing key: {key}"
 
     def test_kill_switch_state_reflects_current(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "test"},
@@ -181,7 +181,7 @@ class TestDetailedHealth:
         assert body["kill_switch"]["reason"] == "test"
 
     def test_403_for_non_admin(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/health/detailed",
                 headers={"Authorization": _alice_header()},
@@ -189,7 +189,7 @@ class TestDetailedHealth:
         assert resp.status_code == 403
 
     def test_emits_audit_event_on_success(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.get("/v1/admin/health/detailed")
         events = [e for e in audit_recorder.events if e.event_type == "admin.health.detailed.read"]
         assert len(events) == 1
@@ -202,7 +202,7 @@ class TestDetailedHealth:
 
 class TestGovernor:
     def test_psutil_fields_populated(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/governor")
         assert resp.status_code == 200
         body = resp.json()
@@ -219,7 +219,7 @@ class TestGovernor:
     def test_gpu_fields_are_none_per_locked_open_2(self, audit_recorder: _Recorder) -> None:
         """Per locked OPEN-2 (2026-05-11): GPU/VRAM/NPU/thermal land
         in Phase 9+. v1 Phase 8 returns ``None`` for all four."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/governor")
         body = resp.json()
         assert body["gpu_percent"] is None
@@ -228,7 +228,7 @@ class TestGovernor:
         assert body["thermal_celsius"] is None
 
     def test_403_for_non_admin(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/governor",
                 headers={"Authorization": _alice_header()},
@@ -236,7 +236,7 @@ class TestGovernor:
         assert resp.status_code == 403
 
     def test_emits_audit_event(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.get("/v1/admin/governor")
         events = [e for e in audit_recorder.events if e.event_type == "admin.governor.read"]
         assert len(events) == 1
@@ -248,7 +248,7 @@ class TestGovernor:
 
 class TestInferenceStatus:
     def test_returns_phase_8_placeholder_shape(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/inference-status")
         assert resp.status_code == 200
         body = resp.json()
@@ -258,7 +258,7 @@ class TestInferenceStatus:
         assert body["phase"] == "phase_8_placeholder"
 
     def test_403_for_non_admin(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/inference-status",
                 headers={"Authorization": _alice_header()},
@@ -272,7 +272,7 @@ class TestInferenceStatus:
 
 class TestBudget:
     def test_returns_rate_limit_bucket_snapshot(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             # First call creates a bucket for adam via verify_request.
             client.get("/v1/admin/_ping")
             resp = client.get("/v1/admin/budget")
@@ -283,7 +283,7 @@ class TestBudget:
         assert "adam" in bucket_actors
 
     def test_returns_placeholder_spend_shape(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/budget")
         body = resp.json()
         assert body["cumulative_spend_usd_ytd"] == 0.0
@@ -291,7 +291,7 @@ class TestBudget:
         assert body["phase"] == "phase_8_minimum"
 
     def test_403_for_non_admin(self, audit_recorder: _Recorder) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/budget",
                 headers={"Authorization": _alice_header()},
@@ -306,7 +306,7 @@ class TestBudget:
 def test_step3_routes_registered_with_admin_tag(
     audit_recorder: _Recorder,
 ) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     expected_paths = [
         "/v1/admin/health/detailed",

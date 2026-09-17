@@ -23,6 +23,7 @@ phases:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -58,7 +59,8 @@ from phoenix.api.event_broker import get_broker, to_dict
 from phoenix.api.streaming_events import event_type_matches_filter, parse_event_filter
 from phoenix.api.ws_auth import WSTokenError, get_store as get_ws_token_store
 from phoenix.audit import AuditEvent, get_emitter
-from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.identity.bootstrap import IdentityError, require_actor
+from phoenix.identity.keystore import KeystoreError, load_or_generate_master_key
 from phoenix.ledger import enrollment_to_ledger_entry, get_ledger
 from phoenix.ledger.entry_types import EnrollmentEntry
 from phoenix.safety import permissions as permissions_module
@@ -79,6 +81,8 @@ from phoenix.trinity.solver.engine import (
 )
 from phoenix.verification.drift_detector import get_detector, reset_detector
 from phoenix.verification.rung_table import select_initial_rung
+
+_log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -102,6 +106,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
       parallel. When the env flag is unset, the OTel SDK is never
       imported -- safe on installs without the ``otel`` extra.
 
+    - **Identity**: make sure the install master key exists. Every
+      authenticated route requires a signed ``Phoenix-Actor`` header
+      (there is no header-less fallback), and local signing clients
+      (the ``phoenix`` CLI, ``phoenix mcp serve``) only *read* the key,
+      so the daemon creates it at startup rather than on the first
+      signed request. Best-effort: a broken keystore is logged here and
+      surfaces as 401s on the request path.
+
     On shutdown: close the audit emitter (which flushes both sinks),
     clear the kill-switch wiring and close the backend, then reset
     the detector singleton (which stops its scheduler if started).
@@ -112,6 +124,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     explicit ops command starts it; the bridge wired here just makes
     sure that when cycles DO happen, alerts reach the WS endpoint.
     """
+    try:
+        load_or_generate_master_key()
+    except KeystoreError:
+        _log.exception("Phoenix master key unavailable; signed requests will be refused.")
     backend = get_state_backend()
     set_store_backend(backend)
     # Step 8: drift detector -> event broker bridge.
@@ -463,12 +479,11 @@ def submit_task(
     request_id: str = request.state.request_id
 
     # Phase 6a: Actor verification at the front door + safety gate.
-    # Per locked scope (2026-05-08): Actor required with bootstrap-actor
-    # fallback when the Authorization header is absent and the keystore
-    # is present. Tests + dev-mode "just call /v1/tasks" preserved via
-    # the bootstrap path; production callers send signed Actor headers.
+    # A signed Actor header is required. The Phase 6a header-less
+    # bootstrap-actor fallback was removed on 2026-09-16 (it made any
+    # caller that could reach the port the admin "adam").
     try:
-        actor, _was_bootstrapped = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
 
@@ -658,7 +673,7 @@ def get_audit_events(
     """
     request_id: str = request.state.request_id
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
     try:
@@ -715,7 +730,7 @@ def verify_ledger(
     """
     request_id: str = request.state.request_id
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
     try:
@@ -781,8 +796,9 @@ def replay_task(
     - 403: actor lacks ``can_replay_tasks``.
     - 404: no ledger entry has ``payload.task_id == task_id``.
     - 409: entry is incomplete (no ``task_spec`` /
-      ``environment_snapshot``, or ``reproducibility_mode="default"``),
-      OR the original used cloud shots Phoenix v1 cannot re-fetch.
+      ``environment_snapshot``, no recorded ``task_spec.actor_name``, or
+      ``reproducibility_mode="default"``), OR the original used cloud
+      shots Phoenix v1 cannot re-fetch.
     - 429: rate-limit exceeded.
     - 500: replay completed but the recomputed result_hash diverged
       from the recorded value (:class:`ReplayDivergence`).
@@ -791,7 +807,7 @@ def replay_task(
     request_id: str = request.state.request_id
 
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
 
@@ -892,7 +908,7 @@ def ws_token(
     """
     request_id: str = request.state.request_id  # Phase 7 Step 2
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
     try:
@@ -965,7 +981,7 @@ def post_adapter(
     """
     request_id: str = request.state.request_id
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
     try:
@@ -1033,7 +1049,7 @@ def list_adapters(
     """List all currently-loaded LoRA adapters."""
     request_id: str = request.state.request_id
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
     try:
@@ -1075,7 +1091,7 @@ def delete_adapter(
     """
     request_id: str = request.state.request_id
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
     try:
@@ -1174,7 +1190,7 @@ def enroll_actor(
     request_id: str = request.state.request_id
 
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
 
@@ -1303,13 +1319,13 @@ def _mcp_admin_gate(
 ) -> Any:
     """Common admin gate for the MCP-server endpoints.
 
-    Runs the standard safety chain (extract_or_bootstrap →
+    Runs the standard safety chain (require_actor →
     verify_request → require_admin) and surfaces typed exceptions as
     appropriate HTTP status codes. Returns the validated Actor on
     success.
     """
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
 
@@ -1645,8 +1661,9 @@ async def calibration_drift_stream(
 
     **Authentication** matches ``/v1/ws/tasks/.../stream``: client
     mints a bearer token via ``POST /v1/identity/ws-token`` (which
-    accepts the bootstrap-actor fallback per Phase 6a Decision 4 +
-    Phase 6b open-item 7 locked 2026-05-10), passes it as the
+    requires a signed Actor header; the Phase 6a Decision 4 /
+    Phase 6b open-item 7 bootstrap-actor fallback was removed
+    2026-09-16), passes it as the
     ``token`` query parameter, token is consumed on connect
     (single-use, 60s window).
 

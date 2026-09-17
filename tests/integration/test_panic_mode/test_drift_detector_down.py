@@ -34,6 +34,7 @@ import pytest
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.verification.drift_state import DriftStateUnavailable
 from tests.integration.test_panic_mode.conftest import kill_drift_state
+from tests._signed_actor import signed_client
 
 
 pytestmark = pytest.mark.acceptance
@@ -191,7 +192,6 @@ def test_post_tasks_with_drift_down_fails_closed(
     What's NOT acceptable: 200 with a Result envelope that LOOKS like
     a fully-verified solve when verification couldn't run.
     """
-    from fastapi.testclient import TestClient
 
     from phoenix.api.routes import app
 
@@ -212,7 +212,7 @@ def test_post_tasks_with_drift_down_fails_closed(
     # test. The §10.7 contract is "Phoenix doesn't silently degrade" --
     # the typed error propagating uncaught from a route handler IS the
     # fail-closed behavior; the client sees 500.
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with signed_client(app, raise_server_exceptions=False) as client:
         with kill_drift_state(monkeypatch):
             resp = client.post("/v1/tasks", json=qho_body)
 

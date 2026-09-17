@@ -24,10 +24,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -89,7 +89,7 @@ def _future_ts() -> float:
 
 class TestGrantPromptVerbatim:
     def test_admin_grants_verbatim_capability(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
                 json={
@@ -108,7 +108,7 @@ class TestGrantPromptVerbatim:
         assert len(body["ledger_entry_hash"]) == 64
 
     def test_grant_lands_in_registry(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
                 json={
@@ -126,7 +126,7 @@ class TestGrantPromptVerbatim:
     def test_grant_appended_to_ledger(self, isolated_runtime: Path) -> None:
         from phoenix.state import get_state_backend
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
                 json={
@@ -148,7 +148,7 @@ class TestGrantPromptVerbatim:
 
     def test_revoke_via_new_value_false(self, isolated_runtime: Path) -> None:
         """Setting new_value=False revokes the capability."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             # Grant first.
             client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
@@ -175,7 +175,7 @@ class TestGrantPromptVerbatim:
         assert get_registry().get("alice").can_store_prompt_verbatim is False
 
     def test_non_grantable_capability_rejected(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
                 json={
@@ -189,7 +189,7 @@ class TestGrantPromptVerbatim:
         assert "not grantable" in resp.text
 
     def test_past_expiry_rejected(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
                 json={
@@ -205,7 +205,7 @@ class TestGrantPromptVerbatim:
 
     def test_non_admin_rejected(self, isolated_runtime: Path) -> None:
         """Alice (non-admin) can't grant herself the verbatim cap."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/permissions/grant-prompt-verbatim",
                 json={
@@ -225,7 +225,7 @@ class TestGrantPromptVerbatim:
 
 class TestCognitionBudgetOverride:
     def test_admin_per_cognition_call_override(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/cognition-override",
                 json={
@@ -243,7 +243,7 @@ class TestCognitionBudgetOverride:
         assert isinstance(body["override_id"], int)
 
     def test_per_actor_24h_cognition_override(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/cognition-override",
                 json={
@@ -262,7 +262,7 @@ class TestCognitionBudgetOverride:
 
     def test_physics_scope_rejected_on_cognition_endpoint(self, isolated_runtime: Path) -> None:
         """The physics-scope tokens are NOT valid on the cognition endpoint."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/cognition-override",
                 json={
@@ -276,7 +276,7 @@ class TestCognitionBudgetOverride:
         assert "cognition" in resp.text.lower()
 
     def test_zero_ceiling_returns_422(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/cognition-override",
                 json={
@@ -289,7 +289,7 @@ class TestCognitionBudgetOverride:
         assert resp.status_code == 422  # Pydantic gt=0
 
     def test_non_admin_rejected(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/cognition-override",
                 json={
@@ -309,7 +309,7 @@ class TestCognitionBudgetOverride:
 
 class TestCognitionSpendAudit:
     def test_empty_ledger_returns_zero_spend(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/cognition-spend")
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -339,7 +339,7 @@ class TestCognitionSpendAudit:
             )
         )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/cognition-spend")
         body = resp.json()
         assert body["total_entries"] == 1
@@ -363,7 +363,7 @@ class TestCognitionSpendAudit:
                 )
             )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/cognition-spend?actor_filter=ash")
         body = resp.json()
         assert body["total_entries"] == 2
@@ -380,25 +380,25 @@ class TestCognitionSpendAudit:
             )
         )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/cognition-spend")
         body = resp.json()
         assert body["total_entries"] == 0
 
     def test_window_hours_param(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/cognition-spend?window_hours=72")
         body = resp.json()
         assert body["window_hours"] == 72
 
     def test_window_hours_clamped_at_max(self, isolated_runtime: Path) -> None:
         """Beyond 30 days = 422 (Pydantic le=30*24)."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/cognition-spend?window_hours=10000")
         assert resp.status_code == 422
 
     def test_non_admin_rejected(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/audit/cognition-spend",
                 headers={"Authorization": _alice_header()},

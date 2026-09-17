@@ -23,7 +23,8 @@
     <summary>Connection</summary>
     <label>API base <input id="base" placeholder="(same origin)" autocomplete="off" /></label>
     <label>UI token <input id="token" type="password" placeholder="X-Phoenix-UI-Token" autocomplete="off" /></label>
-    <p class="hint">Token only needed when the daemon is bound beyond localhost (e.g. Tailscale).</p>
+    <p class="hint">The daemon's PHOENIX_UI_TOKEN, always required. The desktop shortcut fills it in for this tab with a fresh per-launch token. Over Tailscale, paste the token the daemon was started with (remembered on this device).</p>
+    <p class="hint" id="corpus-dir"></p>
   </details>
 
   <main>

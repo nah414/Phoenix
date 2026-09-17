@@ -81,8 +81,14 @@ def build_server(
 
     Parameters:
       - ``config``: resolved :class:`CLIConfig`.
-      - ``actor_override``: optional actor name; falls back to
-        ``config.default_actor`` then to dev-mode bootstrap.
+      - ``actor_override``: optional actor name (``phoenix --actor``);
+        falls back to ``config.default_actor``. There is no implicit
+        ``adam``: with neither, daemon calls go unsigned and
+        authenticated tools return the daemon's 401. A configured actor
+        is signed per call with this machine's install master key, and a
+        ``default_actor`` is signed only for a loopback IP ``rest_url``,
+        and ``phoenix_health`` is never signed (see
+        :mod:`phoenix.cli.http_client`).
       - ``client_factory``: testing seam -- a callable that
         returns a :class:`CLIHTTPClient`. Defaults to
         :func:`build_client`.

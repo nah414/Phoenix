@@ -32,10 +32,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ def _alice_header() -> str:
 
 class TestEnrollHappyPath:
     def test_admin_enrolls_actor_with_explicit_permissions(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={
@@ -123,7 +123,7 @@ class TestEnrollHappyPath:
     def test_enroll_persists_in_permissions_registry(self, isolated_runtime: Path) -> None:
         from phoenix.safety.permissions import get_registry
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/identity/enroll",
                 json={
@@ -136,7 +136,7 @@ class TestEnrollHappyPath:
         assert perms.can_submit_tasks is True  # default
 
     def test_enroll_with_empty_permissions_uses_defaults(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={"actor_name": "charlie", "permissions": {}},
@@ -153,7 +153,7 @@ class TestEnrollHappyPath:
 
     def test_enroll_missing_permissions_field_works(self, isolated_runtime: Path) -> None:
         """``permissions`` defaults to {} when omitted from the body."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={"actor_name": "diana"},
@@ -171,7 +171,7 @@ class TestEnrollIdempotency:
     def test_re_enrolling_overwrites_permissions(self, isolated_runtime: Path) -> None:
         from phoenix.safety.permissions import get_registry
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/identity/enroll",
                 json={
@@ -193,7 +193,7 @@ class TestEnrollIdempotency:
         """Operator history matters: two enrollments -> two ledger entries."""
         from phoenix.state import get_state_backend
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/identity/enroll",
                 json={
@@ -227,7 +227,7 @@ def test_enrollment_entry_in_ledger(isolated_runtime: Path) -> None:
     """The enrollment lands as an EnrollmentEntry payload on the chain."""
     from phoenix.state import get_state_backend
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post(
             "/v1/identity/enroll",
             json={
@@ -262,7 +262,7 @@ def test_enrollment_entry_in_ledger(isolated_runtime: Path) -> None:
 
 class TestEnrollPermissions:
     def test_non_admin_actor_gets_403(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={"actor_name": "bob", "permissions": {}},
@@ -287,7 +287,7 @@ class TestEnrollValidation:
         ],
     )
     def test_invalid_actor_name_returns_400(self, isolated_runtime: Path, bad_name: str) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={"actor_name": bad_name, "permissions": {}},
@@ -297,7 +297,7 @@ class TestEnrollValidation:
         assert resp.status_code in (400, 422)
 
     def test_invalid_rate_limit_tier_returns_400(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={
@@ -309,7 +309,7 @@ class TestEnrollValidation:
         assert "rate_limit_tier" in resp.json()["detail"]
 
     def test_missing_actor_name_returns_422(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/identity/enroll",
                 json={"permissions": {}},
@@ -340,7 +340,7 @@ def test_enroll_emits_audit_event(isolated_runtime: Path) -> None:
     sink = _Recorder()
     get_emitter().add_sink(sink)
     try:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/identity/enroll",
                 json={"actor_name": "bob", "permissions": {}},
@@ -359,7 +359,7 @@ def test_enroll_emits_audit_event(isolated_runtime: Path) -> None:
 
 
 def test_openapi_advertises_enroll(isolated_runtime: Path) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     assert "/v1/identity/enroll" in schema["paths"]
     assert "post" in schema["paths"]["/v1/identity/enroll"]

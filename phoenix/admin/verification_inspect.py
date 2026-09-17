@@ -42,7 +42,7 @@ from phoenix.admin.audit_decorator import emit_admin_audit
 from phoenix.admin.auth import require_admin
 from phoenix.admin.errors import AdminPrivilegeRequired, TaskNotPendingReview
 from phoenix.admin.router import admin_router
-from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.identity.bootstrap import IdentityError, require_actor
 from phoenix.ledger import (
     OverrideByOperatorEntry,
     get_ledger,
@@ -73,7 +73,7 @@ def _admin_authn(
     request_id: str = request.state.request_id
 
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         emit_admin_audit(
             actor=None,
