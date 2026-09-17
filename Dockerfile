@@ -123,7 +123,9 @@ WORKDIR /home/phoenix
 # PHOENIX_REST_URL points that in-container CLI (and `phoenix mcp serve`) at
 # the daemon on its loopback IP, so `docker exec <container> phoenix --actor
 # adam audit verify` reaches it; keep its port in step with PHOENIX_PORT.
-# NATS (4222) is exposed without authentication; see CHANGELOG known issues.
+# NATS has no authentication, so the launcher binds it to the container's
+# loopback only (the daemon connects on 127.0.0.1); publishing 4222 does not
+# reach it. Point PHOENIX_NATS_URL at an authenticated NATS if you need one.
 ENV PHOENIX_HOST=0.0.0.0 \
     PHOENIX_PORT=8003 \
     PHOENIX_REST_URL=http://127.0.0.1:8003 \

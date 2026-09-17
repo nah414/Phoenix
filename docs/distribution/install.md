@@ -100,8 +100,9 @@ Notes:
   the fix, and its in-container CLI defaults to port 8000 (until you rebuild, pass
   `--rest-url http://127.0.0.1:8003` after the second `phoenix`).
 - The image runs as **non-root UID 1000** (user `phoenix`).
-- Both Phoenix (8003) and NATS (4222) ports are exposed; the
-  monitoring port (8222) is internal.
+- The Phoenix port (8003) is exposed. NATS (4222) and its monitoring
+  port (8222) bind the container's loopback only, because NATS runs
+  without authentication; the in-container daemon reaches it there.
 - State persistence: mount `/home/phoenix/.phoenix` to a Docker volume
   or bind-mount path. The container stores:
   - `state/` -- SQLite state backend

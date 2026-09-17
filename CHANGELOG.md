@@ -73,8 +73,12 @@ Every failure is pre-existing: `mcp` extra (2), flaky `test_omega_ledger` (4 thi
 pricing data (2).
 
 **Known issues / follow-ups (not fixed here):**
-- NATS listens unauthenticated on all interfaces (`phoenix/launcher.py` `_spawn_nats`; the
-  Dockerfile publishes 4222).
+- ~~NATS listens unauthenticated on all interfaces~~ **Fixed 2026-09-17** (same branch):
+  `_spawn_nats` passes `--addr 127.0.0.1` (the monitor port follows), so the launcher's NATS
+  is loopback-only in every mode, Docker included; the daemon already connected only on
+  127.0.0.1. Pinned by `tests/unit/test_launcher.py::test_spawn_nats_binds_loopback_only`
+  (red before the change). `docs/distribution/run.md`, `install.md` and the Dockerfile
+  comment trued; the previous docs table claimed a loopback bind the code never set.
 - `C:\Phoenix\build\` is a stale copy with the pre-fix code: delete it before any in-tree
   build, and rebuild any image built before this fix.
 - `POST /v1/adapters` imports an arbitrary module for any signed actor with `can_load_adapter`.

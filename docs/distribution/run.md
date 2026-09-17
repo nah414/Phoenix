@@ -37,8 +37,8 @@ launcher (phoenix / python -m phoenix / phoenix-windows-x64.exe)
 | Port | Process | Protocol | Default bind |
 |---|---|---|---|
 | 8003 | Phoenix daemon | HTTP + WebSocket | `127.0.0.1` (pip + standalone), `0.0.0.0` (Docker) |
-| 4222 | NATS JetStream | nats:// | `127.0.0.1` (pip + standalone), `0.0.0.0` (Docker) |
-| 8222 | NATS monitoring | HTTP | `127.0.0.1` (pip + standalone), `0.0.0.0` (Docker) |
+| 4222 | NATS JetStream | nats:// | `127.0.0.1` everywhere (the launcher passes `--addr 127.0.0.1`; NATS has no authentication, and the daemon only connects on loopback) |
+| 8222 | NATS monitoring | HTTP | `127.0.0.1` everywhere (follows the NATS bind) |
 
 Override the daemon port via `--port` or `$PHOENIX_PORT`:
 
