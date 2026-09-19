@@ -6,7 +6,8 @@ Verifies POST/GET/DELETE under ``/v1/adapters``:
 - GET returns the current registry contents (no capability required).
 - DELETE unregisters; 404 when the adapter is unknown.
 - POST refuses bad specs (400), broken adapters (503), already-
-  registered names (409), and file-path specs (501).
+  registered names (409), and file-path specs (501). Modules outside
+  the adapter allowlist (403) are covered in ``test_adapter_allowlist.py``.
 - POST/DELETE require ``can_load_adapter`` / ``can_unload_adapter``
   respectively -- non-admin "alice" gets 403; bootstrap "adam"
   (all-True) succeeds.
@@ -141,10 +142,13 @@ class TestAdapterLifecycle:
 
 class TestAdapterErrors:
     def test_post_with_bad_module_returns_400(self, isolated_runtime: Path) -> None:
+        # Inside the allowlisted namespace, so the import is attempted and
+        # fails (400). Modules outside it get 403 before any import -- see
+        # test_adapter_allowlist.py.
         with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",
-                json={"spec": "nonexistent.module.path:thing"},
+                json={"spec": "phoenix.adapters.nonexistent_module:thing"},
             )
         assert resp.status_code == 400
         assert "Cannot import" in resp.json()["detail"]
@@ -174,10 +178,14 @@ class TestAdapterErrors:
         assert r2.status_code == 409
         assert "identity" in r2.json()["detail"]
 
-    def test_post_broken_adapter_returns_503(self, isolated_runtime: Path) -> None:
+    def test_post_broken_adapter_returns_503(
+        self, isolated_runtime: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A factory that returns a whitespace-stripping adapter must
         be refused with 503 + failed_cases listing.
         """
+        # The factory lives in this test module, outside phoenix.adapters.
+        monkeypatch.setenv("PHOENIX_ADAPTER_ALLOWLIST", "tests.integration")
         with signed_client(app) as client:
             resp = client.post(
                 "/v1/adapters",

@@ -406,8 +406,11 @@ def test_load_adapter_rejects_filesystem_path() -> None:
 
 
 def test_load_adapter_rejects_missing_module() -> None:
+    # Inside the allowlisted phoenix.adapters namespace, so the import is
+    # attempted (and fails); a module outside the allowlist is refused
+    # before import -- see test_adapter_allowlist.py.
     with pytest.raises(AdapterError) as excinfo:
-        load_adapter("nonexistent.module.path:thing")
+        load_adapter("phoenix.adapters.nonexistent_module:thing")
     assert "Cannot import" in str(excinfo.value)
 
 
@@ -434,19 +437,22 @@ def _make_broken_factory_module() -> None:
 
 
 # We register a broken-adapter factory on the test module so
-# load_adapter's importlib path can find it.
+# load_adapter's importlib path can find it. The tests that load it
+# allowlist ``tests.integration`` via PHOENIX_ADAPTER_ALLOWLIST.
 def _broken_adapter_factory() -> _DropsWhitespaceAdapter:
     return _DropsWhitespaceAdapter()
 
 
 def test_load_adapter_refuses_failing_validation(
     fresh_registry: AdapterRegistry,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If validation fails, the adapter is NOT registered.
 
     The loader raises ``AdapterValidationError`` and leaves the
     registry untouched -- a broken adapter never sees real traffic.
     """
+    monkeypatch.setenv("PHOENIX_ADAPTER_ALLOWLIST", "tests.integration")
     with pytest.raises(AdapterValidationError) as excinfo:
         load_adapter("tests.integration.test_adapters_step2:_broken_adapter_factory")
     assert excinfo.value.adapter_name == "broken-strip"
@@ -457,6 +463,7 @@ def test_load_adapter_refuses_failing_validation(
 
 def test_load_adapter_with_validate_false_skips_round_trip(
     fresh_registry: AdapterRegistry,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``validate=False`` registers without exercising the validator.
 
@@ -464,6 +471,7 @@ def test_load_adapter_with_validate_false_skips_round_trip(
     without paying the validation cost; production callers always
     pass ``validate=True`` (the default).
     """
+    monkeypatch.setenv("PHOENIX_ADAPTER_ALLOWLIST", "tests.integration")
     record = load_adapter(
         "tests.integration.test_adapters_step2:_broken_adapter_factory",
         validate=False,

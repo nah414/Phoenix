@@ -203,6 +203,27 @@ protected routes (architecture v1 Section 7.2). Other actors are enrolled by an
 admin via `POST /v1/identity/enroll` (`phoenix identity enroll`) and sign the same
 way with `--actor <name>`.
 
+## Loading adapters
+
+`POST /v1/adapters` (`phoenix lora load <spec>`) needs an actor with
+`can_load_adapter` and a `"module.path:callable"` spec. The daemon imports the
+module only if it is on the adapter allowlist:
+
+- `phoenix.adapters.*`, Phoenix's own adapter package (for example
+  `phoenix.adapters.identity_adapter:make_identity_adapter`). The package's own
+  machinery (loader, registry, sandbox, validator, protocol, errors) is not
+  loadable.
+- Any namespace listed in `PHOENIX_ADAPTER_ALLOWLIST` in the **daemon's**
+  environment: comma-separated dotted prefixes, e.g.
+  `PHOENIX_ADAPTER_ALLOWLIST=acme_lora,my_org.adapters`. An entry admits that
+  module and its submodules (`acme_lora.v6`), not look-alikes (`acme_lorax`).
+
+Any other module (`os`, `subprocess`, an arbitrary installed package) gets
+**HTTP 403** `adapter_module_not_allowed` and is never imported. The factory must
+also be defined inside an allowlisted module. Before 2026-09-18 the daemon imported
+whatever module a spec named; set the variable for any adapter package of your
+own that lives outside `phoenix.adapters`.
+
 ## Log locations
 
 The pip wheel + standalone binary log to stdout / stderr (the launcher

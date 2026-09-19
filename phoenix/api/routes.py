@@ -47,6 +47,7 @@ from phoenix.adapters import (
     AdapterAlreadyRegistered,
     AdapterError,
     AdapterNotLoaded,
+    AdapterSpecNotAllowed,
     AdapterTimeoutError,
     AdapterValidationError,
     get_registry as get_adapter_registry,
@@ -1006,6 +1007,17 @@ def post_adapter(
 
     try:
         record = load_adapter(payload.spec)
+    except AdapterSpecNotAllowed as exc:
+        # Refused before import: the module is outside the adapter
+        # allowlist (phoenix.adapters + PHOENIX_ADAPTER_ALLOWLIST).
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "adapter_module_not_allowed",
+                "module": exc.module_path,
+                "message": str(exc),
+            },
+        ) from exc
     except AdapterValidationError as exc:
         raise HTTPException(
             status_code=503,

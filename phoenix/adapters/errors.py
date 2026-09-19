@@ -14,6 +14,8 @@ codes:
   adapter).
 - :class:`AdapterAlreadyRegistered` -> 409 (re-registering a name
   that's already in the registry).
+- :class:`AdapterSpecNotAllowed` -> 403 (the spec names a module
+  outside the loader's allowlist; refused before any import).
 
 All inherit from :class:`AdapterError` so a single
 ``except AdapterError`` in the routes layer catches the family.
@@ -108,10 +110,26 @@ class AdapterAlreadyRegistered(AdapterError):
         )
 
 
+class AdapterSpecNotAllowed(AdapterError):
+    """The adapter spec names a module outside the loader's allowlist.
+
+    Raised by :func:`~phoenix.adapters.loader.load_adapter` *before*
+    anything is imported (and again, before the factory is called, when
+    an allowlisted module's attribute is defined in a module that is
+    not allowlisted). Maps to HTTP 403: the spec is well-formed, but
+    the daemon refuses to import or run code from that module.
+    """
+
+    def __init__(self, *, module_path: str, message: str) -> None:
+        self.module_path = module_path
+        super().__init__(message)
+
+
 __all__ = [
     "AdapterAlreadyRegistered",
     "AdapterError",
     "AdapterNotLoaded",
+    "AdapterSpecNotAllowed",
     "AdapterTimeoutError",
     "AdapterValidationError",
     "AdapterVersionMismatch",

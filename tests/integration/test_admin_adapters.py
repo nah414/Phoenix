@@ -184,6 +184,11 @@ class TestForceRevalidate:
 
 
 class TestForceRevalidateBroken:
+    @pytest.fixture(autouse=True)
+    def _allowlist_test_adapters(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # _BROKEN_SPEC lives in this test module, outside phoenix.adapters.
+        monkeypatch.setenv("PHOENIX_ADAPTER_ALLOWLIST", "tests.integration")
+
     def test_broken_adapter_revalidation_fails(self, isolated_runtime: Path) -> None:
         """A registered-but-broken adapter (loaded via validate=False
         in-process) re-validates as failed without bringing the

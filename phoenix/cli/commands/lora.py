@@ -8,7 +8,10 @@ Thin CLI wrapper over Phase 9 Step 3's REST surface:
 
 The ``spec`` argument follows the loader contract --
 ``"module.path:callable"`` -- since Phase 9 v1 doesn't ship
-file-path loading (501 response from the daemon).
+file-path loading (501 response from the daemon). The daemon imports
+only modules under ``phoenix.adapters`` or a namespace listed in its
+``PHOENIX_ADAPTER_ALLOWLIST``; any other module is refused with 403
+before import.
 """
 
 from __future__ import annotations

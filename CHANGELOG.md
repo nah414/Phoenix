@@ -81,7 +81,19 @@ pricing data (2).
   comment trued; the previous docs table claimed a loopback bind the code never set.
 - `C:\Phoenix\build\` is a stale copy with the pre-fix code: delete it before any in-tree
   build, and rebuild any image built before this fix.
-- `POST /v1/adapters` imports an arbitrary module for any signed actor with `can_load_adapter`.
+- ~~`POST /v1/adapters` imports an arbitrary module for any signed actor with
+  `can_load_adapter`~~ **Fixed 2026-09-18** (same branch): the loader imports only modules
+  under `phoenix.adapters` (its own machinery -- loader, registry, sandbox, validator,
+  protocol, errors, the package `__init__` -- excluded) or under a namespace the operator
+  lists in `PHOENIX_ADAPTER_ALLOWLIST` (comma-separated dotted prefixes, daemon
+  environment). Anything else is refused before import with `AdapterSpecNotAllowed`, which
+  the route maps to **403** `adapter_module_not_allowed`; the factory must also be defined
+  in an allowlisted module, so a re-exported callable (`from os import ...`) is refused.
+  Malformed module paths (`.relative`) are 400, no longer a 500. Pinned by
+  `tests/integration/test_adapter_allowlist.py` (17 of 20 red before the change: `os`,
+  `subprocess` and a canary module were imported). Out-of-tree adapter packages need the
+  variable set. `docs/distribution/run.md`, `phoenix/adapters/README.md`, the CLI help and
+  the Phase 9 build guide trued.
 
 ### Phase 13 Step 5c: mobile control panel (PWA) for the cognition harness (2026-06-12)
 

@@ -351,7 +351,11 @@ def _add_lora_group(subparsers: "argparse._SubParsersAction[argparse.ArgumentPar
     load = inner.add_parser("load", help="POST /v1/adapters.")
     load.add_argument(
         "spec",
-        help='Adapter spec (e.g., "phoenix.adapters.identity_adapter:make_identity_adapter").',
+        help=(
+            'Adapter spec (e.g., "phoenix.adapters.identity_adapter:make_identity_adapter"). '
+            "The daemon loads only phoenix.adapters.* or namespaces in its "
+            "PHOENIX_ADAPTER_ALLOWLIST; others get 403."
+        ),
     )
 
     inner.add_parser("list", help="GET /v1/adapters.")
