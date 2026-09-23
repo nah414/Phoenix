@@ -26,10 +26,10 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def _qho_body() -> dict:
 
 def test_single_solve_appends_genesis_ledger_entry(isolated_runtime: Path) -> None:
     """First solve in a fresh ledger anchors at GENESIS."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body())
     assert resp.status_code == 200, resp.text
     payload = resp.json()
@@ -118,7 +118,7 @@ def test_ledger_entry_hash_is_reproducible_from_payload(
     access to the row can recompute the hash from its fields, no
     Phoenix-side state needed.
     """
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body())
     assert resp.status_code == 200
 
@@ -135,7 +135,7 @@ def test_ledger_entry_hash_is_reproducible_from_payload(
 
 def test_two_solves_chain_correctly(isolated_runtime: Path) -> None:
     """A second solve's parent_hash equals the first solve's entry_hash."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         r1 = client.post("/v1/tasks", json=_qho_body())
         r2 = client.post("/v1/tasks", json=_qho_body())
 
@@ -156,7 +156,7 @@ def test_solve_entry_payload_contains_provenance_blocks(
     isolated_runtime: Path,
 ) -> None:
     """The composed SolveEntry payload contains the four §6.7 sub-blocks."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body())
     assert resp.status_code == 200
 
@@ -194,7 +194,7 @@ def test_solve_entry_payload_contains_provenance_blocks(
 def test_chain_verifies_in_both_layers(isolated_runtime: Path) -> None:
     """After 3 solves, both the SQL structural check and the Python
     crypto walk report ``valid``."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         for _ in range(3):
             resp = client.post("/v1/tasks", json=_qho_body())
             assert resp.status_code == 200
@@ -213,7 +213,7 @@ def test_chain_verifies_in_both_layers(isolated_runtime: Path) -> None:
 def test_ledger_audit_event_emitted_per_solve(isolated_runtime: Path) -> None:
     """The composer emits a ``ledger.solve_entry_appended`` audit event
     so the audit JSONL has a record of every ledger append."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_qho_body())
     assert resp.status_code == 200
 

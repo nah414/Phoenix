@@ -16,10 +16,14 @@ the same OS user can read this file. v1.x adds OS-keystore bindings
 The keystore module exposes:
 
 - :func:`load_or_generate_master_key` -- returns the bytes; first call
-  generates + persists, subsequent calls load.
-- :func:`get_install_fingerprint` -- a stable hex string derived from
-  the master key (Section 7.3 ``identity_fingerprint`` field on the
-  vendored Actor).
+  generates + persists, subsequent calls load. The daemon owns the
+  install identity, so only the daemon side calls this.
+- :func:`load_master_key` -- load-only variant for signing *clients*
+  (the ``phoenix`` CLI, ``phoenix mcp serve``): raises
+  :class:`KeystoreError` instead of creating a key when none exists.
+- :func:`get_install_fingerprint` / :func:`fingerprint_for_key` -- a
+  stable hex string derived from the master key (Section 7.3
+  ``identity_fingerprint`` field on the vendored Actor).
 - :class:`KeystoreError` -- raised on permission / I/O failures.
 """
 
@@ -66,6 +70,39 @@ def _master_key_path() -> Path:
     return _keystore_dir() / _KEY_FILENAME
 
 
+def load_master_key() -> bytes:
+    """Return the existing master key bytes; never create one.
+
+    For signing clients. A client that generated a key when none
+    existed would mint an identity no daemon trusts, so a missing key
+    is an error here rather than a first run.
+
+    Raises :class:`KeystoreError` when the key file is missing,
+    unreadable, or malformed.
+    """
+    path = _master_key_path()
+    if not path.exists():
+        raise KeystoreError(
+            f"No Phoenix master key at {path}. Start the Phoenix daemon once "
+            f"as this OS user (it creates the key), then retry.",
+            path=path,
+        )
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise KeystoreError(
+            f"Failed to read master key at {path}: {exc}",
+            path=path,
+        ) from exc
+    if len(data) != _MASTER_KEY_BYTES:
+        raise KeystoreError(
+            f"Master key at {path} is malformed "
+            f"(expected {_MASTER_KEY_BYTES} bytes, got {len(data)}).",
+            path=path,
+        )
+    return data
+
+
 def load_or_generate_master_key() -> bytes:
     """Return the install's master key bytes.
 
@@ -79,20 +116,7 @@ def load_or_generate_master_key() -> bytes:
     """
     path = _master_key_path()
     if path.exists():
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise KeystoreError(
-                f"Failed to read master key at {path}: {exc}",
-                path=path,
-            ) from exc
-        if len(data) != _MASTER_KEY_BYTES:
-            raise KeystoreError(
-                f"Master key at {path} is malformed "
-                f"(expected {_MASTER_KEY_BYTES} bytes, got {len(data)}).",
-                path=path,
-            )
-        return data
+        return load_master_key()
 
     # First-run generation.
     try:
@@ -133,6 +157,10 @@ def get_install_fingerprint() -> str:
     public-key fingerprint; the wire format on the vendored
     :class:`Actor` accepts any string identifier.
     """
-    key = load_or_generate_master_key()
+    return fingerprint_for_key(load_or_generate_master_key())
+
+
+def fingerprint_for_key(key: bytes) -> str:
+    """The install fingerprint for already-loaded master key bytes."""
     digest = hashlib.sha256(key).hexdigest()
     return digest[:32]

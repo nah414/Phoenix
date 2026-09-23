@@ -22,10 +22,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -104,7 +104,7 @@ class TestDecisionLogRingBuffer:
 
         # Just hit /v1/tasks twice; each goes through the verification
         # gate which calls Router.decide for Stage 6 routing.
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/tasks", json=_qho_body())
             client.post("/v1/tasks", json=_qho_body())
 
@@ -118,7 +118,7 @@ class TestDecisionLogRingBuffer:
     def test_limit_caps_returned_count(self, isolated_runtime: Path) -> None:
         from phoenix.router.decision import decision_log_snapshot
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             for _ in range(5):
                 client.post("/v1/tasks", json=_qho_body())
 
@@ -136,7 +136,7 @@ class TestDecisionLogRingBuffer:
 
 class TestRouterDecisionsEndpoint:
     def test_returns_zero_when_no_solves(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/router/decisions")
         assert resp.status_code == 200
         body = resp.json()
@@ -144,7 +144,7 @@ class TestRouterDecisionsEndpoint:
         assert body["decisions"] == []
 
     def test_returns_decisions_after_solve(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/tasks", json=_qho_body())
             resp = client.get("/v1/admin/router/decisions?limit=10")
         body = resp.json()
@@ -164,13 +164,13 @@ class TestRouterDecisionsEndpoint:
         assert "candidates_considered" in prov
 
     def test_limit_capped_at_1000(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/router/decisions?limit=999999")
         body = resp.json()
         assert body["limit"] == 1000
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/router/decisions",
                 headers={"Authorization": _alice_header()},
@@ -184,7 +184,7 @@ class TestRouterDecisionsEndpoint:
 
 class TestProviderHealthHistoryEndpoint:
     def test_returns_empty_when_no_health_events(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/providers/health-history")
         assert resp.status_code == 200
         body = resp.json()
@@ -217,7 +217,7 @@ class TestProviderHealthHistoryEndpoint:
             }
         )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/providers/health-history")
         body = resp.json()
         assert body["count"] == 1
@@ -239,7 +239,7 @@ class TestProviderHealthHistoryEndpoint:
                 }
             )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/providers/health-history?provider_id=ibm_quantum")
         body = resp.json()
         assert body["count"] == 1
@@ -250,7 +250,7 @@ class TestProviderHealthHistoryEndpoint:
         assert params["provider_id"] == "ibm_quantum"
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/providers/health-history",
                 headers={"Authorization": _alice_header()},
@@ -265,7 +265,7 @@ class TestProviderHealthHistoryEndpoint:
 def test_step6_routes_registered_with_admin_tag(
     isolated_runtime: Path,
 ) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     expected = {
         ("/v1/admin/router/decisions", "get"),

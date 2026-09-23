@@ -33,10 +33,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def _seed_pending_review(task_id: str, actor_id: str = "adam") -> str:
 
 class TestListPendingReview:
     def test_empty_queue_returns_zero(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/tasks-pending-review")
         assert resp.status_code == 200
         assert resp.json() == {"reviews": [], "count": 0}
@@ -122,7 +122,7 @@ class TestListPendingReview:
     def test_returns_seeded_rows(self, isolated_runtime: Path) -> None:
         _seed_pending_review("task_a")
         _seed_pending_review("task_b")
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/tasks-pending-review")
         body = resp.json()
         assert body["count"] == 2
@@ -131,7 +131,7 @@ class TestListPendingReview:
         assert "task_b" in task_ids
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/tasks-pending-review",
                 headers={"Authorization": _alice_header()},
@@ -146,7 +146,7 @@ class TestListPendingReview:
 class TestOverridePendingReview:
     def test_valid_override_resolves_row(self, isolated_runtime: Path) -> None:
         _seed_pending_review("task_valid")
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/tasks-pending-review/task_valid/override",
                 json={"disposition": "ship-as-degraded", "reason": "good enough"},
@@ -165,7 +165,7 @@ class TestOverridePendingReview:
 
     def test_appends_override_ledger_entry(self, isolated_runtime: Path) -> None:
         _seed_pending_review("task_ledger")
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/tasks-pending-review/task_ledger/override",
                 json={"disposition": "reject", "reason": "bad data"},
@@ -183,7 +183,7 @@ class TestOverridePendingReview:
 
     def test_invalid_disposition_returns_400(self, isolated_runtime: Path) -> None:
         _seed_pending_review("task_bad")
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/tasks-pending-review/task_bad/override",
                 json={"disposition": "definitely-not-valid", "reason": "x"},
@@ -192,7 +192,7 @@ class TestOverridePendingReview:
         assert "Invalid disposition" in resp.json()["detail"]
 
     def test_unknown_task_returns_409(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/tasks-pending-review/never_queued/override",
                 json={"disposition": "ship-as-degraded", "reason": "x"},
@@ -233,7 +233,7 @@ class TestOverridePendingReview:
         payload = lab.to_payload()
         header = "Phoenix-Actor " + base64.b64encode(json.dumps(payload).encode()).decode("ascii")
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/tasks-pending-review/task_cap_check/override",
                 json={"disposition": "ship-as-degraded", "reason": "x"},
@@ -244,7 +244,7 @@ class TestOverridePendingReview:
 
     def test_override_403_for_non_admin(self, isolated_runtime: Path) -> None:
         _seed_pending_review("task_non_admin")
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/tasks-pending-review/task_non_admin/override",
                 json={"disposition": "ship-as-degraded", "reason": "x"},
@@ -259,7 +259,7 @@ class TestOverridePendingReview:
 
 class TestRungDistribution:
     def test_empty_when_no_solves(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/verification/rung-distribution")
         assert resp.status_code == 200
         body = resp.json()
@@ -285,7 +285,7 @@ class TestRungDistribution:
                     }
                 )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/verification/rung-distribution")
         body = resp.json()
         assert body["rung_counts"]["R1_FLOOR"] == 3
@@ -294,7 +294,7 @@ class TestRungDistribution:
         assert body["total_solves_in_window"] == 10
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/verification/rung-distribution",
                 headers={"Authorization": _alice_header()},
@@ -311,7 +311,7 @@ class TestVerificationGateAutoEnqueue:
     def test_real_solve_does_not_enqueue_when_converged(self, isolated_runtime: Path) -> None:
         """A normal QHO solve produces CONVERGED, not DEGRADED, so it
         should NOT enqueue. This guards the gate against over-enqueueing."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             body = {
                 "physics_context": {
                     "mass_kg": 9.1093837015e-31,
@@ -348,7 +348,7 @@ class TestVerificationGateAutoEnqueue:
         original = gate_module.read_drift_state
         gate_module.read_drift_state = _warning_drift_state  # type: ignore[assignment]
         try:
-            with TestClient(app) as client:
+            with signed_client(app) as client:
                 body = {
                     "physics_context": {
                         "mass_kg": 9.1093837015e-31,
@@ -391,7 +391,7 @@ class TestVerificationGateAutoEnqueue:
 def test_step5_routes_registered_with_admin_tag(
     isolated_runtime: Path,
 ) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     expected = {
         ("/v1/admin/tasks-pending-review", "get"),

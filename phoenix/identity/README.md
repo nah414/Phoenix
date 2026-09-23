@@ -33,3 +33,4 @@ The signing/verification logic lives in `vendor/actor/` (vendored from `evolutio
 
 ## Recent changes
 - 2026-05-06 — Phase 0: module created as empty stub.
+- 2026-09-16 — Security (CHANGELOG `[1.1.0.dev0]`): `bootstrap.py` drops the header-less `extract_or_bootstrap` for `require_actor` (missing header raises `IdentityError`, HTTP 401). `extract_actor_from_header` turns every parse or verification failure, including `OverflowError` and `RecursionError`, into `IdentityError`. `sign_local_actor_header(name)` has no default actor and never creates a key. `keystore.py` adds the load-only `load_master_key()`.

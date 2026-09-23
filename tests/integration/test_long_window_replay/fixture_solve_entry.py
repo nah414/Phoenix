@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from tests._signed_actor import signed_client
 
 
 # Pinned QHO task spec (single-electron, omega=1e15, fine grid).
@@ -84,9 +84,10 @@ class FixtureSolve:
 def build_strict_mode_qho_fixture(runtime: Path) -> FixtureSolve:
     """Submit a strict-mode QHO solve and capture the fixture bundle.
 
-    Uses the in-process FastAPI TestClient so the full request-path
-    runs (safety gate, verification gate, orchestrate, ledger
-    composer, audit emitter). The resulting SolveEntry is written
+    Uses the in-process FastAPI TestClient, signed as the admin actor
+    ``adam``, so the full request-path runs (actor verification,
+    safety gate, verification gate, orchestrate, ledger composer,
+    audit emitter). The resulting SolveEntry is written
     to the ledger; subsequent ``replay(task_id)`` reads it back.
 
     Parameters:
@@ -112,7 +113,7 @@ def build_strict_mode_qho_fixture(runtime: Path) -> FixtureSolve:
 
     solve_unix = time.time()
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks", json=_PINNED_QHO_BODY)
         assert resp.status_code == 200, f"fixture solve failed: {resp.text}"
         body = resp.json()

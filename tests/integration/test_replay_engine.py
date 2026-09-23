@@ -28,7 +28,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
@@ -38,6 +37,7 @@ from phoenix.ledger import (
     ReplayEntryIncomplete,
     replay,
 )
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -95,7 +95,7 @@ def _qho_body(mode: str = "strict") -> dict:
 
 def test_strict_solve_then_replay_matches_bit_exact(isolated_runtime: Path) -> None:
     """A strict-mode solve followed by replay produces matching hashes."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         original = client.post("/v1/tasks", json=_qho_body("strict"))
         assert original.status_code == 200
         task_id = original.json()["task_id"]
@@ -117,7 +117,7 @@ def test_replay_does_not_extend_chain(isolated_runtime: Path) -> None:
     """Replay verifies but does NOT add a new ledger entry."""
     from phoenix.state import get_state_backend
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         original = client.post("/v1/tasks", json=_qho_body("strict"))
         task_id = original.json()["task_id"]
 
@@ -139,7 +139,7 @@ def test_replay_does_not_extend_chain(isolated_runtime: Path) -> None:
 
 def test_replay_returns_404_for_unknown_task_id(isolated_runtime: Path) -> None:
     """POSTing to /replay with a non-existent task_id returns 404."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks/req_does_not_exist/replay")
     assert resp.status_code == 404
     assert "No ledger entry" in resp.json()["detail"]
@@ -149,7 +149,7 @@ def test_replay_returns_409_for_default_mode_original(
     isolated_runtime: Path,
 ) -> None:
     """Default-mode solves can't be replayed (no env snapshot)."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         original = client.post("/v1/tasks", json=_qho_body("default"))
         assert original.status_code == 200
         task_id = original.json()["task_id"]
@@ -168,11 +168,86 @@ def test_replay_engine_direct_raises_typed_exceptions(
     with pytest.raises(LedgerEntryNotFound):
         replay("req_never_seen")
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         default_resp = client.post("/v1/tasks", json=_qho_body("default"))
         task_id = default_resp.json()["task_id"]
     with pytest.raises(ReplayEntryIncomplete):
         replay(task_id)
+
+
+def _spec_with_actor(actor_name: object, *, present: bool = True) -> dict:
+    body = _qho_body("strict")
+    spec = {
+        "physics_context": body["physics_context"],
+        "tolerance": body["tolerance"],
+        "metadata": {},
+    }
+    if present:
+        spec["actor_name"] = actor_name
+    return {"task_id": "req_replay_actor_probe", "task_spec": spec}
+
+
+@pytest.mark.parametrize(
+    ("actor_name", "present"),
+    [(None, False), ("", True), ("   ", True), (None, True), (42, True), (["adam"], True)],
+    ids=["missing", "empty", "whitespace", "null", "int", "list"],
+)
+def test_replay_refuses_entry_without_recorded_actor_name(
+    monkeypatch: pytest.MonkeyPatch, actor_name: object, present: bool
+) -> None:
+    """Security (2026-09-16): replay never substitutes ``adam`` for a missing actor.
+
+    Before, ``actor_name`` defaulted to ``"adam"``, so a stripped or hand-edited
+    ``task_spec`` replayed as the all-privileged install owner.
+    """
+    from phoenix.identity import bootstrap
+    from phoenix.ledger.replay_engine import _reconstruct_task_and_actor
+
+    minted: list[str] = []
+    monkeypatch.setattr(bootstrap, "mint_bootstrap_actor", lambda name="adam": minted.append(name))
+    with pytest.raises(ReplayEntryIncomplete, match="actor_name"):
+        _reconstruct_task_and_actor(_spec_with_actor(actor_name, present=present))
+    assert minted == []
+
+
+def test_replay_reconstructs_the_recorded_actor() -> None:
+    from phoenix.ledger.replay_engine import _reconstruct_task_and_actor
+
+    task = _reconstruct_task_and_actor(_spec_with_actor("alice"))
+    assert task.actor.name == "alice"
+
+
+def test_replay_route_is_409_when_recorded_actor_name_was_stripped(
+    isolated_runtime: Path,
+) -> None:
+    """End to end: strip ``task_spec.actor_name`` from a sealed strict solve."""
+    import json
+    import sqlite3
+
+    with signed_client(app) as client:
+        original = client.post("/v1/tasks", json=_qho_body("strict"))
+        assert original.status_code == 200, original.text
+        task_id = original.json()["task_id"]
+
+    db_path = isolated_runtime / "state.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute("SELECT entry_id, payload_json FROM ledger_entries LIMIT 1")
+        entry_id, payload_json = cur.fetchone()
+        payload = json.loads(payload_json)
+        assert payload["task_spec"]["actor_name"] == "adam"
+        del payload["task_spec"]["actor_name"]
+        conn.execute(
+            "UPDATE ledger_entries SET payload_json = ? WHERE entry_id = ?",
+            (json.dumps(payload), entry_id),
+        )
+        conn.commit()
+
+    with pytest.raises(ReplayEntryIncomplete, match="actor_name"):
+        replay(task_id)
+    with signed_client(app) as client:
+        resp = client.post(f"/v1/tasks/{task_id}/replay")
+    assert resp.status_code == 409, resp.text
+    assert "actor_name" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +262,7 @@ def test_replay_diverges_when_recorded_hash_was_tampered(
     import json
     import sqlite3
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         original = client.post("/v1/tasks", json=_qho_body("strict"))
         task_id = original.json()["task_id"]
 
@@ -221,7 +296,7 @@ def test_replay_route_surfaces_500_on_divergence(
     import json
     import sqlite3
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         original = client.post("/v1/tasks", json=_qho_body("strict"))
         task_id = original.json()["task_id"]
 
@@ -237,7 +312,7 @@ def test_replay_route_surfaces_500_on_divergence(
         )
         conn.commit()
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post(f"/v1/tasks/{task_id}/replay")
     assert resp.status_code == 500
     detail = resp.json()["detail"]
@@ -296,7 +371,7 @@ def test_replay_endpoint_requires_can_replay_tasks_permission(
     payload = alice.to_payload()
     header = "Phoenix-Actor " + base64.b64encode(json.dumps(payload).encode()).decode("ascii")
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post(
             "/v1/tasks/req_anything/replay",
             headers={"Authorization": header},
@@ -306,11 +381,11 @@ def test_replay_endpoint_requires_can_replay_tasks_permission(
 
 
 def test_replay_endpoint_passes_for_admin_actor(isolated_runtime: Path) -> None:
-    """The bootstrap-fallback admin actor (adam) has can_replay_tasks."""
-    # No actor header -> bootstrap-to-adam fallback; adam is admin so
-    # the safety gate passes. The replay then 404s because no task
-    # exists, which is still a "permission granted" outcome.
-    with TestClient(app) as client:
+    """The signed admin actor (adam) has can_replay_tasks."""
+    # Signed adam header -> adam is admin so the safety gate passes.
+    # The replay then 404s because no task exists, which is still a
+    # "permission granted" outcome.
+    with signed_client(app) as client:
         resp = client.post("/v1/tasks/req_anything/replay")
     # Not 401/403 -- permission was granted.
     assert resp.status_code in (404, 409, 500)

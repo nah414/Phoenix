@@ -6,7 +6,7 @@ with environment variables taking precedence. The two recognised
 env-var overrides today are:
 
 - ``$PHOENIX_REST_URL`` -- base URL of the Phoenix daemon
-  (e.g., ``http://localhost:8000``).
+  (e.g., ``http://127.0.0.1:8003``).
 - ``$PHOENIX_REPRODUCIBILITY_MODE`` -- one of ``permissive`` |
   ``strict`` | ``replay`` (Phase 7 Section 1 Decision 19).
 
@@ -30,7 +30,13 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
-_DEFAULT_REST_URL = "http://localhost:8000"
+# The daemon's own default bind (``phoenix.launcher`` DEFAULT_HOST/DEFAULT_PORT,
+# ``python -m phoenix.api``, the Docker image). A loopback IP literal, not
+# ``localhost``: the name can resolve to ``::1`` first, where a process that is
+# not Phoenix can listen on the same port. (Until 2026-09-17 this was
+# ``http://localhost:8000``, a port Phoenix never listens on, so a configured
+# ``default_actor`` signed requests for whatever owned port 8000.)
+_DEFAULT_REST_URL = "http://127.0.0.1:8003"
 _DEFAULT_REPRO_MODE = "permissive"
 _VALID_REPRO_MODES = frozenset({"permissive", "strict", "replay"})
 _DEFAULT_CONFIG_PATH = Path.home() / ".phoenix" / "config.yaml"
@@ -47,12 +53,16 @@ class CLIConfig:
     """Resolved CLI configuration.
 
     Fields:
-      - ``rest_url`` -- base URL of the Phoenix daemon.
+      - ``rest_url`` -- base URL of the Phoenix daemon (default
+        ``http://127.0.0.1:8003``, the daemon's default bind).
       - ``reproducibility_mode`` -- ``permissive`` | ``strict`` |
         ``replay``.
-      - ``default_actor`` -- actor name to use when no
-        ``--actor`` flag is passed. ``None`` means "use bootstrap"
-        (the dev-mode default).
+      - ``default_actor`` -- actor name to sign as when no
+        ``--actor`` flag is passed. Signed only for a loopback IP
+        ``rest_url`` (``127.0.0.1``, ``[::1]``; not the name
+        ``localhost``). ``None`` means requests are sent unsigned: there
+        is no implicit ``adam`` (set ``default_actor: adam`` once in
+        ``config.yaml`` to sign as the install owner).
       - ``output_format`` -- default render mode (``json`` |
         ``text`` | ``table`` | ``auto``). ``auto`` lets
         :mod:`phoenix.cli.output_formats` pick based on TTY.

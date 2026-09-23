@@ -46,6 +46,7 @@ from tests.integration.test_panic_mode.conftest import (
     kill_queue,
     kill_state_backend,
 )
+from tests._signed_actor import signed_client
 
 
 pytestmark = pytest.mark.acceptance
@@ -199,7 +200,6 @@ def test_post_tasks_with_three_failures_fail_closed_http(
     What's NOT acceptable: a 200 response with a HEDGED_CONSENSUS
     agreement type that LOOKS like a verified solve.
     """
-    from fastapi.testclient import TestClient
 
     from phoenix.api.routes import app
 
@@ -215,7 +215,7 @@ def test_post_tasks_with_three_failures_fail_closed_http(
         },
     }
 
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with signed_client(app, raise_server_exceptions=False) as client:
         with ExitStack() as stack:
             stack.enter_context(kill_state_backend())
             stack.enter_context(kill_drift_state(monkeypatch))

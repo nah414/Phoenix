@@ -6,12 +6,60 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// ---- UI token (sent as X-Phoenix-UI-Token) --------------------------------
+// The daemon admits /v1/cognition/* only with its PHOENIX_UI_TOKEN. Two sources:
+//  1. The desktop shortcut starts the daemon with a fresh per-launch token and
+//     opens /cognition#token=<token>. A URL fragment is never sent to a server.
+//     It is read once, kept for this tab session only (sessionStorage, never
+//     localStorage), and stripped from the address bar via history.replaceState.
+//  2. A token typed into Connection (the phone-over-Tailscale flow, where the
+//     daemon's PHOENIX_UI_TOKEN is set by hand). Remembered on this device.
+// A per-launch token, when present, wins for this tab.
+const TOKEN_KEY = "phx.token";
+
+function readStore(store, key) {
+  try { return store.getItem(key) || ""; } catch { return ""; }
+}
+
+function writeStore(store, key, value) {
+  try {
+    if (value) store.setItem(key, value); else store.removeItem(key);
+  } catch { /* storage unavailable (private mode, blocked site data) */ }
+}
+
+function takeTokenFromFragment() {
+  const hash = window.location.hash.replace(/^#/, "");
+  if (!hash) return "";
+  let token = "";
+  let found = false;
+  const rest = [];
+  for (const part of hash.split("&")) {
+    if (part.startsWith("token=")) {
+      found = true;
+      try { token = decodeURIComponent(part.slice("token=".length)).trim(); } catch { token = ""; }
+    } else if (part) {
+      rest.push(part);
+    }
+  }
+  if (!found) return "";
+  const clean = window.location.pathname + window.location.search + (rest.length ? `#${rest.join("&")}` : "");
+  try { history.replaceState(history.state, "", clean); } catch { /* keep the token anyway */ }
+  return token;
+}
+
+const launchToken = takeTokenFromFragment();
+if (launchToken) writeStore(sessionStorage, TOKEN_KEY, launchToken);
+
 const baseEl = $("#base");
 const tokenEl = $("#token");
-baseEl.value = localStorage.getItem("phx.base") || "";
-tokenEl.value = localStorage.getItem("phx.token") || "";
-baseEl.addEventListener("change", () => localStorage.setItem("phx.base", baseEl.value.trim()));
-tokenEl.addEventListener("change", () => localStorage.setItem("phx.token", tokenEl.value.trim()));
+baseEl.value = readStore(localStorage, "phx.base");
+tokenEl.value = readStore(sessionStorage, TOKEN_KEY) || readStore(localStorage, TOKEN_KEY);
+baseEl.addEventListener("change", () => writeStore(localStorage, "phx.base", baseEl.value.trim()));
+tokenEl.addEventListener("change", () => {
+  // A hand-entered token replaces this tab's per-launch token.
+  writeStore(sessionStorage, TOKEN_KEY, "");
+  writeStore(localStorage, TOKEN_KEY, tokenEl.value.trim());
+});
 
 function apiUrl(path) {
   const base = (baseEl.value || "").trim().replace(/\/$/, "");
@@ -47,7 +95,11 @@ function busy(btn, on) {
 
 async function loadCorpora() {
   try {
-    const { files } = await api("/v1/cognition/corpora");
+    const { dir, files } = await api("/v1/cognition/corpora");
+    // Where file paths live: relative paths resolve inside this directory, and
+    // when the daemon has PHOENIX_CORPUS_DIR set, paths outside it are refused.
+    const dirEl = $("#corpus-dir");
+    if (dirEl) dirEl.textContent = dir ? `Files: relative paths resolve inside ${dir}` : "";
     const opts = files.map((f) => {
       const opt = document.createElement("option");
       opt.value = f;

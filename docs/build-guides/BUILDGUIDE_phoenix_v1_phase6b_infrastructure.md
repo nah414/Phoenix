@@ -267,6 +267,8 @@ python -c "from phoenix.verification.drift_state import read_drift_state; print(
   }
   ```
 - Bootstrap-actor parity: same fallback as `/v1/ws/tasks/{task_id}/stream` — when no Authorization header is present and the keystore is available, auto-mint a bootstrap actor (matches [OPEN] item 7's resolution).
+
+  > **Superseded 2026-09-16 (security):** the header-less bootstrap-actor fallback described here was removed. A request without a signed `Authorization: Phoenix-Actor` header now gets HTTP 401 on every authenticated route, including `POST /v1/identity/ws-token`. See `phoenix/identity/bootstrap.py` and the CHANGELOG `[1.1.0.dev0]` security entry.
 - The `EventBroker` (memory or NATS) is the transport: the detector calls `broker.emit("phoenix.drift.alerts", "drift.alert", payload)`; the WS handler subscribes to that channel and forwards to connected clients.
 
 **Verification:**
@@ -407,6 +409,8 @@ and future readers see why the implementation looks the way it does.
    (`adam` / `ash`, both `is_admin=True`). Matches Phase 6a Decision 4 locked
    scope; diverging here would create per-endpoint auth inconsistency with no
    security benefit.
+
+   > **Superseded 2026-09-16 (security):** the header-less bootstrap-actor fallback described here was removed. A request without a signed `Authorization: Phoenix-Actor` header now gets HTTP 401 on every authenticated route, including `POST /v1/identity/ws-token`. See `phoenix/identity/bootstrap.py` and the CHANGELOG `[1.1.0.dev0]` security entry.
 
 ---
 

@@ -109,8 +109,9 @@ def verify_request(
        itself blocked).
     1. **Actor signature** -- the caller (routes.py) already extracted
        and verified the Actor via
-       :func:`phoenix.identity.bootstrap.extract_or_bootstrap`. This
-       function trusts the parsed Actor; defensive shape check below.
+       :func:`phoenix.identity.bootstrap.require_actor` (a missing
+       header is refused there with 401). This function trusts the
+       parsed Actor; defensive shape check below.
     2. **Actor name shape** -- lowercase ASCII enforced; raises
        :class:`AuthError` on violation.
     3. **Permissions lookup** -- registry returns existing permissions

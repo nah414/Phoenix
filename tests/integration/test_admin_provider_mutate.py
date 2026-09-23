@@ -25,10 +25,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def _alice_header() -> str:
 
 class TestManualQuarantine:
     def test_marks_provider_degraded(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 3600, "reason": "scheduled maintenance"},
@@ -104,7 +104,7 @@ class TestManualQuarantine:
         from phoenix.router.provider_registry import ProviderHealth
         from phoenix.trinity.pipeline import _get_router
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 60, "reason": "test"},
@@ -114,7 +114,7 @@ class TestManualQuarantine:
         assert entry.health is ProviderHealth.DEGRADED
 
     def test_duration_over_24h_returns_400(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 86401, "reason": "way too long"},
@@ -123,7 +123,7 @@ class TestManualQuarantine:
         assert "policy cap" in resp.json()["detail"].lower() or "86400" in resp.json()["detail"]
 
     def test_unknown_provider_returns_404(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/providers/never_heard_of/manual-quarantine",
                 json={"duration_seconds": 60, "reason": "x"},
@@ -131,7 +131,7 @@ class TestManualQuarantine:
         assert resp.status_code == 404
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 60, "reason": "x"},
@@ -140,7 +140,7 @@ class TestManualQuarantine:
         assert resp.status_code == 403
 
     def test_audit_event_surfaces_in_health_history(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 60, "reason": "smoke"},
@@ -161,7 +161,7 @@ class TestManualRestore:
         from phoenix.router.provider_registry import ProviderHealth
         from phoenix.trinity.pipeline import _get_router
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 60, "reason": "x"},
@@ -178,7 +178,7 @@ class TestManualRestore:
         assert entry.health is ProviderHealth.HEALTHY
 
     def test_unknown_provider_returns_404(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/providers/never_heard_of/manual-restore",
                 json={"reason": "x"},
@@ -186,7 +186,7 @@ class TestManualRestore:
         assert resp.status_code == 404
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/providers/ibm_quantum/manual-restore",
                 json={"reason": "x"},
@@ -195,7 +195,7 @@ class TestManualRestore:
         assert resp.status_code == 403
 
     def test_restore_audit_event_surfaces_in_history(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/providers/ibm_quantum/manual-quarantine",
                 json={"duration_seconds": 60, "reason": "x"},
@@ -223,7 +223,7 @@ def test_quarantine_does_not_append_ledger_entry(
     HUMAN_REVIEW override only."""
     from phoenix.state import get_state_backend
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         client.post(
             "/v1/admin/providers/ibm_quantum/manual-quarantine",
             json={"duration_seconds": 60, "reason": "x"},
@@ -250,7 +250,7 @@ def test_quarantine_does_not_append_ledger_entry(
 def test_step7_routes_registered_with_admin_tag(
     isolated_runtime: Path,
 ) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     for path in (
         "/v1/admin/providers/{provider_id}/manual-quarantine",

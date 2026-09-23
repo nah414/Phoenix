@@ -6,7 +6,7 @@ Phoenix is downloadable software that AI agents and integrators call to get vali
 
 It is not a SaaS, not an end-user app, not a chat interface, and does not host an LLM. It is a power tool that sits between a software stack (or an agent framework) and the underlying compute (local accelerators, cloud quantum providers), making any system that integrates with it more accurate and more honest about its uncertainty.
 
-Phoenix v1.0 is released ([GitHub Release](https://github.com/nah414/Phoenix/releases/tag/1.0.0), Apache 2.0). Active development continues on the v1.1 line.
+Phoenix 1.1.0 is the current release (Apache 2.0): the v1.1 line plus security fixes that every 1.0.0 install should take ([CHANGELOG](CHANGELOG.md), [Releases](https://github.com/nah414/Phoenix/releases)).
 
 ## Documents
 
@@ -21,7 +21,7 @@ Phoenix v1.0 is released ([GitHub Release](https://github.com/nah414/Phoenix/rel
 
 ## Status
 
-**Current release:** v1.0.0 (Apache 2.0), tagged 2026-05-28. Active development continues on the v1.1 line.
+**Current release:** 1.1.0 (Apache 2.0), tagged 2026-09-22: the v1.1 line (below) plus security fixes with a breaking authentication change; upgrade from 1.0.0 (tagged 2026-05-28).
 
 The full v1.0 surface is built and tested end-to-end. What's live:
 
@@ -33,9 +33,17 @@ The full v1.0 surface is built and tested end-to-end. What's live:
 - **Front door** — a full surface across REST, WebSocket, CLI, and an MCP server (`phoenix mcp serve`) for IDE clients, plus an admin dev-ops API and LoRA adapter subsystem.
 - **Distribution** — three release artifacts: pip wheel (`phoenix-middleware`), Docker image (`ghcr.io/nah414/phoenix`), and Nuitka standalone binary (Linux + Windows), all CI-built across Python 3.11/3.12/3.13.
 
-**In progress (v1.1):** a cognition substrate — `CognitionProvider` adapters (Anthropic / OpenAI / Google / LiteLLM), three cognition wobble axes, and a per-server registered MCP-client mode — shipped 2026-05-20 (Phase 13). Follow-on work covers encryption administration and per-actor key isolation.
+**The v1.1 line (shipped in 1.1.0):** a cognition substrate — `CognitionProvider` adapters (Anthropic / OpenAI / Google / LiteLLM), three cognition wobble axes, and a per-server registered MCP-client mode — shipped 2026-05-20 (Phase 13). Since then the v1.1 line has added encryption administration (the `age` ceremony, admin CLI and rotate-key endpoint), per-actor key isolation plumbing, the cognition drift extension, and the Phase 13 Step 5c cognition-classifier harness: training and evaluation, corpus generation and labeling tooling, FELM/SAC3 dataset adapters, the `phoenix cognition` operator console, and a mobile control panel (PWA) served at `/cognition`. Still open for Step 5c: the real labeled corpus and a trained classifier that clears the macro-F1 ≥ 0.70 gate on it; until then the shipped default classifier is unchanged. Detail per landing is in [`CHANGELOG.md`](CHANGELOG.md).
 
-**Planned / deferred:** the reference admin client (a separate repo, deferred to v1.1) and the perception-harness extension (plan locked; build-guide drafting unblocked).
+**Security changes in 1.1.0 (2026-09, breaking):**
+
+- Every authenticated route requires a signed `Authorization` header, and a request without one gets 401, with two exceptions: the cognition UI's API (below), and the WebSockets (`/v1/ws/*`), which ignore that header and take a single-use `token` query parameter minted by `POST /v1/identity/ws-token` (the mint itself needs the signed header). The CLI and `phoenix mcp serve` sign only as `--actor` or a configured `default_actor`, so a one-time setup is needed: set `default_actor` (and `rest_url: http://127.0.0.1:8003`) in `~/.phoenix/config.yaml`. The new `phoenix identity header` prints a header for curl or `/docs`. The cognition UI's API (`/v1/cognition/*`) needs the `X-Phoenix-UI-Token` header when the daemon runs with `PHOENIX_UI_TOKEN` set (then it is required even from a signed actor), and a signed actor when that variable is unset. The desktop cognition launcher (`scripts/phoenix_cognition_launch.ps1`, behind the desktop shortcut) sets a fresh random token for each daemon it starts.
+- The bundled launcher (`phoenix/launcher.py`: the `python -m phoenix` entry, which is also the standalone binary and the Docker image's entrypoint) binds the NATS it starts (4222, monitor 8222) to `127.0.0.1` only, Docker included.
+- `POST /v1/adapters` loads adapters only from `phoenix.adapters` or a namespace listed in the daemon's `PHOENIX_ADAPTER_ALLOWLIST`; any other module is refused with 403.
+
+Setup and migration: [`docs/distribution/run.md`](docs/distribution/run.md) (Authentication, Loading adapters) and the CHANGELOG `[1.1.0]` entry (operator steps, known issues).
+
+**Planned / deferred:** the reference admin client (a separate repo; not part of 1.1.0) and the perception-harness extension (plan locked; build-guide drafting unblocked).
 
 See [`PHOENIX_ARCHITECTURE_v1.md`](PHOENIX_ARCHITECTURE_v1.md) Sections 10.7 and 10.8 for the v1 and v1.1 acceptance criteria.
 

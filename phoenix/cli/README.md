@@ -30,3 +30,4 @@ None. `phoenix/cli/` is greenfield Phoenix code.
 
 ## Recent changes
 - 2026-05-06 — Phase 0: module created as empty stub.
+- 2026-09-16 — Security (CHANGELOG `[1.1.0.dev0]`): `http_client.py` signs only as `--actor` or `default_actor` (no implicit `adam`), signs `default_actor` only for a loopback IP `rest_url` (not the name `localhost`, which can resolve to a squattable `::1`), never signs `/v1/health`, and sends local requests with `trust_env=False` so no env or registry proxy sees the header. `config_loader.py`'s default `rest_url` is the daemon's `http://127.0.0.1:8003` (was `http://localhost:8000`). A `default_actor` this machine has no key for (host CLI, daemon in Docker) goes out unsigned, so `phoenix health` still works and a 401 names the keystore problem. New `phoenix identity header`; `identity show` reports the signing state. Tests: `tests/integration/test_auth_headerless_rejected.py`.

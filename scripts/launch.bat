@@ -23,6 +23,9 @@ REM Give the daemon a moment to start before opening the browser.
 timeout /T 2 /NOBREAK > nul
 
 echo Opening docs at http://localhost:%PHOENIX_PORT%/docs
+echo Authenticated endpoints need a signed actor header: run "phoenix --actor adam identity header"
+echo (or set default_actor: adam in %%USERPROFILE%%\.phoenix\config.yaml once) and paste the
+echo output into the endpoint's authorization field.
 start http://localhost:%PHOENIX_PORT%/docs
 
 echo Phoenix v1 (Phase 0) running. Press Ctrl+C to stop.

@@ -37,7 +37,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
@@ -47,6 +46,7 @@ from tests.integration.test_long_window_replay.clock_advance import (
 from tests.integration.test_long_window_replay.fixture_solve_entry import (
     build_strict_mode_qho_fixture,
 )
+from tests._signed_actor import signed_client
 
 
 pytestmark = pytest.mark.acceptance
@@ -80,7 +80,7 @@ def test_six_month_long_window_replay_is_bit_exact(
     # still findable.
     future_unix = fixture.solve_unix_timestamp + _SIX_MONTHS_SECONDS
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         with monkeypatch_clock(monkeypatch, target_unix=future_unix):
             resp = client.post(f"/v1/tasks/{fixture.task_id}/replay")
 
@@ -196,7 +196,7 @@ def test_replayed_result_numerics_match_original(
     fixture = build_strict_mode_qho_fixture(isolated_runtime)
     future_unix = fixture.solve_unix_timestamp + _SIX_MONTHS_SECONDS
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         # First, fetch the original result from the ledger (the fixture
         # captured the live POST /v1/tasks response; we re-read the
         # SolveEntry now to confirm bit-exact storage).
@@ -239,7 +239,7 @@ def test_only_time_advances_no_other_drift_introduced(
 
     # Run replay twice -- once at "real" time, once at +6 months.
     # Both must produce identical reports.
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         real_resp = client.post(f"/v1/tasks/{fixture.task_id}/replay")
         assert real_resp.status_code == 200
         real_report = real_resp.json()

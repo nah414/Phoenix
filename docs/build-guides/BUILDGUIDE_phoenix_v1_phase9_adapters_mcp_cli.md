@@ -190,6 +190,13 @@ a deliberately-broken stub adapter fails validation with
 - `phoenix/api/routes.py` adds:
   * `POST /v1/adapters` — body `{spec: str}` (path or module
     spec). Loads + validates + registers. Returns adapter metadata.
+
+    > **SUPERSEDED 2026-09-18 (security):** the loader no longer imports any
+    > module a spec names. Only modules under `phoenix.adapters` (not its own
+    > loader/registry/sandbox/validator/protocol/errors machinery) or under a
+    > namespace listed in the daemon's `PHOENIX_ADAPTER_ALLOWLIST` load; any other
+    > module is refused before import with HTTP 403 `adapter_module_not_allowed`.
+    > See the CHANGELOG `[1.1.0.dev0]` security entry.
     Cost: `adapters_post` (10 tokens, already in catalogue).
   * `GET /v1/adapters` — lists registered adapters. Cost:
     `tasks_get`.

@@ -24,10 +24,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ def _alice_header() -> str:
 
 class TestKillSwitchStatus:
     def test_initial_state_is_disengaged(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/kill-switch/status")
         assert resp.status_code == 200
         body = resp.json()
@@ -111,7 +111,7 @@ class TestKillSwitchStatus:
         assert body["reason"] is None
 
     def test_status_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/kill-switch/status",
                 headers={"Authorization": _alice_header()},
@@ -125,7 +125,7 @@ class TestKillSwitchStatus:
 
 class TestKillSwitchEngage:
     def test_engage_flips_state(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "smoke test"},
@@ -138,7 +138,7 @@ class TestKillSwitchEngage:
         assert body["engaged_at_utc"] is not None
 
     def test_engage_blocks_subsequent_task_submit(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "blocking tasks"},
@@ -149,7 +149,7 @@ class TestKillSwitchEngage:
         assert resp.status_code == 503
 
     def test_engage_appends_ledger_entry(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "ledger smoke"},
@@ -182,7 +182,7 @@ class TestKillSwitchEngage:
         sink = _Recorder()
         get_emitter().add_sink(sink)
         try:
-            with TestClient(app) as client:
+            with signed_client(app) as client:
                 resp = client.post(
                     "/v1/admin/kill-switch/engage",
                     json={"rationale": "audit emit test"},
@@ -197,7 +197,7 @@ class TestKillSwitchEngage:
             reset_emitter()
 
     def test_engage_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "alice tries"},
@@ -212,7 +212,7 @@ class TestKillSwitchEngage:
 
 class TestKillSwitchRelease:
     def test_release_disengages(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "engage"},
@@ -227,7 +227,7 @@ class TestKillSwitchRelease:
         assert body["engaged_by"] is None
 
     def test_release_unblocks_task_submit(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "block"},
@@ -244,7 +244,7 @@ class TestKillSwitchRelease:
     def test_release_appends_ledger_entry_with_cross_reference(
         self, isolated_runtime: Path
     ) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "engage"},
@@ -272,7 +272,7 @@ class TestKillSwitchRelease:
     def test_release_when_not_engaged_succeeds(self, isolated_runtime: Path) -> None:
         """Idempotency: releasing a never-engaged switch is a no-op
         on state but still emits audit + appends ledger entry."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/kill-switch/release",
                 json={"rationale": "wasn't engaged but recording the action"},
@@ -282,7 +282,7 @@ class TestKillSwitchRelease:
         assert body["engaged"] is False
 
     def test_release_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "engage"},
@@ -294,7 +294,7 @@ class TestKillSwitchRelease:
             )
         assert resp.status_code == 403
         # And the switch is still engaged.
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             check = client.get("/v1/admin/kill-switch/status")
         assert check.json()["engaged"] is True
 
@@ -310,7 +310,7 @@ class TestKillSwitchStage0Bypass:
         endpoints, release would be blocked at 503 -- which would
         make the switch un-releasable. This is the canonical regression
         test for the skip_kill_switch_check seam."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "engage"},
@@ -325,7 +325,7 @@ class TestKillSwitchStage0Bypass:
         assert resp.status_code == 200
 
     def test_status_readable_while_engaged(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/kill-switch/engage",
                 json={"rationale": "engage"},
@@ -344,7 +344,7 @@ def test_ledger_chain_valid_after_engage_release(
 ) -> None:
     """Phase 7's Omega Ledger chain must verify clean after the two
     kill-switch entries land."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         client.post("/v1/admin/kill-switch/engage", json={"rationale": "engage"})
         client.post("/v1/admin/kill-switch/release", json={"rationale": "release"})
 

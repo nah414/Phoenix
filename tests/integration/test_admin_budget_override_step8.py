@@ -29,10 +29,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def _future_ts() -> float:
 
 class TestBudgetOverrideHappyPath:
     def test_admin_issues_per_solve_override(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -119,7 +119,7 @@ class TestBudgetOverrideHappyPath:
     def test_override_row_lands_in_state_backend(self, isolated_runtime: Path) -> None:
         from phoenix.state import get_state_backend
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -144,7 +144,7 @@ class TestBudgetOverrideHappyPath:
         """
         from phoenix.state import get_state_backend
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -178,7 +178,7 @@ class TestBudgetOverrideHappyPath:
 
 class TestBudgetOverrideValidation:
     def test_zero_ceiling_returns_422(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -191,7 +191,7 @@ class TestBudgetOverrideValidation:
         assert resp.status_code == 422  # Pydantic gt=0 rejected
 
     def test_negative_ceiling_returns_422(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -206,7 +206,7 @@ class TestBudgetOverrideValidation:
     def test_past_expiry_returns_400(self, isolated_runtime: Path) -> None:
         import time
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -220,7 +220,7 @@ class TestBudgetOverrideValidation:
         assert "future" in resp.json()["detail"].lower()
 
     def test_unknown_scope_returns_400(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -235,7 +235,7 @@ class TestBudgetOverrideValidation:
 
     def test_missing_field_returns_422(self, isolated_runtime: Path) -> None:
         """Pydantic rejects missing required fields before the handler runs."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -257,7 +257,7 @@ class TestBudgetOverridePermissions:
         from phoenix.state import get_state_backend
         import time
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/budget/override",
                 json={
@@ -297,7 +297,7 @@ def test_override_flows_into_budget_seam(isolated_runtime: Path) -> None:
         name: str
         org_id: str | None = None
 
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         perms_registry = get_registry()
         perms_registry.set("bob", ActorPermissions(rate_limit_tier="default"))
         controller = LocalJobBudgetController(
@@ -339,7 +339,7 @@ def test_override_flows_into_budget_seam(isolated_runtime: Path) -> None:
 
 
 def test_openapi_advertises_endpoint(isolated_runtime: Path) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     assert "/v1/admin/budget/override" in schema["paths"]
     assert "Admin" in schema["paths"]["/v1/admin/budget/override"]["post"]["tags"]

@@ -27,10 +27,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def _alice_header() -> str:
 
 class TestCalibrationDetail:
     def test_returns_detector_rollup(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/calibration/detail")
         assert resp.status_code == 200
         body = resp.json()
@@ -95,12 +95,12 @@ class TestCalibrationDetail:
         assert "cross_version" in names
 
     def test_no_snapshot_when_no_cycle_yet(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/calibration/detail")
         assert resp.json()["last_snapshot"] is None
 
     def test_snapshot_reflects_completed_cycle(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/admin/calibration/run", json={"wait": True})
             resp = client.get("/v1/admin/calibration/detail")
         snap = resp.json()["last_snapshot"]
@@ -109,7 +109,7 @@ class TestCalibrationDetail:
         assert "firing_detectors" in snap
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/calibration/detail",
                 headers={"Authorization": _alice_header()},
@@ -123,7 +123,7 @@ class TestCalibrationDetail:
 
 class TestCalibrationHistory:
     def test_returns_empty_count_when_no_drift_events(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/calibration/history")
         assert resp.status_code == 200
         body = resp.json()
@@ -158,7 +158,7 @@ class TestCalibrationHistory:
             }
         )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/calibration/history")
         body = resp.json()
         assert body["count"] == 1
@@ -180,14 +180,14 @@ class TestCalibrationHistory:
                 }
             )
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/calibration/history?limit=3")
         body = resp.json()
         assert body["count"] == 3
         assert body["limit"] == 3
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/calibration/history",
                 headers={"Authorization": _alice_header()},
@@ -201,7 +201,7 @@ class TestCalibrationHistory:
 
 class TestCalibrationRun:
     def test_wait_true_runs_synchronously(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/admin/calibration/run", json={"wait": True})
         assert resp.status_code == 200
         body = resp.json()
@@ -215,7 +215,7 @@ class TestCalibrationRun:
         )
 
     def test_wait_false_returns_immediately(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/admin/calibration/run", json={"wait": False})
         assert resp.status_code == 200
         body = resp.json()
@@ -231,7 +231,7 @@ class TestCalibrationRun:
         # Manually grab the run-lock so the next request can't.
         cal_module._RUN_LOCK.acquire()
         try:
-            with TestClient(app) as client:
+            with signed_client(app) as client:
                 resp = client.post("/v1/admin/calibration/run", json={"wait": True})
             assert resp.status_code == 409
             assert "already running" in resp.json()["detail"].lower()
@@ -241,7 +241,7 @@ class TestCalibrationRun:
     def test_lock_released_after_completion(self, isolated_runtime: Path) -> None:
         """A successful cycle releases the lock so the next request
         succeeds."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r1 = client.post("/v1/admin/calibration/run", json={"wait": True})
             r2 = client.post("/v1/admin/calibration/run", json={"wait": True})
         assert r1.status_code == 200
@@ -255,7 +255,7 @@ class TestCalibrationRun:
         from phoenix.admin import calibration as cal_module
 
         # After any run, the lock should be unlocked.
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/admin/calibration/run", json={"wait": True})
 
         # Acquire non-blocking should succeed.
@@ -263,7 +263,7 @@ class TestCalibrationRun:
         cal_module._RUN_LOCK.release()
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/calibration/run",
                 json={"wait": False},
@@ -282,7 +282,7 @@ def test_wait_false_cycle_actually_completes(
     """wait=False returns immediately, but the background thread
     actually runs the cycle. Verify by polling /detail.last_snapshot
     until it shows up (or timeout)."""
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         resp = client.post("/v1/admin/calibration/run", json={"wait": False})
         assert resp.status_code == 200
 
@@ -305,7 +305,7 @@ def test_wait_false_cycle_actually_completes(
 def test_calibration_routes_registered_with_admin_tag(
     isolated_runtime: Path,
 ) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     expected = {
         ("/v1/admin/calibration/detail", "get"),

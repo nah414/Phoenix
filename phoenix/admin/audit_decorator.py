@@ -16,7 +16,7 @@ Pattern (success path)::
 
     @router.get("/v1/admin/governor")
     def governor(...):
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
         verify_request(actor, action_key="admin.governor", ...)
         require_admin(actor)
         body = _governor_snapshot()

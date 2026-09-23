@@ -244,6 +244,11 @@ def _spawn_nats(
         [
             nats_bin,
             "--jetstream",
+            # NATS runs without authentication and nats-server binds 0.0.0.0 by
+            # default; the daemon only ever connects at 127.0.0.1, so keep it
+            # loopback-only (the monitor port follows this host).
+            "--addr",
+            "127.0.0.1",
             "--store_dir",
             str(store_dir),
             "--port",

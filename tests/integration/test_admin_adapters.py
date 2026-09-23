@@ -28,10 +28,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -85,7 +85,6 @@ _BROKEN_SPEC = "tests.integration.test_admin_adapters:make_broken_adapter"
 # Broken adapter factory (used by the 503/false-positive test)
 # ---------------------------------------------------------------------
 
-
 from dataclasses import dataclass, field  # noqa: E402
 
 
@@ -117,7 +116,7 @@ def make_broken_adapter() -> _BrokenStripAdapter:
 
 class TestForceRevalidate:
     def test_identity_adapter_revalidates_successfully(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             # Load the identity adapter first
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             resp = client.post("/v1/admin/adapters/identity/force-revalidate")
@@ -131,7 +130,7 @@ class TestForceRevalidate:
 
     def test_force_revalidate_appends_to_history(self, isolated_runtime: Path) -> None:
         """Each force-revalidate call must add one entry to the ring."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             # Load adds 1 history entry; force-revalidate twice adds 2 more
             client.post("/v1/admin/adapters/identity/force-revalidate")
@@ -144,7 +143,7 @@ class TestForceRevalidate:
         assert all(entry["passed"] is True for entry in body["history"])
 
     def test_force_revalidate_unloaded_returns_404(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/admin/adapters/never-loaded/force-revalidate")
         assert resp.status_code == 404
         assert "never-loaded" in resp.json()["detail"]
@@ -166,7 +165,7 @@ class TestForceRevalidate:
         sink = _Recorder()
         get_emitter().add_sink(sink)
         try:
-            with TestClient(app) as client:
+            with signed_client(app) as client:
                 client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
                 client.post("/v1/admin/adapters/identity/force-revalidate")
             success_events = [
@@ -185,6 +184,11 @@ class TestForceRevalidate:
 
 
 class TestForceRevalidateBroken:
+    @pytest.fixture(autouse=True)
+    def _allowlist_test_adapters(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # _BROKEN_SPEC lives in this test module, outside phoenix.adapters.
+        monkeypatch.setenv("PHOENIX_ADAPTER_ALLOWLIST", "tests.integration")
+
     def test_broken_adapter_revalidation_fails(self, isolated_runtime: Path) -> None:
         """A registered-but-broken adapter (loaded via validate=False
         in-process) re-validates as failed without bringing the
@@ -197,7 +201,7 @@ class TestForceRevalidateBroken:
 
         load_adapter(_BROKEN_SPEC, validate=False)
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post("/v1/admin/adapters/broken-admin-strip/force-revalidate")
         assert resp.status_code == 200
         body = resp.json()
@@ -225,7 +229,7 @@ class TestForceRevalidateBroken:
         sink = _Recorder()
         get_emitter().add_sink(sink)
         try:
-            with TestClient(app) as client:
+            with signed_client(app) as client:
                 client.post("/v1/admin/adapters/broken-admin-strip/force-revalidate")
             failed_events = [
                 e for e in sink.events if e.event_type == "admin.adapters.force_revalidate.failed"
@@ -245,7 +249,7 @@ class TestForceRevalidateBroken:
 class TestRoundTripHistory:
     def test_history_after_load_has_one_entry(self, isolated_runtime: Path) -> None:
         """POST /v1/adapters validates -> one history entry."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/adapters", json={"spec": _IDENTITY_SPEC})
             resp = client.get("/v1/admin/adapters/identity/round-trip-history")
         assert resp.status_code == 200
@@ -259,7 +263,7 @@ class TestRoundTripHistory:
         from phoenix.adapters import load_adapter
 
         load_adapter(_IDENTITY_SPEC, validate=False)
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/adapters/identity/round-trip-history")
         assert resp.status_code == 200
         assert resp.json() == {
@@ -269,7 +273,7 @@ class TestRoundTripHistory:
         }
 
     def test_history_unloaded_returns_404(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/adapters/never-loaded/round-trip-history")
         assert resp.status_code == 404
 
@@ -288,7 +292,7 @@ class TestPermissionGating:
         Prevents leaking "this adapter exists / doesn't exist" via
         the HTTP code.
         """
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.post(
                 "/v1/admin/adapters/never-loaded/force-revalidate",
                 headers={"Authorization": _alice_header()},
@@ -296,7 +300,7 @@ class TestPermissionGating:
         assert resp.status_code == 403
 
     def test_round_trip_history_non_admin_returns_403(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/adapters/never-loaded/round-trip-history",
                 headers={"Authorization": _alice_header()},
@@ -310,7 +314,7 @@ class TestPermissionGating:
 
 
 def test_openapi_advertises_both_admin_routes(isolated_runtime: Path) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     paths = schema["paths"]
     fr_path = "/v1/admin/adapters/{adapter_id}/force-revalidate"

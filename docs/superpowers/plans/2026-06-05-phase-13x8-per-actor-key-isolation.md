@@ -1037,6 +1037,8 @@ def _client() -> TestClient:
     # Bootstrap actor 'adam' is admin + has can_rotate_encryption_key by
     # default (no Authorization header → bootstrap adam per the 13.x.7
     # test pattern). Confirm against test_admin_encryption_rotate_key.py.
+    # SUPERSEDED 2026-09-16: header-less requests are now 401; tests sign
+    # as adam via tests/_signed_actor.py::signed_client.
     return TestClient(app)
 
 
@@ -1108,6 +1110,8 @@ class TestEnumerationEndpoint:
 ```
 
 (Adapt the auth fixtures to the exact shapes in `tests/integration/test_admin_encryption_rotate_key.py` — bootstrap-adam-is-admin default + the `_alice_header` non-admin helper.)
+
+> **SUPERSEDED 2026-09-16 (security):** there is no "bootstrap-adam-is-admin default" any more. `extract_or_bootstrap` was removed, a request without a signed `Authorization` header is a 401, and admin tests sign as `adam` via `tests/_signed_actor.py::signed_client` (per-request HMAC). The `_alice_header` non-admin helper is unchanged. See the CHANGELOG `[1.1.0.dev0]` security entry.
 
 - [ ] **Step 3: Run → expect FAIL**
 

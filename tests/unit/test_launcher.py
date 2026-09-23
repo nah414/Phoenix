@@ -76,6 +76,22 @@ def test_spawn_nats_returns_none_when_missing(
     assert "continuing without NATS" in captured.err
 
 
+def test_spawn_nats_binds_loopback_only(tmp_path: Path) -> None:
+    """NATS runs unauthenticated, and nats-server binds 0.0.0.0 unless told otherwise.
+    The daemon only ever reaches it at 127.0.0.1 (``_spawn_daemon``), so the launcher
+    pins the bind to loopback (the monitor port follows the same host).
+    Security sweep 2026-09-16 follow-up."""
+    fake_popen = MagicMock()
+    with (
+        patch("phoenix.launcher.shutil.which", return_value="nats-server"),
+        patch("phoenix.launcher.subprocess.Popen", fake_popen),
+    ):
+        launcher._spawn_nats(port=4222, monitor_port=8222, store_dir=tmp_path / "store")
+    argv = fake_popen.call_args.args[0]
+    assert "--addr" in argv
+    assert argv[argv.index("--addr") + 1] == "127.0.0.1"
+
+
 def test_wait_for_daemon_returns_true_on_200() -> None:
     """:func:`_wait_for_daemon` succeeds when /v1/health returns 200."""
     mock_response = MagicMock()

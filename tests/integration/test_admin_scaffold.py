@@ -2,7 +2,7 @@
 
 Covers the four-layer composition every admin handler uses:
 
-1. :func:`extract_or_bootstrap` parses the Actor header.
+1. :func:`require_actor` parses and verifies the signed Actor header.
 2. :func:`verify_request` runs the 9-stage safety gate.
 3. :func:`require_admin` checks the ``is_admin`` privilege class.
 4. :func:`emit_admin_audit` writes a top-priority audit event.
@@ -15,7 +15,7 @@ What this file proves:
 
 - The admin router is mounted under ``/v1/admin/`` with the
   ``Admin`` OpenAPI tag.
-- An admin actor (bootstrap adam) gets HTTP 200 from
+- An admin actor (signed bootstrap actor adam) gets HTTP 200 from
   ``/v1/admin/_ping``.
 - A non-admin actor (alice with default permissions) gets
   HTTP 403 ``AdminPrivilegeRequired``.
@@ -34,12 +34,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.admin import AdminPrivilegeRequired, require_admin
 from phoenix.api.routes import app
 from phoenix.audit import AuditEvent, get_emitter, reset_emitter
+from tests._signed_actor import signed_client
 
 
 class _RecordingSink:
@@ -125,11 +125,9 @@ class TestRequireAdmin:
 
 
 class TestAdminPingEndpoint:
-    def test_admin_ping_returns_200_for_bootstrap_adam(
-        self, audit_recorder: _RecordingSink
-    ) -> None:
-        """Bootstrap fallback actor (adam) is admin → 200."""
-        with TestClient(app) as client:
+    def test_admin_ping_returns_200_for_signed_adam(self, audit_recorder: _RecordingSink) -> None:
+        """Signed bootstrap actor (adam) is admin → 200."""
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/_ping")
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -146,7 +144,7 @@ class TestAdminPingEndpoint:
         payload = alice.to_payload()
         header = "Phoenix-Actor " + base64.b64encode(json.dumps(payload).encode()).decode("ascii")
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/_ping",
                 headers={"Authorization": header},
@@ -156,7 +154,7 @@ class TestAdminPingEndpoint:
 
     def test_admin_ping_success_emits_audit_event(self, audit_recorder: _RecordingSink) -> None:
         """Successful admin call emits admin.ping.success event."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/_ping")
         assert resp.status_code == 200
 
@@ -177,7 +175,7 @@ class TestAdminPingEndpoint:
         payload = alice.to_payload()
         header = "Phoenix-Actor " + base64.b64encode(json.dumps(payload).encode()).decode("ascii")
 
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/_ping",
                 headers={"Authorization": header},
@@ -196,14 +194,14 @@ class TestAdminPingEndpoint:
 
 class TestAdminOpenAPI:
     def test_admin_router_mounted_under_v1_admin(self) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             schema = client.get("/v1/openapi.json").json()
         admin_paths = [path for path in schema["paths"] if path.startswith("/v1/admin")]
         # Step 1 only registers _ping; Steps 2-9 grow this list.
         assert "/v1/admin/_ping" in admin_paths
 
     def test_admin_routes_carry_admin_tag(self) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             schema = client.get("/v1/openapi.json").json()
         ping_op = schema["paths"]["/v1/admin/_ping"]["get"]
         assert "Admin" in ping_op["tags"]

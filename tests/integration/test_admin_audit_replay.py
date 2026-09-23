@@ -22,10 +22,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
+from tests._signed_actor import signed_client
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def _seed_audit_events(rows: list[dict]) -> None:
 
 class TestAuditReplay:
     def test_returns_empty_when_no_events(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/replay")
         assert resp.status_code == 200
         body = resp.json()
@@ -125,7 +125,7 @@ class TestAuditReplay:
                 },
             ]
         )
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/replay?event_type_prefix=safety.gate.denied")
         body = resp.json()
         types = [e["event_type"] for e in body["events"]]
@@ -155,7 +155,7 @@ class TestAuditReplay:
                 },
             ]
         )
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/replay?actor_id=ash")
         body = resp.json()
         # Filter narrows to ash's events.
@@ -189,14 +189,14 @@ class TestAuditReplay:
                 },
             ]
         )
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/audit/replay?layer=verification_gate")
         body = resp.json()
         layers = {e["layer"] for e in body["events"]}
         assert layers == {"verification_gate"}
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/audit/replay",
                 headers={"Authorization": _alice_header()},
@@ -210,7 +210,7 @@ class TestAuditReplay:
 
 class TestLedgerIntegrityReport:
     def test_empty_chain_reports_zero_entries(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get("/v1/admin/ledger/integrity-report")
         assert resp.status_code == 200
         body = resp.json()
@@ -222,7 +222,7 @@ class TestLedgerIntegrityReport:
         assert body["python_crypto"]["valid"] is True
 
     def test_report_after_solves(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             for _ in range(3):
                 client.post(
                     "/v1/tasks",
@@ -255,7 +255,7 @@ class TestLedgerIntegrityReport:
     def test_window_hours_filters_distribution(self, isolated_runtime: Path) -> None:
         """The histogram respects window_hours; total_entries is the
         full chain regardless."""
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             for _ in range(2):
                 client.post(
                     "/v1/tasks",
@@ -286,7 +286,7 @@ class TestLedgerIntegrityReport:
         assert resp_outside.json()["total_entries"] == 2
 
     def test_403_for_non_admin(self, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             resp = client.get(
                 "/v1/admin/ledger/integrity-report",
                 headers={"Authorization": _alice_header()},
@@ -301,7 +301,7 @@ class TestLedgerIntegrityReport:
 def test_step8_routes_registered_with_admin_tag(
     isolated_runtime: Path,
 ) -> None:
-    with TestClient(app) as client:
+    with signed_client(app) as client:
         schema = client.get("/v1/openapi.json").json()
     for path in (
         "/v1/admin/audit/replay",

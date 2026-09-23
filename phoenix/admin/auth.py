@@ -12,7 +12,9 @@ after :func:`phoenix.safety.gate.verify_request` (the safety-gate
 call upstream handles signature, rate limit, kill switch, capability
 flags). The routes layer composes:
 
-1. :func:`extract_or_bootstrap` -- parse the Actor header (Phase 6a).
+1. :func:`~phoenix.identity.bootstrap.require_actor` -- parse and verify
+   the signed Actor header; a missing header is a 401, never a default
+   actor.
 2. :func:`verify_request` -- 9-stage safety gate including
    ``requires_capability`` for the specific admin action when one
    applies (e.g. ``can_override_human_review`` for the override
@@ -50,7 +52,7 @@ def require_admin(actor: Actor) -> None:
 
     Args:
         actor: The verified :class:`Actor` returned from
-            :func:`extract_or_bootstrap`. The safety gate has
+            :func:`~phoenix.identity.bootstrap.require_actor`. The safety gate has
             already validated the signature; this function only
             checks the privilege class.
 

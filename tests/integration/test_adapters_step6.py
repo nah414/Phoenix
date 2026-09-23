@@ -54,10 +54,17 @@ class TestConfigLoader:
             config_path=tmp_path / "missing.yaml",
             env={},
         )
-        assert config.rest_url == "http://localhost:8000"
+        # The daemon's default bind, as a loopback IP literal (not localhost:8000,
+        # a port Phoenix never listens on).
+        assert config.rest_url == "http://127.0.0.1:8003"
         assert config.reproducibility_mode == "permissive"
         assert config.default_actor is None
         assert config.output_format == "auto"
+
+    def test_default_rest_url_is_the_daemon_default_bind(self) -> None:
+        from phoenix import launcher
+
+        assert CLIConfig().rest_url == f"http://{launcher.DEFAULT_HOST}:{launcher.DEFAULT_PORT}"
 
     def test_loads_from_yaml(self, tmp_path: Path) -> None:
         path = tmp_path / "config.yaml"
@@ -232,48 +239,61 @@ class TestCLIHTTPClient:
         client = build_client(config)
         assert client.base_url == "http://example.com:9000"
         assert client.actor_name == "bob"
+        assert client.actor_from_flag is False
 
     def test_actor_override_takes_precedence(self) -> None:
         config = CLIConfig(rest_url="http://x", default_actor="bob")
         client = build_client(config, actor_override="charlie")
         assert client.actor_name == "charlie"
+        # --actor is the explicit choice that may sign for a remote rest_url.
+        assert client.actor_from_flag is True
 
     def test_actor_override_none_uses_config_default(self) -> None:
         config = CLIConfig(rest_url="http://x", default_actor="bob")
         client = build_client(config)
         assert client.actor_name == "bob"
+        assert client.actor_from_flag is False
 
-    def test_no_actor_passes_through_for_bootstrap(self) -> None:
+    def test_empty_actor_override_is_not_an_actor(self) -> None:
+        client = build_client(CLIConfig(rest_url="http://x"), actor_override="")
+        assert client.actor_name is None
+        assert client.actor_from_flag is False
+
+    def test_no_actor_configured_leaves_actor_name_unset(self) -> None:
         config = CLIConfig(rest_url="http://x")
         client = build_client(config)
         assert client.actor_name is None
+        # No implicit adam: nothing to sign as, so no Authorization header.
+        assert client.signing_actor is None
+        assert "Authorization" not in client._build_headers()
 
-    def test_client_sends_signed_actor_header(self) -> None:
-        """End-to-end: the CLI client sends a Phoenix-Actor header
-        that the daemon's :func:`extract_or_bootstrap` resolves to
-        a real actor.
+    def test_client_sends_signed_actor_header(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A configured actor gets a Phoenix-Actor header, freshly signed per request.
+
+        Verification of that header against an authenticated route, and
+        the loopback-only rule for ``default_actor``, live in
+        ``test_auth_headerless_rejected.py``.
         """
-        # We can't use httpx MockTransport because CLIHTTPClient builds
-        # its own client. Instead, drive against the real FastAPI app
-        # via TestClient and observe the response.
-        with TestClient(fastapi_app) as test_client:
-            test_client.get("/v1/health")  # warm up state
+        from phoenix.identity import keystore
 
-        # Hit /v1/health directly via CLIHTTPClient using TestClient as
-        # the URL backend. We monkeypatch httpx.Client to TestClient
-        # for this test only.
-        client = CLIHTTPClient(
-            base_url="http://testserver",
-            actor_name="adam",
-        )
+        # A fresh install keystore (key generated in setup), not the real home.
+        keystore_dir = tmp_path / "home" / ".phoenix" / "runtime"
+        monkeypatch.setattr(keystore, "_keystore_dir", lambda: keystore_dir)
+        keystore.load_or_generate_master_key()
+
+        client = build_client(CLIConfig(rest_url="http://127.0.0.1:8003", default_actor="adam"))
+        headers = client._build_headers()
+        assert headers["Authorization"].startswith("Phoenix-Actor ")
         # Drive via TestClient.request: TestClient supports the same
         # interface but uses an in-process ASGI transport.
         with TestClient(fastapi_app) as test_client:
-            resp = test_client.get(
-                "/v1/health",
-                headers=client._build_headers(),
-            )
-        assert resp.status_code == 200
+            health = test_client.get("/v1/health", headers=headers)
+            ping = test_client.get("/v1/admin/_ping", headers=headers)
+        assert health.status_code == 200
+        assert ping.status_code == 200, ping.text
+        assert ping.json()["actor"] == "adam"
 
     def test_http_error_carries_status_and_url(self) -> None:
         """A 404 from the daemon becomes :class:`CLIHTTPError` with

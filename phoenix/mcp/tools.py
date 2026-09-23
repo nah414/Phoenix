@@ -144,7 +144,7 @@ def tool_calibration_status(*, client: CLIHTTPClient) -> dict[str, Any]:
 
 
 def tool_health(*, client: CLIHTTPClient) -> dict[str, Any]:
-    """GET /v1/health (open to any actor)."""
+    """GET /v1/health (unauthenticated; the client always sends it unsigned)."""
     response = client.get("/v1/health")
     return response if isinstance(response, dict) else {"raw": response}
 

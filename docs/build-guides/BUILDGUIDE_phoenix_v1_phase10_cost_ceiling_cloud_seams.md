@@ -289,6 +289,12 @@ ceiling reverts after `expires_at_unix`; non-admin gets 403;
 - `phoenix/_internal/cloud_seams.py` gains `LocalHttpAuthExtractor`
   (wraps existing `phoenix.identity.bootstrap.extract_or_bootstrap` against
   the standard `Authorization` header).
+
+  > **SUPERSEDED 2026-09-16 (security):** `extract_or_bootstrap` was removed. It
+  > minted the admin `adam` for any request without an `Authorization` header.
+  > `LocalHttpAuthExtractor` now wraps `phoenix.identity.bootstrap.require_actor`,
+  > which raises `IdentityError` (HTTP 401) for a missing or unverifiable header.
+  > See the CHANGELOG `[1.1.0.dev0]` security entry.
 - `phoenix/_internal/cloud_seams.py` gains `LocalAuditLogExporter` (wraps
   the existing `phoenix.audit.get_emitter`; `flush()` calls
   emitter.close-and-reopen).

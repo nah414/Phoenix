@@ -25,7 +25,9 @@ compares against the recorded value.
      ``task_id`` on its payload.
    - :class:`ReplayEntryIncomplete` if the entry was sealed before
      Phase 7 Step 7 added ``environment_snapshot`` + ``task_spec``,
-     or under ``reproducibility_mode="default"`` (no env captured).
+     or under ``reproducibility_mode="default"`` (no env captured),
+     or its ``task_spec`` has no recorded ``actor_name`` (replay never
+     falls back to a default actor).
    - :class:`ReplayProviderUnavailable` if the entry has
      ``cloud_shots_recorded=True`` and the recorded shots aren't
      retrievable (Phoenix v1 doesn't yet store cloud shots in the
@@ -237,13 +239,26 @@ def _reconstruct_task_and_actor(
     :func:`phoenix.identity.bootstrap.mint_bootstrap_actor` using the
     recorded actor name -- replay runs under the bootstrap key, not
     a fresh user signature, since the original signature's 5-minute
-    window has long since expired.
+    window has long since expired. A ``task_spec`` without a recorded
+    ``actor_name`` (missing, empty, or not a string) raises
+    :class:`ReplayEntryIncomplete` (HTTP 409): replay never substitutes
+    a default actor.
     """
     spec = entry_payload.get("task_spec") or {}
     if not spec:
         raise ReplayEntryIncomplete(
             "Ledger entry lacks task_spec; the original solve predates "
             "Phase 7 Step 8 or the field was stripped."
+        )
+
+    # Replay re-issues the *recorded* identity and nothing else. Before
+    # 2026-09-16 a missing actor_name defaulted to "adam", so a stripped or
+    # hand-edited task_spec replayed as the all-privileged install owner.
+    raw_actor_name = spec.get("actor_name")
+    if not isinstance(raw_actor_name, str) or not raw_actor_name.strip():
+        raise ReplayEntryIncomplete(
+            "task_spec lacks a recorded actor_name; replay never substitutes "
+            "a default actor, so this entry cannot be replayed."
         )
 
     # Lazy import: synthesis.equations.base is vendor-side and only
@@ -268,10 +283,9 @@ def _reconstruct_task_and_actor(
         frontier_physics=bool(tol_dict.get("frontier_physics", False)),
     )
 
-    actor_name = str(spec.get("actor_name") or "adam")
     from phoenix.identity.bootstrap import mint_bootstrap_actor
 
-    actor = mint_bootstrap_actor(actor_name)
+    actor = mint_bootstrap_actor(raw_actor_name)
 
     return PhysicsTask(
         physics_context=ctx,

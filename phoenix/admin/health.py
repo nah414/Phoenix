@@ -21,7 +21,7 @@ system inspection:
   but no aggregation layer; v1.x aggregates).
 
 All four endpoints share the standard admin auth chain
-(:func:`extract_or_bootstrap` → :func:`verify_request` →
+(:func:`require_actor` → :func:`verify_request` →
 :func:`require_admin` → :func:`emit_admin_audit`), use the
 ``admin.read=1`` rate-limit cost, and emit
 ``admin.<endpoint>.read`` audit events on success.
@@ -39,7 +39,7 @@ from phoenix.admin.audit_decorator import emit_admin_audit
 from phoenix.admin.auth import require_admin
 from phoenix.admin.errors import AdminPrivilegeRequired
 from phoenix.admin.router import admin_router
-from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.identity.bootstrap import IdentityError, require_actor
 from phoenix.safety.errors import AuthError, PermissionDenied
 from phoenix.safety.gate import verify_request
 from phoenix.safety.kill_switch import KillSwitchEngaged
@@ -60,7 +60,7 @@ def _admin_authn(
     request_id: str = request.state.request_id
 
     try:
-        actor, _ = extract_or_bootstrap(authorization)
+        actor = require_actor(authorization)
     except IdentityError as exc:
         emit_admin_audit(
             actor=None,

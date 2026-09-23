@@ -43,6 +43,10 @@ from phoenix.mcp.tools import (
     tool_task_submit,
 )
 
+# Loopback rest_url: a configured default_actor is signed only for loopback
+# (see phoenix/cli/http_client.py). Requests are bridged in-process.
+_REST_URL = "http://127.0.0.1:8003"
+
 
 # ---------------------------------------------------------------------
 # Test fixtures: in-process daemon + tmp task cache
@@ -93,13 +97,36 @@ def isolated_runtime(
 def in_process_client(
     isolated_runtime: Path,
 ) -> Iterator[CLIHTTPClient]:
-    """A :class:`CLIHTTPClient` routed through the in-process FastAPI app."""
+    """A :class:`CLIHTTPClient` routed through the in-process FastAPI app.
+
+    Signed as ``adam`` the way ``default_actor: adam`` with a loopback
+    ``rest_url`` signs; the CLI/MCP client never signs implicitly.
+    """
+    test_client = TestClient(fastapi_app)
+    test_client.__enter__()  # noqa: SLF001 -- lifespan creates the master key
+    try:
+        yield _bridged_client(test_client, actor_name="adam")
+    finally:
+        test_client.__exit__(None, None, None)
+
+
+@pytest.fixture
+def unconfigured_in_process_client(
+    isolated_runtime: Path,
+) -> Iterator[CLIHTTPClient]:
+    """Like :func:`in_process_client` but with no actor configured."""
     test_client = TestClient(fastapi_app)
     test_client.__enter__()  # noqa: SLF001
+    try:
+        yield _bridged_client(test_client, actor_name=None)
+    finally:
+        test_client.__exit__(None, None, None)
 
+
+def _bridged_client(test_client: TestClient, *, actor_name: str | None) -> CLIHTTPClient:
     def _transport_handler(request: httpx.Request) -> httpx.Response:
         method = request.method
-        url_path = str(request.url).replace("http://testserver", "")
+        url_path = str(request.url).replace(_REST_URL, "")
         resp = test_client.request(
             method,
             url_path,
@@ -150,11 +177,7 @@ def in_process_client(
                 return None
             return resp.json()
 
-    client = _BridgedClient(base_url="http://testserver", actor_name=None)
-    try:
-        yield client
-    finally:
-        test_client.__exit__(None, None, None)
+    return _BridgedClient(base_url=_REST_URL, actor_name=actor_name)
 
 
 # ---------------------------------------------------------------------
@@ -258,8 +281,31 @@ class TestToolTaskReplay:
         on the exception type rather than parsing the body)."""
         from phoenix.cli.http_client import CLIHTTPError
 
-        with pytest.raises(CLIHTTPError):
+        with pytest.raises(CLIHTTPError) as excinfo:
             tool_task_replay(client=in_process_client, task_id="never-existed")
+        # The signed actor got past authentication; the refusal is about the task.
+        assert excinfo.value.status_code not in (401, 403)
+
+
+class TestToolsWithoutConfiguredActor:
+    """No implicit adam in the MCP client: no actor configured, no header."""
+
+    def test_admin_tool_is_401_without_configured_actor(
+        self, unconfigured_in_process_client: CLIHTTPClient
+    ) -> None:
+        from phoenix.cli.http_client import CLIHTTPError
+
+        assert "Authorization" not in unconfigured_in_process_client._build_headers()
+        for tool in (tool_providers_list, tool_calibration_status, tool_audit_verify):
+            with pytest.raises(CLIHTTPError) as excinfo:
+                tool(client=unconfigured_in_process_client)
+            assert excinfo.value.status_code == 401, tool.__name__
+
+    def test_health_tool_still_works_without_configured_actor(
+        self, unconfigured_in_process_client: CLIHTTPClient
+    ) -> None:
+        result = tool_health(client=unconfigured_in_process_client)
+        assert result.get("status") == "ok"
 
 
 # ---------------------------------------------------------------------
@@ -316,7 +362,7 @@ class TestMCPServerWiring:
 
             def _handler(request: httpx.Request) -> httpx.Response:
                 method = request.method
-                url_path = str(request.url).replace("http://testserver", "")
+                url_path = str(request.url).replace(_REST_URL, "")
                 resp = test_client.request(
                     method,
                     url_path,
@@ -353,10 +399,15 @@ class TestMCPServerWiring:
                         return None
                     return resp.json()
 
-            def _factory(cfg: object, *, actor_override: str | None = None) -> CLIHTTPClient:
-                return _BridgedClient(base_url="http://testserver", actor_name=None)
+            def _factory(cfg: CLIConfig, *, actor_override: str | None = None) -> CLIHTTPClient:
+                # Same actor resolution as build_client: --actor, else default_actor.
+                return _BridgedClient(
+                    base_url=cfg.rest_url,
+                    actor_name=actor_override or cfg.default_actor,
+                    actor_from_flag=bool(actor_override),
+                )
 
-            config = CLIConfig(rest_url="http://testserver")
+            config = CLIConfig(rest_url=_REST_URL, default_actor="adam")
             server = build_server(config, client_factory=_factory)
 
             result = await server.call_tool("phoenix_health", {})

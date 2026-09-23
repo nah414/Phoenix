@@ -2,7 +2,7 @@
 // Minimal service worker: cache the app shell for offline/fast load.
 // API calls (/v1/*) and non-GET requests always go to the network.
 
-const CACHE = "phx-cognition-v1";
+const CACHE = "phx-cognition-v4";
 const SHELL = [
   "/cognition",
   "/cognition/static/index.html",

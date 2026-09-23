@@ -111,7 +111,7 @@ class HttpAuthExtractor(Protocol):
     invalid credentials.
 
     Phase 9 v1 default impl wraps :func:`phoenix.identity.bootstrap
-    .extract_or_bootstrap` against the standard
+    .require_actor` against the standard
     ``Authorization: Phoenix-Actor <payload>`` header.
     """
 
@@ -187,11 +187,11 @@ class JobBudgetController(Protocol):
 class LocalHttpAuthExtractor:
     """Default :class:`HttpAuthExtractor` impl (Phase 10 Step 9).
 
-    Wraps :func:`phoenix.identity.bootstrap.extract_or_bootstrap`
-    against the standard ``Authorization: Phoenix-Actor <payload>``
-    header on the request. When no Authorization header is present
-    AND a keystore exists, the bootstrap path mints a default Actor
-    (the v1 dev-mode behavior; tests + dev loops rely on this).
+    Wraps :func:`phoenix.identity.bootstrap.require_actor` against the
+    standard ``Authorization: Phoenix-Actor <payload>`` header on the
+    request. A missing or unverifiable header raises
+    :class:`~phoenix.identity.bootstrap.IdentityError`; there is no
+    default actor for header-less requests (removed 2026-09-16).
 
     Phoenix Cloud's impl replaces this with a tenant-scoped session
     cookie reader that looks up the bound Actor in the hosting
@@ -203,7 +203,7 @@ class LocalHttpAuthExtractor:
     """
 
     def extract_actor(self, request: Any) -> "Actor":
-        from phoenix.identity.bootstrap import extract_or_bootstrap
+        from phoenix.identity.bootstrap import require_actor
 
         # FastAPI's Request exposes headers as a case-insensitive
         # multidict. Duck-typed to keep the seam Protocol decoupled
@@ -213,8 +213,7 @@ class LocalHttpAuthExtractor:
         except AttributeError:
             headers = {}
         authorization = headers.get("Authorization") or headers.get("authorization")
-        actor, _was_bootstrapped = extract_or_bootstrap(authorization)
-        return actor
+        return require_actor(authorization)
 
 
 class LocalAuditLogExporter:

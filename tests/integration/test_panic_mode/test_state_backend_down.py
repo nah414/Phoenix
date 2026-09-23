@@ -36,6 +36,7 @@ import pytest
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.state.errors import StateBackendUnavailable
 from tests.integration.test_panic_mode.conftest import kill_state_backend
+from tests._signed_actor import signed_client
 
 
 pytestmark = pytest.mark.acceptance
@@ -202,13 +203,12 @@ def test_admin_health_endpoint_with_state_backend_down(
     health. We assert that when the state backend is down, the
     rollup explicitly notes it.
     """
-    from fastapi.testclient import TestClient
 
     from phoenix.api.routes import app
 
     # raise_server_exceptions=False so an uncaught typed error
     # materializes as 5xx rather than re-raising into the test.
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with signed_client(app, raise_server_exceptions=False) as client:
         with kill_state_backend():
             resp = client.get("/v1/admin/health/detailed")
 

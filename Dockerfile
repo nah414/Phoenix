@@ -109,8 +109,26 @@ WORKDIR /home/phoenix
 # container) can reach it via the published port. The container itself
 # is the security boundary; loopback-only inside the container would
 # defeat the purpose of running in Docker.
+#
+# Authentication: every HTTP route except /v1/health and the docs pages
+# requires an HMAC-signed `Authorization: Phoenix-Actor ...` header; a
+# header-less request is a 401, never the admin actor. /v1/ws/* uses a
+# single-use ws-token (60 s) minted with one via POST /v1/identity/ws-token.
+# /v1/cognition/* also accepts `X-Phoenix-UI-Token` when PHOENIX_UI_TOKEN is
+# set (then it is always required); set a long random PHOENIX_UI_TOKEN at
+# `docker run` time if the cognition UI is used. Sign from inside the
+# container, where the install key lives, naming the actor (the CLI never
+# signs implicitly; a host CLI has no key for this container):
+# `docker exec <container> phoenix --actor adam identity header`.
+# PHOENIX_REST_URL points that in-container CLI (and `phoenix mcp serve`) at
+# the daemon on its loopback IP, so `docker exec <container> phoenix --actor
+# adam audit verify` reaches it; keep its port in step with PHOENIX_PORT.
+# NATS has no authentication, so the launcher binds it to the container's
+# loopback only (the daemon connects on 127.0.0.1); publishing 4222 does not
+# reach it. Point PHOENIX_NATS_URL at an authenticated NATS if you need one.
 ENV PHOENIX_HOST=0.0.0.0 \
     PHOENIX_PORT=8003 \
+    PHOENIX_REST_URL=http://127.0.0.1:8003 \
     PHOENIX_NATS_URL=nats://127.0.0.1:4222 \
     PYTHONUNBUFFERED=1
 

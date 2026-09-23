@@ -19,10 +19,29 @@ File-path specs (e.g., ``"/path/to/my_adapter.py"``) raise
 filesystem-discovery story. v1.x can layer file-path imports
 without breaking the spec format.
 
+**Module allowlist (PHX-FU3, 2026-09-18).** The loader imports only
+modules under:
+
+- Phoenix's own adapter package, :data:`BUILTIN_ADAPTER_NAMESPACE`
+  (``phoenix.adapters``) -- except the subsystem's own machinery
+  (this loader, the registry, sandbox, validator, protocol, errors
+  and the package ``__init__``), which is never loadable; and
+- the namespaces listed in :data:`ADAPTER_ALLOWLIST_ENV`
+  (``PHOENIX_ADAPTER_ALLOWLIST``): comma-separated dotted prefixes,
+  read from the daemon's environment on every load. An entry admits
+  that module and its submodules (``acme.lora`` admits
+  ``acme.lora.v6`` but not ``acme.lorax``).
+
+Any other module is refused with :class:`AdapterSpecNotAllowed`
+*before* it is imported. After import, the factory itself must be
+defined in an allowlisted module, so an allowlisted module cannot
+lend out a callable it merely re-exports (``from os import ...``).
+
 **The load pipeline:**
 
-1. Parse the spec.
-2. Import the module and resolve the callable.
+1. Parse the spec and check the module against the allowlist.
+2. Import the module and resolve the callable (whose defining
+   module must also be allowlisted).
 3. Instantiate the adapter.
 4. Type-check against the :class:`LoRAAdapter` Protocol.
 5. Run inference-time validation (round-trip).
@@ -38,10 +57,12 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from phoenix.adapters.errors import (
     AdapterError,
+    AdapterSpecNotAllowed,
     AdapterValidationError,
 )
 from phoenix.adapters.protocol import LoRAAdapter
@@ -52,6 +73,81 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+#: Phoenix's own adapter package. Adapters shipped with Phoenix (the
+#: identity adapter today) live under it and are always loadable.
+BUILTIN_ADAPTER_NAMESPACE = "phoenix.adapters"
+
+#: Daemon environment variable listing extra loadable namespaces:
+#: comma-separated dotted module prefixes, e.g. ``acme.lora,my_adapters``.
+ADAPTER_ALLOWLIST_ENV = "PHOENIX_ADAPTER_ALLOWLIST"
+
+#: The adapter subsystem's own machinery. These modules sit under
+#: :data:`BUILTIN_ADAPTER_NAMESPACE` but are not adapters, and some of
+#: their zero-argument callables have side effects (``reset_registry``
+#: empties the registry), so no allowlist entry makes them loadable.
+_SUBSYSTEM_MODULES = frozenset(
+    {
+        "phoenix.adapters",
+        "phoenix.adapters.errors",
+        "phoenix.adapters.loader",
+        "phoenix.adapters.protocol",
+        "phoenix.adapters.registry",
+        "phoenix.adapters.sandbox",
+        "phoenix.adapters.validator",
+    }
+)
+
+
+def _is_dotted_identifier(path: str) -> bool:
+    """True for ``a.b.c`` where every component is a Python identifier."""
+    return all(part.isidentifier() for part in path.split("."))
+
+
+def allowed_adapter_namespaces() -> tuple[str, ...]:
+    """Return the namespaces adapter specs may import from.
+
+    :data:`BUILTIN_ADAPTER_NAMESPACE` first, then each valid entry of
+    :data:`ADAPTER_ALLOWLIST_ENV` (read on every call, so the daemon's
+    environment is the single source). Malformed entries are logged
+    and ignored -- they never widen the allowlist.
+    """
+    namespaces = [BUILTIN_ADAPTER_NAMESPACE]
+    for raw_entry in os.environ.get(ADAPTER_ALLOWLIST_ENV, "").split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if not _is_dotted_identifier(entry):
+            logger.warning(
+                "Ignoring %s entry %r: not a dotted module prefix",
+                ADAPTER_ALLOWLIST_ENV,
+                entry,
+            )
+            continue
+        if entry not in namespaces:
+            namespaces.append(entry)
+    return tuple(namespaces)
+
+
+def _module_is_allowed(module_name: str, namespaces: tuple[str, ...]) -> bool:
+    """True when ``module_name`` is, or sits under, an allowlisted namespace."""
+    if module_name in _SUBSYSTEM_MODULES:
+        return False
+    return any(module_name == ns or module_name.startswith(ns + ".") for ns in namespaces)
+
+
+def _not_allowed(
+    module_path: str, reason: str, namespaces: tuple[str, ...]
+) -> AdapterSpecNotAllowed:
+    return AdapterSpecNotAllowed(
+        module_path=module_path,
+        message=(
+            f"{reason}. Adapters load only from {', '.join(namespaces)} "
+            f"(the adapter subsystem's own modules excluded); an operator "
+            f"can allow more namespaces with {ADAPTER_ALLOWLIST_ENV} "
+            f"(comma-separated dotted prefixes) in the daemon's environment."
+        ),
+    )
 
 
 def load_adapter(
@@ -74,6 +170,9 @@ def load_adapter(
         round-trip invocation through the sandbox.
 
     Raises:
+      - :class:`AdapterSpecNotAllowed` -- the module (or the
+        factory's defining module) is outside the allowlist; nothing
+        outside it is imported or called.
       - :class:`AdapterError` -- spec doesn't resolve or callable
         doesn't return a Protocol-shaped object.
       - :class:`AdapterValidationError` -- validation found one or
@@ -137,6 +236,21 @@ def _resolve_spec(spec: str) -> LoRAAdapter:
     module_path, _, callable_name = spec.partition(":")
     if not module_path or not callable_name:
         raise AdapterError(f"Adapter spec must be 'module.path:callable'; got {spec!r}")
+    if not _is_dotted_identifier(module_path) or not callable_name.isidentifier():
+        raise AdapterError(
+            f"Adapter spec must be 'module.path:callable' made of Python "
+            f"identifiers (no relative or dotted callable parts); got {spec!r}"
+        )
+
+    # The allowlist gate runs BEFORE any import: importing a module runs
+    # its top-level code, so a refused module must never be imported.
+    namespaces = allowed_adapter_namespaces()
+    if not _module_is_allowed(module_path, namespaces):
+        raise _not_allowed(
+            module_path,
+            f"Adapter module {module_path!r} is not on the adapter allowlist",
+            namespaces,
+        )
 
     try:
         module = importlib.import_module(module_path)
@@ -149,6 +263,18 @@ def _resolve_spec(spec: str) -> LoRAAdapter:
     if not callable(factory):
         raise AdapterError(
             f"{module_path}:{callable_name} is not callable ({type(factory).__name__})"
+        )
+
+    # An allowlisted module may re-export callables defined elsewhere
+    # (``from os import getcwd``); only code defined in an allowlisted
+    # module is ever called.
+    defined_in = getattr(factory, "__module__", None)
+    if not isinstance(defined_in, str) or not _module_is_allowed(defined_in, namespaces):
+        raise _not_allowed(
+            module_path,
+            f"{module_path}:{callable_name} is defined in {defined_in!r}, "
+            f"which is not on the adapter allowlist",
+            namespaces,
         )
 
     try:
@@ -166,4 +292,9 @@ def _resolve_spec(spec: str) -> LoRAAdapter:
     return adapter
 
 
-__all__ = ["load_adapter"]
+__all__ = [
+    "ADAPTER_ALLOWLIST_ENV",
+    "BUILTIN_ADAPTER_NAMESPACE",
+    "allowed_adapter_namespaces",
+    "load_adapter",
+]

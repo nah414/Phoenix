@@ -20,7 +20,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
 
 import phoenix  # noqa: F401  -- triggers sys.path injection
 from phoenix.api.routes import app
@@ -28,6 +27,7 @@ from phoenix.api.routes import app
 # Non-admin actor header (alice: is_admin=False, can_rotate_encryption_key
 # =False). Reused verbatim from the 13.x.7 rotate-key integration test.
 from tests.integration.test_admin_encryption_rotate_key import _alice_header
+from tests._signed_actor import signed_client
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ class TestRotateKeyWithActor:
         self, fake_pyrage: Any, isolated_runtime: Path
     ) -> None:
         keys_dir = Path(os.environ["PHOENIX_ENCRYPTION_KEYS_DIR"])
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r = client.post("/v1/admin/encryption/rotate-key", json={"actor_name": "adam"})
         assert r.status_code == 200, r.text
         assert (keys_dir / "actors" / "adam" / "identity.txt").is_file()
@@ -144,7 +144,7 @@ class TestRotateKeyWithActor:
         self, fake_pyrage: Any, isolated_runtime: Path
     ) -> None:
         keys_dir = Path(os.environ["PHOENIX_ENCRYPTION_KEYS_DIR"])
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r = client.post("/v1/admin/encryption/rotate-key", json={})
         assert r.status_code == 200, r.text
         # Shared layout: the default name is ``rotation-<date>`` so the
@@ -155,14 +155,14 @@ class TestRotateKeyWithActor:
     def test_rotate_invalid_actor_name_returns_400(
         self, fake_pyrage: Any, isolated_runtime: Path
     ) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r = client.post("/v1/admin/encryption/rotate-key", json={"actor_name": "../escape"})
         assert r.status_code == 400, r.text
 
 
 class TestEnumerationEndpoint:
     def test_lists_actors_with_keys(self, fake_pyrage: Any, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             client.post("/v1/admin/encryption/rotate-key", json={"actor_name": "adam"})
             client.post("/v1/admin/encryption/rotate-key", json={"actor_name": "ash"})
             r = client.get("/v1/admin/encryption/actors")
@@ -174,7 +174,7 @@ class TestEnumerationEndpoint:
         assert body["count"] == 2
 
     def test_empty_when_no_actors(self, fake_pyrage: Any, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r = client.get("/v1/admin/encryption/actors")
         assert r.status_code == 200, r.text
         body = r.json()
@@ -182,7 +182,7 @@ class TestEnumerationEndpoint:
         assert body["count"] == 0
 
     def test_enumeration_requires_admin(self, fake_pyrage: Any, isolated_runtime: Path) -> None:
-        with TestClient(app) as client:
+        with signed_client(app) as client:
             r = client.get(
                 "/v1/admin/encryption/actors",
                 headers={"Authorization": _alice_header()},

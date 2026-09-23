@@ -6,11 +6,27 @@ from a phone (over Tailscale) or a desktop browser — the same capabilities the
 ``phoenix cognition`` CLI exposes, calling the same ``cognition_wobble`` library
 in-process.
 
-**Auth (single-user model).** Browsers can't do Phoenix's per-request HMAC, so
-these endpoints use the bootstrap actor (auto-granted on a personal install) plus
-an optional shared-secret token: when ``PHOENIX_UI_TOKEN`` is set (recommended
-whenever the daemon is bound beyond localhost / Tailscale), every UI request must
-send a matching ``X-Phoenix-UI-Token`` header. Unset → localhost convenience.
+**Auth (single-user model).** Browsers can't do Phoenix's per-request HMAC, and
+these endpoints never mint an actor for an unsigned caller. A request is admitted
+only when one of these holds (see :func:`_gate`):
+
+1. ``PHOENIX_UI_TOKEN`` is set on the daemon and the request sends a matching
+   ``X-Phoenix-UI-Token`` header (constant-time compare). When the token is set
+   it is always required. The desktop shortcut
+   (``scripts/phoenix_cognition_launch.ps1``) generates a random token per
+   launch for the daemon it starts and hands it to the page in the URL
+   *fragment* (``/cognition#token=...``), which browsers never send to a
+   server; ``app.js`` moves it into ``sessionStorage`` and strips it from the
+   address bar. The phone-over-Tailscale flow sets the same variable by hand.
+2. No token is configured and the request carries a valid signed
+   ``Authorization: Phoenix-Actor`` header (scripts, the CLI).
+
+Nothing else admits a request: no peer address, ``Host`` or ``Origin`` is a
+credential, and there is no header-less mode. (A short-lived
+``PHOENIX_UI_LOOPBACK_NO_TOKEN`` opt-in was replaced by the per-launch token on
+2026-09-16; the variable is ignored.) A present but invalid ``Authorization``
+header is always a 401. The UI token opens ``/v1/cognition/*`` only, never an
+actor for any other route.
 
 **Long-running train** runs in an in-process background job; the UI polls
 ``GET /v1/cognition/jobs/{id}``.
@@ -18,6 +34,7 @@ send a matching ``X-Phoenix-UI-Token`` header. Unset → localhost convenience.
 
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 import uuid
@@ -29,7 +46,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from phoenix.identity.bootstrap import IdentityError, extract_or_bootstrap
+from phoenix.identity.bootstrap import IdentityError, require_actor
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "ui" / "static"
 
@@ -45,26 +62,66 @@ _JOBS_LOCK = threading.Lock()
 # auth + path safety
 
 
+UI_TOKEN_ENV = "PHOENIX_UI_TOKEN"
+UI_TOKEN_HEADER = "X-Phoenix-UI-Token"
+
+
 def _gate(authorization: str | None, ui_token: str | None) -> None:
-    """Gate a UI request: shared-secret token (if configured) + bootstrap actor."""
-    expected = os.environ.get("PHOENIX_UI_TOKEN")
-    if expected and ui_token != expected:
-        raise HTTPException(status_code=401, detail="missing or invalid X-Phoenix-UI-Token")
-    try:
-        extract_or_bootstrap(authorization)
-    except IdentityError as exc:
-        raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+    """Admit a cognition-UI request or raise HTTP 401 (rules in the module docstring)."""
+    signed = False
+    if authorization is not None and authorization.strip():
+        try:
+            require_actor(authorization)
+        except IdentityError as exc:
+            raise HTTPException(status_code=401, detail=f"identity error: {exc}") from exc
+        signed = True
+
+    expected = os.environ.get(UI_TOKEN_ENV)
+    if expected:
+        supplied = (ui_token or "").encode("utf-8")
+        if not hmac.compare_digest(supplied, expected.encode("utf-8")):
+            raise HTTPException(status_code=401, detail=f"missing or invalid {UI_TOKEN_HEADER}")
+        return
+
+    if signed:
+        return
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            f"cognition UI requires authentication: start the daemon with {UI_TOKEN_ENV} set "
+            f"and send it as {UI_TOKEN_HEADER} (the desktop shortcut does this with a fresh "
+            "token per launch), or send a signed Phoenix-Actor Authorization header."
+        ),
+    )
 
 
 def _safe_path(raw: str) -> Path:
-    """Resolve ``raw``; when ``PHOENIX_CORPUS_DIR`` is set, require it inside that
-    directory (opt-in sandbox). Unset → any path the process can access."""
-    p = Path(raw).expanduser().resolve()
+    """Resolve a UI-supplied path, confined to ``PHOENIX_CORPUS_DIR`` when that is set.
+
+    With the sandbox set (the desktop shortcut always sets it), a relative path
+    such as ``felm_pairs.jsonl`` or ``models/gbm.txt`` is resolved against the
+    sandbox directory, not the daemon's working directory, so the UI's
+    placeholders work as typed. The result, after ``..`` and symlinks are
+    resolved, must lie inside the sandbox; anything else is a 403 that names
+    the directory. Unset → relative to the daemon's working directory, any path
+    the process can access (the directory ``GET /v1/cognition/corpora``
+    reports in both cases).
+    """
+    expanded = Path(raw).expanduser()
     sandbox = os.environ.get("PHOENIX_CORPUS_DIR")
-    if sandbox:
-        root = Path(sandbox).expanduser().resolve()
-        if root not in p.parents and p != root:
-            raise HTTPException(status_code=403, detail=f"path outside PHOENIX_CORPUS_DIR: {raw}")
+    if not sandbox:
+        return expanded.resolve()
+    root = Path(sandbox).expanduser().resolve()
+    # An absolute ``expanded`` replaces ``root`` in the join, so it is checked as given.
+    p = (root / expanded).resolve()
+    if root not in p.parents and p != root:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"path outside PHOENIX_CORPUS_DIR ({root}): {raw}. Use a path inside that "
+                "directory; a relative path is resolved there."
+            ),
+        )
     return p
 
 

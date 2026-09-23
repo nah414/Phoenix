@@ -15,6 +15,100 @@ Phoenix interoperate with pip, uv, and the broader Python tooling ecosystem.
 
 ---
 
+## [1.1.0] — 2026-09-22
+
+**The v1.1 release: the v1.1 line plus security fixes. Every 1.0.0 install should upgrade.**
+1.1.0 ships everything developed on the v1.1 line since 1.0.0, and closes three security
+weaknesses: how the daemon authenticates requests, where the bundled NATS listens, and which
+modules the adapter loader will import. The authentication change is **breaking**: requests
+that worked unsigned against 1.0.0 now get HTTP 401, so read the operator steps below before
+upgrading.
+
+### The v1.1 line
+
+Each landing has its own entry under `[1.1.0.dev0]` below.
+
+- **Cognition substrate** (Phase 13): `CognitionProvider` adapters (Anthropic, OpenAI,
+  Google, LiteLLM) and three cognition wobble axes.
+- **MCP-client mode** (Phase 13): per-server registered MCP clients.
+- **Encryption administration**: the `age` ceremony, the admin CLI and the rotate-key
+  endpoint, plus per-actor key isolation plumbing.
+- **Cognition drift extension** (Phase 13.5) and auto-capture baseline wiring (13.x.9).
+- **Phase 13 Step 5c cognition-classifier harness**: training and evaluation, corpus
+  generation and labeling tooling, FELM/SAC3 dataset adapters, the `phoenix cognition`
+  operator console, and a mobile control panel (PWA) served at `/cognition`. The shipped
+  default classifier is unchanged until a trained classifier clears the macro-F1 >= 0.70 gate
+  on a real labeled corpus.
+
+### Security fixes
+
+Full detail is in the security entry under `[1.1.0.dev0]` below (2026-09-16 to 2026-09-18).
+
+- **Authentication (breaking).** Every authenticated route requires a signed
+  `Authorization: Phoenix-Actor ...` header. A request without one, or with one that fails
+  verification, gets **401** whatever address it comes from; no actor is ever assumed, and
+  no flag restores the old behaviour. The CLI and `phoenix mcp serve` sign only as `--actor`
+  or a configured `default_actor`, and sign `default_actor` only when `rest_url` is a
+  loopback IP address (`127.0.0.1`, `[::1]`; not the name `localhost`). WebSockets
+  (`/v1/ws/*`) take a single-use token minted by `POST /v1/identity/ws-token`, which itself
+  needs the signed header.
+- **`phoenix identity header` (new)** prints a signed header value, valid about 5 minutes,
+  for curl, scripts and the `/docs` Swagger UI. `phoenix identity show` reports the actor,
+  where it came from, and whether requests are signed.
+- **Cognition UI token.** `/v1/cognition/*` needs the `X-Phoenix-UI-Token` header when the
+  daemon runs with `PHOENIX_UI_TOKEN` set (then it is required even from a signed actor), and
+  a signed actor when that variable is unset. The UI token opens `/v1/cognition/*` only. The
+  desktop cognition launcher starts the daemon with a fresh random token for each launch.
+- **NATS on loopback.** The bundled launcher binds the NATS server it starts (client 4222,
+  monitor 8222) to `127.0.0.1` only, in every mode including Docker. That NATS has no
+  authentication, so it is no longer reachable from other hosts.
+- **Adapter allowlist.** `POST /v1/adapters` loads adapters only from `phoenix.adapters` or
+  from a namespace listed in `PHOENIX_ADAPTER_ALLOWLIST` (comma-separated dotted prefixes,
+  set in the daemon's environment). Any other module is refused with **403**
+  `adapter_module_not_allowed` before it is imported; a malformed module path is 400.
+
+### Operator steps (upgrading from 1.0.0)
+
+1. Install 1.1.0 and restart the daemon. Rebuild any Docker image built before this release.
+2. **One-time CLI setup** (pip wheel or standalone binary), after the daemon has started once:
+   in `~/.phoenix/config.yaml` set `rest_url: "http://127.0.0.1:8003"` and
+   `default_actor: "adam"` (the OS user that owns the install). Confirm with
+   `phoenix identity show`: the actor, `actor_source: default_actor`, and
+   `signing: signed`.
+3. **curl, scripts, Swagger UI:** send `Authorization: $(phoenix identity header)`, or paste
+   its output into the `/docs` `authorization` field. Mint a fresh header each time; each one
+   expires after about 5 minutes.
+4. **Docker:** the install key lives inside the container, so do not set `default_actor` on
+   the host; run `docker exec phoenix phoenix --actor adam ...`. `phoenix health` works from
+   the host unsigned.
+5. **Remote daemon:** pass `--actor <name>` on the invocation to sign for it deliberately.
+6. **Cognition UI:** use the desktop shortcut, or start the daemon with `PHOENIX_UI_TOKEN`
+   set and open `/cognition#token=<token>` (desktop) or enter the token in the Connection
+   field (phone).
+7. **Out-of-tree adapters:** add their package prefix to `PHOENIX_ADAPTER_ALLOWLIST` in the
+   daemon's environment, or loading them returns 403.
+8. **NATS:** nothing to do for the bundled launcher. Anything off-host that used the
+   launcher's NATS can no longer reach it; run a separately secured NATS for that.
+9. **Building from source:** delete any stale `build/` directory at the repo root first.
+
+Details: [`docs/distribution/run.md`](docs/distribution/run.md) (Authentication, Loading
+adapters) and [`docs/distribution/install.md`](docs/distribution/install.md).
+
+### Known issues
+
+- The bundled placeholder pricing data (`phoenix/router/pricing/pricing_v1.json`, dated
+  2026-05-08) is past its 90-day staleness window (since 2026-08-06): the router logs a
+  staleness warning and marks its decisions `pricing_stale`, so cost estimates are
+  inaccurate. Two tests that expect fresh pricing data fail for that reason alone, as they
+  have on `main` since 2026-08-06:
+  `tests/unit/test_intelligence_pricing.py::test_pricing_staleness_check_on_fresh_data` and
+  `tests/unit/test_router_decision.py::test_router_decision_provenance_contains_per_stage_filters`.
+
+Tests: full suite (`pytest -m "not distribution"`): 1767 passed, 2 failed (the known pricing-staleness
+issue above), 42 skipped.
+
+---
+
 ## [1.0.0] — 2026-05-28
 
 Phoenix v1.0 final release. **Content-equivalent to `1.0.0rc1`**: the
@@ -39,6 +133,62 @@ warranted; the GitHub Release at this tag does not require it.
 ---
 
 ## [1.1.0.dev0] — 2026-05-20
+
+### Security: no header-less `adam`; the CLI signs only as a named actor (2026-09-16)
+
+**Fixes F1 (CWE-306).** Every authenticated route minted the admin `adam` for a request with
+no `Authorization` header, so anything that reached the port was the install owner.
+Supersedes Phase 6a Decision 4 and Phase 6b Decision 7.
+
+- `extract_or_bootstrap` is removed: `require_actor` answers a missing or unverifiable
+  header with 401 on every route, and a malformed payload (`issued_at=1e400`, deeply nested
+  JSON) is 401, not 500. Replay answers 409 when the recorded `actor_name` is missing.
+- CLI and `phoenix mcp serve` sign per request, only as `--actor` or `default_actor` (no
+  implicit `adam`). `default_actor` is signed only for a loopback IP `rest_url` (not
+  `localhost`, which can resolve to a squattable `::1`); other hosts get a refusal unless
+  `--actor` is given. `/v1/health` is never signed, local requests never use a proxy, and the
+  default `rest_url` is the daemon's `http://127.0.0.1:8003` (was `localhost:8000`). New
+  `phoenix identity header`.
+- `/v1/cognition/*` needs `X-Phoenix-UI-Token` (when `PHOENIX_UI_TOKEN` is set) or a signed
+  actor; there is no loopback no-token mode. The desktop launcher starts the daemon with a
+  random per-launch token in the URL fragment and a default `PHOENIX_CORPUS_DIR`, inside
+  which the UI's relative paths now resolve.
+- **Migration.** Once (pip/standalone): `rest_url: http://127.0.0.1:8003` and
+  `default_actor: adam` in `~/.phoenix/config.yaml`. curl or `/docs`:
+  `Authorization: $(phoenix identity header)`. Docker: rebuild (the image sets
+  `PHOENIX_REST_URL`), then `docker exec phoenix phoenix --actor adam ...`. Remote daemon:
+  `--actor`. UI: the shortcut, or `PHOENIX_UI_TOKEN` plus `/cognition#token=...` (desktop)
+  or the Connection field (phone). See `run.md`.
+
+Tests: +270, mainly `tests/integration/test_auth_headerless_rejected.py`; header-less
+`TestClient`s sign via `tests/_signed_actor.py`, and no assertion was weakened. Full suite
+(`-m "not distribution"`): 1715 passed, 8 failed, 41 skipped (before: 1446 passed, 7 failed).
+Every failure is pre-existing: `mcp` extra (2), flaky `test_omega_ledger` (4 this run), stale
+pricing data (2).
+
+**Known issues / follow-ups (not fixed here):**
+- ~~NATS listens unauthenticated on all interfaces~~ **Fixed 2026-09-17** (same branch):
+  `_spawn_nats` passes `--addr 127.0.0.1` (the monitor port follows), so the launcher's NATS
+  is loopback-only in every mode, Docker included; the daemon already connected only on
+  127.0.0.1. Pinned by `tests/unit/test_launcher.py::test_spawn_nats_binds_loopback_only`
+  (red before the change). `docs/distribution/run.md`, `install.md` and the Dockerfile
+  comment trued; the previous docs table claimed a loopback bind the code never set.
+- A `build/` directory at the repo root (git-ignored setuptools output) left over from an
+  earlier local build holds a stale copy of the pre-fix code: delete it before any in-tree
+  build, and rebuild any image built before this fix.
+- ~~`POST /v1/adapters` imports an arbitrary module for any signed actor with
+  `can_load_adapter`~~ **Fixed 2026-09-18** (same branch): the loader imports only modules
+  under `phoenix.adapters` (its own machinery -- loader, registry, sandbox, validator,
+  protocol, errors, the package `__init__` -- excluded) or under a namespace the operator
+  lists in `PHOENIX_ADAPTER_ALLOWLIST` (comma-separated dotted prefixes, daemon
+  environment). Anything else is refused before import with `AdapterSpecNotAllowed`, which
+  the route maps to **403** `adapter_module_not_allowed`; the factory must also be defined
+  in an allowlisted module, so a re-exported callable (`from os import ...`) is refused.
+  Malformed module paths (`.relative`) are 400, no longer a 500. Pinned by
+  `tests/integration/test_adapter_allowlist.py` (17 of 20 red before the change: `os`,
+  `subprocess` and a canary module were imported). Out-of-tree adapter packages need the
+  variable set. `docs/distribution/run.md`, `phoenix/adapters/README.md`, the CLI help and
+  the Phase 9 build guide trued.
 
 ### Phase 13 Step 5c: mobile control panel (PWA) for the cognition harness (2026-06-12)
 
