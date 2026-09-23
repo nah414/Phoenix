@@ -239,7 +239,7 @@ If you need persistent logs, point uvicorn at a file via:
 phoenix > phoenix.log 2>&1 &
 ```
 
-A v1.1 enhancement may ship a `--log-file` flag on the launcher.
+A later release may ship a `--log-file` flag on the launcher (1.1.0 does not have one).
 
 ## Configuration files
 

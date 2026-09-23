@@ -6,7 +6,7 @@ For run-time topology + flag semantics, see [`run.md`](run.md).
 ## Pip wheel
 
 Python 3.11, 3.12, or 3.13 supported. Linux and Windows are CI-tested;
-macOS support deferred to v1.1 (build from source via the sdist).
+macOS is not CI-tested (build from source via the sdist).
 
 ```bash
 # Minimal install (SQLite state, no NATS, no MCP):
@@ -57,6 +57,10 @@ on another port, change `rest_url` to match.
 
 The image is published to GitHub Container Registry at
 `ghcr.io/nah414/phoenix:<version>` (and `:latest`) on every release tag.
+
+The `1.0.0rc1` image in the examples below predates the 1.1.0 security fixes: use a
+`1.1.0` or later image if one is published, or build from source at the `1.1.0` tag
+(see the end of this section).
 
 ```bash
 # Pull and run:
@@ -116,6 +120,7 @@ preferable):
 ```bash
 git clone https://github.com/nah414/Phoenix
 cd Phoenix
+git checkout 1.1.0        # or a later release tag
 docker build -t phoenix:local .
 ```
 
@@ -127,6 +132,10 @@ Download the appropriate binary from the
 - `phoenix-windows-x64.exe` -- Windows 10/11, x86-64.
 - `phoenix-linux-x64` -- glibc-2.31+ Linux (Ubuntu 20.04+, Debian 11+,
   RHEL 9+, recent Fedora/Arch).
+
+The `v1.0.0rc1` binaries in the commands below predate the 1.1.0 security fixes: use a
+1.1.0 or later binary if one is published on the Releases page, or install from source
+at the `1.1.0` tag.
 
 ```bash
 # Linux:
